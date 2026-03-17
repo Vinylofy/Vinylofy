@@ -151,6 +151,20 @@ class ImportConfig:
     allowed_detail_status: set[str] | None = None
 
 
+@dataclass
+class ImportStats:
+    rows_raw: int = 0
+    rows_accepted: int = 0
+    rows_rejected: int = 0
+    new_products: int = 0
+    new_price_rows: int = 0
+    price_updates: int = 0
+    unchanged_prices: int = 0
+    upserted_products: int = 0
+    upserted_prices: int = 0
+    inserted_history_rows: int = 0
+
+
 def canonical_product_key(record: CanonicalRecord) -> tuple[str, str]:
     return normalize_text(record.artist).lower(), normalize_text(record.title).lower()
 
@@ -176,7 +190,7 @@ def read_and_filter(
         grouped[record.ean].append(record)
 
     deduped: list[CanonicalRecord] = []
-    for ean, records in grouped.items():
+    for records in grouped.values():
         if len(records) == 1:
             deduped.append(records[0])
             continue
@@ -224,7 +238,7 @@ def ensure_shop(cur, config: ImportConfig) -> str:
     return cur.fetchone()[0]
 
 
-def upsert_product(cur, record: CanonicalRecord) -> str:
+def upsert_product(cur, record: CanonicalRecord) -> tuple[str, bool]:
     artist_norm = normalize_text(record.artist).lower()
     title_norm = normalize_text(record.title).lower()
     search_text = normalize_whitespace(f"{record.artist} {record.title} {record.ean}").lower()
@@ -242,7 +256,7 @@ def upsert_product(cur, record: CanonicalRecord) -> str:
               cover_url = coalesce(public.products.cover_url, excluded.cover_url),
               canonical_key = coalesce(public.products.canonical_key, excluded.canonical_key),
               updated_at = now()
-        returning id
+        returning id, (xmax = 0) as inserted
         """,
         (
             record.ean,
@@ -256,7 +270,24 @@ def upsert_product(cur, record: CanonicalRecord) -> str:
             search_text,
         ),
     )
-    return cur.fetchone()[0]
+    product_id, inserted = cur.fetchone()
+    return product_id, bool(inserted)
+
+
+def get_existing_price_state(cur, product_id: str, shop_id: str) -> tuple[float, str, str, str] | None:
+    cur.execute(
+        """
+        select price, currency, product_url, availability
+        from public.prices
+        where product_id = %s and shop_id = %s
+        limit 1
+        """,
+        (product_id, shop_id),
+    )
+    row = cur.fetchone()
+    if row is None:
+        return None
+    return float(row[0]), str(row[1]), str(row[2]), str(row[3])
 
 
 def upsert_price(
@@ -265,7 +296,22 @@ def upsert_price(
     shop_id: str,
     record: CanonicalRecord,
     imported_at: datetime,
-) -> None:
+) -> tuple[bool, bool]:
+    existing = get_existing_price_state(cur, product_id, shop_id)
+    inserted = existing is None
+    changed = False
+
+    if existing is not None:
+        existing_price, existing_currency, existing_product_url, existing_availability = existing
+        changed = any(
+            [
+                float(existing_price) != float(record.price),
+                existing_currency != record.currency,
+                existing_product_url != record.product_url,
+                existing_availability != record.availability,
+            ]
+        )
+
     cur.execute(
         """
         insert into public.prices (
@@ -293,6 +339,8 @@ def upsert_price(
             imported_at,
         ),
     )
+
+    return inserted, changed
 
 
 def maybe_insert_history(cur, product_id: str, shop_id: str, record: CanonicalRecord) -> bool:
@@ -371,13 +419,27 @@ def run_import(
 
     accepted, rejects = read_and_filter(path, row_mapper)
 
+    stats = ImportStats(
+        rows_raw=len(accepted) + len(rejects),
+        rows_accepted=len(accepted),
+        rows_rejected=len(rejects),
+    )
+
     summary = {
         "source_file": str(path),
-        "accepted_records": len(accepted),
-        "rejected_records": len(rejects),
+        "rows_raw": stats.rows_raw,
+        "accepted_records": stats.rows_accepted,
+        "rejected_records": stats.rows_rejected,
         "shop_domain": config.shop_domain,
         "dry_run": bool(dry_run),
         "generated_at": now_utc().isoformat(),
+        "new_products": 0,
+        "new_price_rows": 0,
+        "price_updates": 0,
+        "unchanged_prices": 0,
+        "upserted_products": 0,
+        "upserted_prices": 0,
+        "inserted_history_rows": 0,
     }
 
     Path(rejects_path).parent.mkdir(parents=True, exist_ok=True)
@@ -385,7 +447,7 @@ def run_import(
 
     write_rejects(Path(rejects_path), rejects)
 
-    log(f"[STEP 1 DONE] Accepted: {len(accepted)} | Rejected: {len(rejects)}")
+    log(f"[STEP 1 DONE] Accepted: {stats.rows_accepted} | Rejected: {stats.rows_rejected}")
     log(f"[OUTPUT] Rejects: {rejects_path}")
     log(f"[OUTPUT] Summary: {summary_path}")
 
@@ -395,9 +457,6 @@ def run_import(
         print(json.dumps(summary, indent=2), flush=True)
         return
 
-    inserted_history = 0
-    upserted_prices = 0
-    upserted_products = 0
     imported_at = now_utc()
 
     log("[STEP 2] Verbinden met database...")
@@ -414,21 +473,31 @@ def run_import(
             log(f"[STEP 4] Import starten voor {total} records...")
 
             for i, record in enumerate(accepted, start=1):
-                product_id = upsert_product(cur, record)
-                upserted_products += 1
+                product_id, product_inserted = upsert_product(cur, record)
+                stats.upserted_products += 1
+                if product_inserted:
+                    stats.new_products += 1
 
-                upsert_price(cur, product_id, shop_id, record, imported_at)
-                upserted_prices += 1
+                price_inserted, price_changed = upsert_price(cur, product_id, shop_id, record, imported_at)
+                stats.upserted_prices += 1
+                if price_inserted:
+                    stats.new_price_rows += 1
+                elif price_changed:
+                    stats.price_updates += 1
+                else:
+                    stats.unchanged_prices += 1
 
                 if maybe_insert_history(cur, product_id, shop_id, record):
-                    inserted_history += 1
+                    stats.inserted_history_rows += 1
 
                 if i == 1 or i % 100 == 0 or i == total:
                     log(
                         f"[PROGRESS] {i}/{total} | "
-                        f"products={upserted_products} | "
-                        f"prices={upserted_prices} | "
-                        f"history={inserted_history}"
+                        f"new_products={stats.new_products} | "
+                        f"new_price_rows={stats.new_price_rows} | "
+                        f"price_updates={stats.price_updates} | "
+                        f"unchanged_prices={stats.unchanged_prices} | "
+                        f"history={stats.inserted_history_rows}"
                     )
 
         log("[STEP 5] Commit...")
@@ -436,9 +505,13 @@ def run_import(
 
     summary.update(
         {
-            "upserted_products": upserted_products,
-            "upserted_prices": upserted_prices,
-            "inserted_history_rows": inserted_history,
+            "new_products": stats.new_products,
+            "new_price_rows": stats.new_price_rows,
+            "price_updates": stats.price_updates,
+            "unchanged_prices": stats.unchanged_prices,
+            "upserted_products": stats.upserted_products,
+            "upserted_prices": stats.upserted_prices,
+            "inserted_history_rows": stats.inserted_history_rows,
         }
     )
 

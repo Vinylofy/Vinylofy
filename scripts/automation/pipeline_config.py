@@ -13,6 +13,7 @@ PYTHON_BIN = sys.executable
 class ShopPipelineConfig:
     key: str
     shop_name: str
+    shop_domain: str
     scraper_command_env: str
     csv_output_path: str
     importer_module: str
@@ -38,6 +39,7 @@ SHOPS: dict[str, ShopPipelineConfig] = {
     "bobsvinyl": ShopPipelineConfig(
         key="bobsvinyl",
         shop_name="Bob's Vinyl",
+        shop_domain="bobsvinyl.nl",
         scraper_command_env="VINYLOFY_SCRAPER_CMD_BOBSVINYL",
         csv_output_path="data/raw/bobsvinyl/bobsvinyl_step2_enriched.csv",
         importer_module="scripts.importers.import_bobsvinyl",
@@ -48,6 +50,7 @@ SHOPS: dict[str, ShopPipelineConfig] = {
     "dgmoutlet": ShopPipelineConfig(
         key="dgmoutlet",
         shop_name="DGM Outlet",
+        shop_domain="dgmoutlet.nl",
         scraper_command_env="VINYLOFY_SCRAPER_CMD_DGMOUTLET",
         csv_output_path="data/raw/dgmoutlet/dgmoutlet_products.csv",
         importer_module="scripts.importers.import_dgmoutlet",
@@ -58,6 +61,7 @@ SHOPS: dict[str, ShopPipelineConfig] = {
     "platomania": ShopPipelineConfig(
         key="platomania",
         shop_name="Platomania",
+        shop_domain="platomania.nl",
         scraper_command_env="VINYLOFY_SCRAPER_CMD_PLATOMANIA",
         csv_output_path="data/raw/platomania/platomania_step2_enriched.csv",
         importer_module="scripts.importers.import_platomania",
