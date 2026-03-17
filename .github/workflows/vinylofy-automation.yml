@@ -36,6 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
@@ -46,10 +47,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -63,7 +64,13 @@ jobs:
           if [ -f requirements-scrapers.txt ]; then
             pip install -r requirements-scrapers.txt
           fi
-          pip install "psycopg[binary]" python-dotenv supabase
+          pip install \
+            beautifulsoup4 \
+            requests \
+            pandas \
+            "psycopg[binary]" \
+            python-dotenv \
+            supabase
 
       - name: Create runtime folders
         shell: bash
@@ -104,7 +111,7 @@ jobs:
 
       - name: Upload workflow artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: vinylofy-automation-${{ github.run_id }}
           path: |
