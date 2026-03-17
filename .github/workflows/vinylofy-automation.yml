@@ -1,0 +1,114 @@
+name: Vinylofy Automation
+
+on:
+  workflow_dispatch:
+    inputs:
+      shop:
+        description: "Welke shop wil je draaien?"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - bobsvinyl
+          - dgmoutlet
+          - platomania
+      skip_scrape:
+        description: "Scraper overslaan en bestaand CSV gebruiken"
+        required: true
+        default: false
+        type: boolean
+      skip_upload:
+        description: "Upload naar Supabase Storage overslaan"
+        required: true
+        default: false
+        type: boolean
+      dry_run_import:
+        description: "Importer alleen valideren, geen DB writes"
+        required: true
+        default: false
+        type: boolean
+  schedule:
+    - cron: "15 2 * * *"
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
+      VINYLOFY_SCRAPER_CMD_BOBSVINYL: ${{ vars.VINYLOFY_SCRAPER_CMD_BOBSVINYL }}
+      VINYLOFY_SCRAPER_CMD_DGMOUTLET: ${{ vars.VINYLOFY_SCRAPER_CMD_DGMOUTLET }}
+      VINYLOFY_SCRAPER_CMD_PLATOMANIA: ${{ vars.VINYLOFY_SCRAPER_CMD_PLATOMANIA }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+          if [ -f requirements-scrapers.txt ]; then
+            pip install -r requirements-scrapers.txt
+          fi
+          pip install "psycopg[binary]" python-dotenv supabase
+
+      - name: Create runtime folders
+        shell: bash
+        run: |
+          mkdir -p data/raw/bobsvinyl
+          mkdir -p data/raw/dgmoutlet
+          mkdir -p data/raw/platomania
+          mkdir -p output
+
+      - name: Run pipeline
+        shell: bash
+        run: |
+          SHOP_INPUT="${{ github.event.inputs.shop }}"
+          if [ -z "$SHOP_INPUT" ]; then
+            SHOP_INPUT="all"
+          fi
+
+          SKIP_SCRAPE=""
+          if [ "${{ github.event.inputs.skip_scrape }}" = "true" ]; then
+            SKIP_SCRAPE="--skip-scrape"
+          fi
+
+          SKIP_UPLOAD=""
+          if [ "${{ github.event.inputs.skip_upload }}" = "true" ]; then
+            SKIP_UPLOAD="--skip-upload"
+          fi
+
+          DRY_RUN_IMPORT=""
+          if [ "${{ github.event.inputs.dry_run_import }}" = "true" ]; then
+            DRY_RUN_IMPORT="--dry-run-import"
+          fi
+
+          python -u scripts/automation/run_vinylofy_pipeline.py \
+            --shop "$SHOP_INPUT" \
+            $SKIP_SCRAPE \
+            $SKIP_UPLOAD \
+            $DRY_RUN_IMPORT
+
+      - name: Upload workflow artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vinylofy-automation-${{ github.run_id }}
+          path: |
+            data/raw/**/*.csv
+            output/**/*.json
+            output/**/*.csv
+          if-no-files-found: warn
