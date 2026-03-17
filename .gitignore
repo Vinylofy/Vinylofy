@@ -1,6 +1,11 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# =========================
+# Vinylofy
+# Next.js + TypeScript + Python + Supabase
+# =========================
 
-# dependencies
+# -------------------------
+# Node / package managers
+# -------------------------
 /node_modules
 /.pnp
 .pnp.*
@@ -10,32 +15,123 @@
 !.yarn/releases
 !.yarn/versions
 
-# testing
-/coverage
-
-# next.js
+# -------------------------
+# Next.js / build output
+# -------------------------
 /.next/
 /out/
+/build/
+/dist/
+*.tsbuildinfo
+next-env.d.ts
 
-# production
-/build
+# -------------------------
+# Coverage / test output
+# -------------------------
+/coverage
+.nyc_output/
+playwright-report/
+test-results/
+blob-report/
 
-# misc
-.DS_Store
-*.pem
-
-# debug
+# -------------------------
+# Logs / debug
+# -------------------------
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+pnpm-debug.log*
+*.log
 
-# env files (can opt-in for committing if needed)
-.env*
+# -------------------------
+# Environment files / secrets
+# -------------------------
+.env
+.env.*
+!.env.example
 
-# vercel
-.vercel
+# Local automation shell config
+scripts/automation/env.local.sh
 
-# typescript
-*.tsbuildinfo
-next-env.d.ts
+# -------------------------
+# Python
+# -------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+pip-wheel-metadata/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# -------------------------
+# Scraper / importer runtime data
+# -------------------------
+/data/raw/*
+!/data/raw/.gitkeep
+
+/data/rejects/*
+!/data/rejects/.gitkeep
+
+/data/summaries/*
+!/data/summaries/.gitkeep
+
+/output/*
+!/output/.gitkeep
+
+/tmp/
+/temp/
+
+# Temporary exports
+*.csv.tmp
+*.json.tmp
+
+# -------------------------
+# Databases / local artifacts
+# -------------------------
+*.sqlite
+*.sqlite3
+*.db
+
+# -------------------------
+# Supabase local temp files
+# Keep migrations and config tracked
+# -------------------------
+/supabase/.temp/
+/supabase/.branches/
+
+# -------------------------
+# Vercel
+# -------------------------
+/.vercel
+
+# -------------------------
+# OS / editors
+# -------------------------
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# -------------------------
+# Misc
+# -------------------------
+*.pem
+.ipynb_checkpoints/

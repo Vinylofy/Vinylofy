@@ -19,7 +19,7 @@ export function GlobalSearchBar({
           type="text"
           name="q"
           defaultValue={defaultValue}
-          placeholder="Zoek op artiest, albumtitel of EAN"
+          placeholder="Zoek op artiest of albumtitel"
           className={[
             "w-full bg-transparent outline-none placeholder:text-neutral-400",
             compact ? "px-3 py-1 text-sm" : "px-3 py-2 text-sm md:text-base",

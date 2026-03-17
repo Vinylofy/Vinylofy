@@ -37,11 +37,16 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
 
         {!query ? (
           <div className="rounded-2xl border border-neutral-200 bg-white p-6 text-sm text-neutral-500">
-            Typ een artiest, albumtitel of EAN om te zoeken.
+            Typ een artiest of albumtitel om te zoeken.
           </div>
         ) : results.length === 0 ? (
           <div className="rounded-2xl border border-neutral-200 bg-white p-6 text-sm text-neutral-500">
-            Geen resultaten gevonden voor <strong>{query}</strong>.
+            <p>
+              Geen resultaten gevonden voor <strong>{query}</strong>.
+            </p>
+            <p className="mt-2">
+              Probeer een artiest, albumtitel of een kortere zoekterm.
+            </p>
           </div>
         ) : (
           <div className="space-y-4">

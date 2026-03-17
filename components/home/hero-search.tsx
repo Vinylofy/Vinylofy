@@ -13,8 +13,8 @@ export function HeroSearch() {
       </h1>
 
       <p className="mt-4 max-w-2xl text-sm text-neutral-500 md:text-base">
-        Vergelijk prijzen tussen meerdere winkels en vind direct de beste deal
-        voor jouw vinylrelease.
+        Vergelijk prijzen tussen winkels en vind snel de beste deal voor je
+        vinyl.
       </p>
 
       <div className="mt-8 w-full max-w-2xl">
@@ -22,7 +22,7 @@ export function HeroSearch() {
       </div>
 
       <p className="mt-4 text-sm text-neutral-400">
-        Zoek op artiest, albumtitel of EAN
+        Bijvoorbeeld: Fleetwood Mac, Rumours of Kind of Blue
       </p>
     </section>
   );
