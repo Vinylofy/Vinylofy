@@ -4,6 +4,8 @@ from scripts.importers.contracts import ShopImporterDefinition
 from scripts.importers.import_bobsvinyl import SHOP_DEFINITION as BOBSVINYL_IMPORTER
 from scripts.importers.import_dgmoutlet import SHOP_DEFINITION as DGMOUTLET_IMPORTER
 from scripts.importers.import_platomania import SHOP_DEFINITION as PLATOMANIA_IMPORTER
+from scripts.importers.import_platenzaak import SHOP_DEFINITION as PLATENZAAK_IMPORTER
+from scripts.importers.import_variaworld import SHOP_DEFINITION as VARIAWORLD_IMPORTER
 
 SHOP_IMPORTERS: dict[str, ShopImporterDefinition] = {
     definition.key: definition
@@ -11,6 +13,8 @@ SHOP_IMPORTERS: dict[str, ShopImporterDefinition] = {
         BOBSVINYL_IMPORTER,
         DGMOUTLET_IMPORTER,
         PLATOMANIA_IMPORTER,
+        PLATENZAAK_IMPORTER,
+        VARIAWORLD_IMPORTER,
     )
 }
 
