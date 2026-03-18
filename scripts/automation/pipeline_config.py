@@ -8,6 +8,12 @@ CURRENT_FILE = Path(__file__).resolve()
 PROJECT_ROOT = CURRENT_FILE.parents[2]
 PYTHON_BIN = sys.executable
 
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.importers.contracts import ShopImporterDefinition  # noqa: E402
+from scripts.importers.registry import get_shop_importer, iter_shop_importers  # noqa: E402
+
 
 @dataclass(frozen=True)
 class ShopPipelineConfig:
@@ -20,6 +26,20 @@ class ShopPipelineConfig:
     rejects_path: str
     summary_path: str
     storage_prefix: str
+
+    @classmethod
+    def from_importer_definition(cls, definition: ShopImporterDefinition) -> "ShopPipelineConfig":
+        return cls(
+            key=definition.key,
+            shop_name=definition.shop_name,
+            shop_domain=definition.shop_domain,
+            scraper_command_env=definition.scraper_command_env,
+            csv_output_path=definition.files.csv_output_path,
+            importer_module=definition.importer_module,
+            rejects_path=definition.files.rejects_path,
+            summary_path=definition.files.summary_path,
+            storage_prefix=definition.storage_prefix,
+        )
 
     @property
     def importer_command(self) -> list[str]:
@@ -36,45 +56,11 @@ class ShopPipelineConfig:
 
 
 SHOPS: dict[str, ShopPipelineConfig] = {
-    "bobsvinyl": ShopPipelineConfig(
-        key="bobsvinyl",
-        shop_name="Bob's Vinyl",
-        shop_domain="bobsvinyl.nl",
-        scraper_command_env="VINYLOFY_SCRAPER_CMD_BOBSVINYL",
-        csv_output_path="data/raw/bobsvinyl/bobsvinyl_step2_enriched.csv",
-        importer_module="scripts.importers.import_bobsvinyl",
-        rejects_path="output/bobsvinyl_rejects.csv",
-        summary_path="output/bobsvinyl_import_summary.json",
-        storage_prefix="bobsvinyl",
-    ),
-    "dgmoutlet": ShopPipelineConfig(
-        key="dgmoutlet",
-        shop_name="DGM Outlet",
-        shop_domain="dgmoutlet.nl",
-        scraper_command_env="VINYLOFY_SCRAPER_CMD_DGMOUTLET",
-        csv_output_path="data/raw/dgmoutlet/dgmoutlet_products.csv",
-        importer_module="scripts.importers.import_dgmoutlet",
-        rejects_path="output/dgmoutlet_rejects.csv",
-        summary_path="output/dgmoutlet_import_summary.json",
-        storage_prefix="dgmoutlet",
-    ),
-    "platomania": ShopPipelineConfig(
-        key="platomania",
-        shop_name="Platomania",
-        shop_domain="platomania.nl",
-        scraper_command_env="VINYLOFY_SCRAPER_CMD_PLATOMANIA",
-        csv_output_path="data/raw/platomania/platomania_step2_enriched.csv",
-        importer_module="scripts.importers.import_platomania",
-        rejects_path="output/platomania_rejects.csv",
-        summary_path="output/platomania_import_summary.json",
-        storage_prefix="platomania",
-    ),
+    definition.key: ShopPipelineConfig.from_importer_definition(definition)
+    for definition in iter_shop_importers()
 }
 
 
 def get_shop_config(key: str) -> ShopPipelineConfig:
-    normalized = key.strip().lower()
-    if normalized not in SHOPS:
-        available = ", ".join(sorted(SHOPS))
-        raise KeyError(f"Unknown shop '{key}'. Available: {available}")
-    return SHOPS[normalized]
+    definition = get_shop_importer(key)
+    return SHOPS[definition.key]

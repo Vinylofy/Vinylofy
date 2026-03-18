@@ -1,11 +1,16 @@
 {
   "source_file": "/workspaces/Vinylofy/data/raw/bobsvinyl/bobsvinyl_step2_enriched.csv",
+  "rows_raw": 4369,
   "accepted_records": 4237,
   "rejected_records": 132,
   "shop_domain": "bobsvinyl.nl",
-  "dry_run": false,
-  "generated_at": "2026-03-17T15:46:15.315820+00:00",
-  "upserted_products": 4237,
-  "upserted_prices": 4237,
-  "inserted_history_rows": 3
+  "dry_run": true,
+  "generated_at": "2026-03-18T05:47:12.180029+00:00",
+  "new_products": 0,
+  "new_price_rows": 0,
+  "price_updates": 0,
+  "unchanged_prices": 0,
+  "upserted_products": 0,
+  "upserted_prices": 0,
+  "inserted_history_rows": 0
 }

@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""
+Template voor een nieuwe shop-importer.
+
+Gebruik dit bestand als startpunt voor shop 4 / shop 5 onboarding.
+Vervang alle TODO-velden en registreer daarna SHOP_DEFINITION in scripts.importers.registry.
+"""
 from __future__ import annotations
 
 import sys
@@ -22,29 +28,21 @@ from scripts.importers.contracts import ImportFileLayout, ShopImporterDefinition
 from scripts.importers.runner import run_registered_importer  # noqa: E402
 
 CONFIG = ImportConfig(
-    shop_name="Bob's Vinyl",
-    shop_domain="bobsvinyl.nl",
+    shop_name="TODO Shop Name",
+    shop_domain="todo-shop-domain.tld",
     shop_country="NL",
     currency="EUR",
 )
 
 
-def map_bobsvinyl_row(row: dict, line_number: int) -> tuple[CanonicalRecord | None, str | None]:
+def map_template_row(row: dict, line_number: int) -> tuple[CanonicalRecord | None, str | None]:
     ean = normalize_ean(row.get("ean"))
-    price = parse_price(row.get("prijs"))
+    price = parse_price(row.get("price"))
     product_url = normalize_text(row.get("url"))
-    detail_status = normalize_text(row.get("detail_status")).lower()
-    secondhand_raw = normalize_text(row.get("mogelijk_2e_hands")).upper()
-    is_secondhand = secondhand_raw not in {"NEE", "NO", "FALSE", "0", ""}
-    captured_at = parse_timestamp(row.get("detail_checked_at"))
+    captured_at = parse_timestamp(row.get("scraped_at"))
     artist, title = infer_artist_title(row.get("artist"), row.get("title"))
-    format_label = normalize_text(row.get("drager")) or None
-    cover_url = None
+    format_label = normalize_text(row.get("format")) or None
 
-    if detail_status != "ok":
-        return None, "detail_status_not_ok"
-    if is_secondhand:
-        return None, "secondhand"
     if not ean:
         return None, "missing_or_invalid_ean"
     if not product_url:
@@ -65,47 +63,44 @@ def map_bobsvinyl_row(row: dict, line_number: int) -> tuple[CanonicalRecord | No
         artist=artist,
         title=title,
         format_label=format_label,
-        cover_url=cover_url,
+        cover_url=None,
         product_url=product_url,
         price=price,
         currency=CONFIG.currency,
         availability="in_stock",
         captured_at=captured_at,
-        product_handle=normalize_text(row.get("product_handle")) or None,
-        detail_status=detail_status,
-        is_secondhand=is_secondhand,
+        product_handle=None,
+        detail_status="ok",
+        is_secondhand=False,
         raw=row,
     ), None
 
 
 SHOP_DEFINITION = ShopImporterDefinition(
-    key="bobsvinyl",
+    key="todo_shop_key",
     config=CONFIG,
-    importer_module="scripts.importers.import_bobsvinyl",
-    scraper_command_env="VINYLOFY_SCRAPER_CMD_BOBSVINYL",
-    storage_prefix="bobsvinyl",
+    importer_module="scripts.importers.import_todo_shop",
+    scraper_command_env="VINYLOFY_SCRAPER_CMD_TODO_SHOP",
+    storage_prefix="todo_shop_key",
     files=ImportFileLayout(
-        csv_output_path="data/raw/bobsvinyl/bobsvinyl_step2_enriched.csv",
-        rejects_path="output/bobsvinyl_rejects.csv",
-        summary_path="output/bobsvinyl_import_summary.json",
+        csv_output_path="data/raw/todo_shop/todo_shop_products.csv",
+        rejects_path="output/todo_shop_rejects.csv",
+        summary_path="output/todo_shop_import_summary.json",
     ),
-    row_mapper=map_bobsvinyl_row,
-    description="Import Bob's Vinyl enriched CSV into Supabase/Postgres",
+    row_mapper=map_template_row,
+    description="Import TODO shop CSV into Supabase/Postgres",
     required_columns=(
         "title",
-        "prijs",
+        "price",
         "url",
-        "detail_status",
-        "mogelijk_2e_hands",
-        "detail_checked_at",
+        "scraped_at",
         "ean",
     ),
     optional_columns=(
         "artist",
-        "drager",
-        "product_handle",
+        "format",
     ),
-    tags=("vinyl", "enriched", "detail-check"),
+    tags=("template",),
 )
 
 

@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import argparse
 import sys
 from pathlib import Path
 
 CURRENT_FILE = Path(__file__).resolve()
 PROJECT_ROOT = CURRENT_FILE.parents[2]
-
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -19,9 +17,9 @@ from scripts.importers.common import (  # noqa: E402
     normalize_text,
     parse_price,
     parse_timestamp,
-    run_import,
 )
-
+from scripts.importers.contracts import ImportFileLayout, ShopImporterDefinition  # noqa: E402
+from scripts.importers.runner import run_registered_importer  # noqa: E402
 
 CONFIG = ImportConfig(
     shop_name="DGM Outlet",
@@ -33,13 +31,9 @@ CONFIG = ImportConfig(
 
 def clean_title(raw_title: str | None, fallback_raw_name: str | None) -> str:
     title = normalize_text(raw_title)
-
     if not title:
         title = normalize_text(fallback_raw_name)
-
-    # Veel DGM titels eindigen nog op los "LP"
     title = title.removesuffix(" LP").strip()
-
     return title
 
 
@@ -48,10 +42,8 @@ def map_dgmoutlet_row(row: dict, line_number: int) -> tuple[CanonicalRecord | No
     price = parse_price(row.get("price_current"))
     product_url = normalize_text(row.get("url"))
     captured_at = parse_timestamp(row.get("scraped_at"))
-
     raw_artist = row.get("artist")
     raw_title = clean_title(row.get("title"), row.get("raw_name"))
-
     artist, inferred_title = infer_artist_title(raw_artist, raw_title)
     title = normalize_text(inferred_title) or raw_title
     format_label = normalize_text(row.get("format")) or None
@@ -89,22 +81,37 @@ def map_dgmoutlet_row(row: dict, line_number: int) -> tuple[CanonicalRecord | No
     ), None
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Import DGM Outlet listing CSV into Supabase/Postgres")
-    parser.add_argument("csv_path", help="Path to dgmoutlet_listing.csv")
-    parser.add_argument("--dry-run", action="store_true", help="Validate and summarize without writing to the database")
-    parser.add_argument("--rejects", default="output/dgmoutlet_rejects.csv", help="Path to write rejected rows CSV")
-    parser.add_argument("--summary", default="output/dgmoutlet_import_summary.json", help="Path to write summary JSON")
-    args = parser.parse_args()
+SHOP_DEFINITION = ShopImporterDefinition(
+    key="dgmoutlet",
+    config=CONFIG,
+    importer_module="scripts.importers.import_dgmoutlet",
+    scraper_command_env="VINYLOFY_SCRAPER_CMD_DGMOUTLET",
+    storage_prefix="dgmoutlet",
+    files=ImportFileLayout(
+        csv_output_path="data/raw/dgmoutlet/dgmoutlet_products.csv",
+        rejects_path="output/dgmoutlet_rejects.csv",
+        summary_path="output/dgmoutlet_import_summary.json",
+    ),
+    row_mapper=map_dgmoutlet_row,
+    description="Import DGM Outlet listing CSV into Supabase/Postgres",
+    required_columns=(
+        "title",
+        "raw_name",
+        "price_current",
+        "url",
+        "scraped_at",
+        "ean",
+    ),
+    optional_columns=(
+        "artist",
+        "format",
+    ),
+    tags=("vinyl", "listing-only"),
+)
 
-    run_import(
-        config=CONFIG,
-        csv_path=args.csv_path,
-        row_mapper=map_dgmoutlet_row,
-        dry_run=args.dry_run,
-        rejects_path=args.rejects,
-        summary_path=args.summary,
-    )
+
+def main() -> None:
+    run_registered_importer(SHOP_DEFINITION)
 
 
 if __name__ == "__main__":
