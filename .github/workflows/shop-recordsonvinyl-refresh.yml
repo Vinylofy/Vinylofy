@@ -22,7 +22,7 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
-      VINYLOFY_SCRAPER_CMD_RECORDSONVINYL: python -u scripts/scrapers/recordsonvinyl_automation.py --mode refresh --master-csv data/raw/recordsonvinyl/recordsonvinyl_master.csv --out data/raw/recordsonvinyl/recordsonvinyl_products.csv --max-pages 30 --limit-products 400
+      VINYLOFY_SCRAPER_CMD_RECORDSONVINYL: python -u scripts/scrapers/recordsonvinyl_automation.py --mode refresh --master-csv data/raw/recordsonvinyl/recordsonvinyl_master.csv --out data/raw/recordsonvinyl/recordsonvinyl_products.csv --max-pages 999 --limit-products 5000
 
     steps:
       - name: Checkout
@@ -51,8 +51,9 @@ jobs:
         shell: bash
         run: |
           python -u scripts/automation/run_vinylofy_pipeline.py \
-            --shop recordsonvinyl
+            --shop recordsonvinyl \
 
+            
       - name: Upload workflow artifacts
         if: always()
         uses: actions/upload-artifact@v5
