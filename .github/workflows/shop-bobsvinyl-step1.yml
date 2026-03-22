@@ -55,7 +55,7 @@ jobs:
 
       - name: Upload workflow artifacts
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: bobsvinyl-step1-${{ github.run_id }}
           path: |

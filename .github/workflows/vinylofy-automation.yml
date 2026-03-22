@@ -94,15 +94,11 @@ jobs:
             DRY_RUN_IMPORT="--dry-run-import"
           fi
 
-          python -u scripts/automation/run_vinylofy_pipeline.py \
-            --shop "$SHOP_INPUT" \
-            $SKIP_SCRAPE \
-            $SKIP_UPLOAD \
-            $DRY_RUN_IMPORT
+          python -u scripts/automation/run_vinylofy_pipeline.py             --shop "$SHOP_INPUT"             $SKIP_SCRAPE             $SKIP_UPLOAD             $DRY_RUN_IMPORT
 
       - name: Upload workflow artifacts
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: vinylofy-automation-${{ github.run_id }}
           path: |

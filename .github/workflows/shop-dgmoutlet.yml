@@ -2,22 +2,6 @@ name: Shop - DGM Outlet
 
 on:
   workflow_dispatch:
-    inputs:
-      skip_scrape:
-        description: "Scraper overslaan en bestaand CSV gebruiken"
-        required: true
-        default: false
-        type: boolean
-      skip_upload:
-        description: "Upload naar Supabase Storage overslaan"
-        required: true
-        default: false
-        type: boolean
-      dry_run_import:
-        description: "Importer alleen valideren, geen DB writes"
-        required: true
-        default: false
-        type: boolean
   schedule:
     - cron: "10 0 * * *"
     - cron: "10 6 * * *"
@@ -29,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  dgmoutlet:
+  run:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -39,7 +23,6 @@ jobs:
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
       VINYLOFY_SCRAPER_CMD_DGMOUTLET: ${{ vars.VINYLOFY_SCRAPER_CMD_DGMOUTLET }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -63,33 +46,15 @@ jobs:
           mkdir -p data/raw/dgmoutlet
           mkdir -p output
 
-      - name: Run DGM Outlet pipeline
+      - name: Run pipeline
         shell: bash
         run: |
-          SKIP_SCRAPE=""
-          if [ "${{ github.event.inputs.skip_scrape }}" = "true" ]; then
-            SKIP_SCRAPE="--skip-scrape"
-          fi
-
-          SKIP_UPLOAD=""
-          if [ "${{ github.event.inputs.skip_upload }}" = "true" ]; then
-            SKIP_UPLOAD="--skip-upload"
-          fi
-
-          DRY_RUN_IMPORT=""
-          if [ "${{ github.event.inputs.dry_run_import }}" = "true" ]; then
-            DRY_RUN_IMPORT="--dry-run-import"
-          fi
-
           python -u scripts/automation/run_vinylofy_pipeline.py \
-            --shop dgmoutlet \
-            $SKIP_SCRAPE \
-            $SKIP_UPLOAD \
-            $DRY_RUN_IMPORT
+            --shop dgmoutlet
 
       - name: Upload workflow artifacts
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: dgmoutlet-${{ github.run_id }}
           path: |
