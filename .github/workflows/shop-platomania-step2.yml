@@ -1,0 +1,62 @@
+name: Shop - Platomania Step 2
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "10 4 * * *"
+
+concurrency:
+  group: vinylofy-platomania
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
+      VINYLOFY_SCRAPER_CMD_PLATOMANIA: "python -u scripts/scrapers/platomania.py --mode step2 --output-dir data/raw/platomania"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
+          pip install beautifulsoup4 requests pandas "psycopg[binary]" python-dotenv supabase
+
+      - name: Create runtime folders
+        shell: bash
+        run: |
+          mkdir -p data/raw/platomania
+          mkdir -p output
+
+      - name: Run pipeline
+        shell: bash
+        run: |
+          python -u scripts/automation/run_vinylofy_pipeline.py \
+            --shop platomania
+
+      - name: Upload workflow artifacts
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: platomania-step2-${{ github.run_id }}
+          path: |
+            data/raw/platomania/**/*.csv
+            data/raw/platomania/*.csv
+            output/**/*.json
+            output/**/*.csv
+          if-no-files-found: warn

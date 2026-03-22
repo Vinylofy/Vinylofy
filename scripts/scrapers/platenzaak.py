@@ -19,6 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mode", choices=["listing", "enrich", "both"], default="both")
     p.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     p.add_argument("--max-pages", type=int, default=None)
+    p.add_argument("--limit-enrich", type=int, default=None, help="Max aantal productdetailpagina's in enrichment")
     p.add_argument("--force-all", action="store_true", help="Alleen relevant voor --mode enrich")
     p.add_argument("--interactive", action="store_true")
     return p
@@ -36,7 +37,8 @@ def main() -> int:
     if args.mode == "listing":
         stdin_data = f"1\n{args.max_pages if args.max_pages else ''}\n"
     elif args.mode == "enrich":
-        stdin_data = f"2\n{'j' if args.force_all else 'n'}\n"
+        limit_value = "" if args.limit_enrich is None else str(max(1, args.limit_enrich))
+        stdin_data = f"2\n{'j' if args.force_all else 'n'}\n{limit_value}\n"
     else:
         stdin_data = f"3\n{args.max_pages if args.max_pages else ''}\n"
     return run_legacy("platenzaak_legacy.py", cwd=out_dir, stdin_data=stdin_data)

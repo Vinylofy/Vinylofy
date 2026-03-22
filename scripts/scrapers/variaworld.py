@@ -18,6 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Automation wrapper voor Variaworld scraper")
     p.add_argument("--mode", choices=["listing", "ean", "both"], default="both")
     p.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
+    p.add_argument("--limit-ean", type=int, default=None, help="Max aantal EAN-detailpagina's")
     p.add_argument("--interactive", action="store_true")
     return p
 
@@ -32,7 +33,14 @@ def main() -> int:
 
     out_dir = ensure_dir(args.output_dir)
     choice = {"listing": "1", "ean": "2", "both": "3"}[args.mode]
-    rc = run_legacy("variaworld_legacy.py", cwd=out_dir, stdin_data=f"{choice}\n4\n")
+
+    if args.mode == "ean":
+        limit_value = "" if args.limit_ean is None else str(max(1, args.limit_ean))
+        stdin_data = f"{choice}\n{limit_value}\n4\n"
+    else:
+        stdin_data = f"{choice}\n4\n"
+
+    rc = run_legacy("variaworld_legacy.py", cwd=out_dir, stdin_data=stdin_data)
     move_if_exists(out_dir / "output" / "variaworld_products.csv", out_dir / "variaworld_products.csv")
     move_if_exists(out_dir / "output" / "variaworld_errors.csv", out_dir / "variaworld_errors.csv")
     return rc

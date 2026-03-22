@@ -636,6 +636,7 @@ def enrich_all(
     input_path: str,
     output_path: str,
     workers: int = DEFAULT_WORKERS,
+    limit_detail: int | None = None,
 ) -> Dict[str, Dict[str, str]]:
     rows_by_url = load_csv_as_dict(input_path, STEP2_COLUMNS)
     if not rows_by_url:
@@ -643,11 +644,14 @@ def enrich_all(
         return rows_by_url
 
     todo_rows = {url: row for url, row in rows_by_url.items() if needs_enrichment(row)}
+    if limit_detail is not None and limit_detail > 0:
+        todo_items = list(todo_rows.items())[:limit_detail]
+        todo_rows = OrderedDict(todo_items)
     skipped = len(rows_by_url) - len(todo_rows)
 
     print(
         f"[INFO] Verrijking gestart vanuit {input_path} ({len(rows_by_url)} records | "
-        f"te verrijken: {len(todo_rows)} | overgeslagen: {skipped})"
+        f"te verrijken: {len(todo_rows)} | overgeslagen: {skipped} | limit_detail={limit_detail})"
     )
 
     if not todo_rows:
@@ -743,9 +747,9 @@ def run_step1(workers: int = DEFAULT_WORKERS) -> None:
 
 
 
-def run_step2(workers: int = DEFAULT_WORKERS) -> None:
+def run_step2(workers: int = DEFAULT_WORKERS, limit_detail: int | None = None) -> None:
     source_path = STEP2_FILE if os.path.exists(STEP2_FILE) else STEP1_FILE
-    enrich_all(input_path=source_path, output_path=STEP2_FILE, workers=workers)
+    enrich_all(input_path=source_path, output_path=STEP2_FILE, workers=workers, limit_detail=limit_detail)
 
 
 
@@ -796,7 +800,9 @@ def main() -> int:
                 return 0
             if choice == "2":
                 workers = ask_workers()
-                run_step2(workers=workers)
+                raw_limit = input("Max aantal detailpagina's? Enter = alles: ").strip()
+                limit_detail = int(raw_limit) if raw_limit.isdigit() and int(raw_limit) > 0 else None
+                run_step2(workers=workers, limit_detail=limit_detail)
                 return 0
             if choice == "3" or choice == "":
                 workers = ask_workers()

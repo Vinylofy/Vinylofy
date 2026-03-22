@@ -443,7 +443,7 @@ def enrich_product(session: requests.Session, product_url: str) -> dict:
     return row
 
 
-def determine_enrichment_targets(force_all: bool = False) -> List[str]:
+def determine_enrichment_targets(force_all: bool = False, limit_enrich: int | None = None) -> List[str]:
     listing = read_csv_as_dict(LISTING_CSV, "product_url")
     enriched = read_csv_as_dict(ENRICHED_CSV, "product_url")
 
@@ -464,17 +464,19 @@ def determine_enrichment_targets(force_all: bool = False) -> List[str]:
         if not (e.get("ean") or "").strip():
             targets.append(product_url)
             continue
+    if limit_enrich is not None and limit_enrich > 0:
+        targets = targets[:limit_enrich]
     return targets
 
 
-def run_enrichment(force_all: bool = False, delay_seconds: float = 0.25) -> int:
+def run_enrichment(force_all: bool = False, delay_seconds: float = 0.25, limit_enrich: int | None = None) -> int:
     session = build_session()
     listing = read_csv_as_dict(LISTING_CSV, "product_url")
     enriched = read_csv_as_dict(ENRICHED_CSV, "product_url")
-    targets = determine_enrichment_targets(force_all=force_all)
+    targets = determine_enrichment_targets(force_all=force_all, limit_enrich=limit_enrich)
 
     total = len(targets)
-    print(f"[ENRICH] te verrijken urls: {total} | force_all={force_all}")
+    print(f"[ENRICH] te verrijken urls: {total} | force_all={force_all} | limit_enrich={limit_enrich}")
     if total == 0:
         build_master_file()
         print("[ENRICH] niets te doen.")
@@ -551,6 +553,16 @@ def ask_max_pages() -> Optional[int]:
 def ask_force_all_enrichment() -> bool:
     raw = input("Alles opnieuw verrijken? [j/N]: ").strip().lower()
     return raw in {"j", "ja", "y", "yes"}
+
+
+def ask_limit_enrich() -> Optional[int]:
+    raw = input("Max aantal detailpagina's? Enter = alles: ").strip()
+    if not raw:
+        return None
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    print("Ongeldige invoer, ik pak alles.")
+    return None
 
 
 def main() -> int:

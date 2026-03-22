@@ -416,7 +416,7 @@ def run_listing_phase() -> None:
     )
 
 
-def run_ean_phase() -> None:
+def run_ean_phase(limit_ean: int | None = None) -> None:
     print("\n[FASE 2] EAN verrijking")
     ensure_output_dir()
 
@@ -426,7 +426,9 @@ def run_ean_phase() -> None:
         return
 
     targets = [row for row in rows if not clean_text(row.get("ean", ""))]
-    print(f"[DETAIL] totaal records={len(rows)} | zonder EAN={len(targets)}")
+    if limit_ean is not None and limit_ean > 0:
+        targets = targets[:limit_ean]
+    print(f"[DETAIL] totaal records={len(rows)} | zonder EAN={len(targets)} | limit_ean={limit_ean}")
     if not targets:
         print("[DETAIL] Alles is al verrijkt met een EAN.")
         return
@@ -501,7 +503,9 @@ def main() -> None:
         if choice == "1":
             run_listing_phase()
         elif choice == "2":
-            run_ean_phase()
+            raw_limit = input("Max aantal detailpagina's? Enter = alles: ").strip()
+            limit_ean = int(raw_limit) if raw_limit.isdigit() and int(raw_limit) > 0 else None
+            run_ean_phase(limit_ean=limit_ean)
         elif choice == "3":
             run_listing_phase()
             run_ean_phase()
