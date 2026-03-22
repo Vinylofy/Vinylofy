@@ -485,12 +485,7 @@ def select_links_for_detail_refresh(
     limit_details: int | None = None,
     state_file: Path | None = None,
 ) -> list[str]:
-    all_links = select_links_for_detail_refresh(
-        links_file=links_file,
-        csv_file=csv_file,
-        limit_details=limit_details,
-        state_file=state_file,
-    )
+    all_links = read_links_file(links_file)
     if not all_links:
         return []
 
