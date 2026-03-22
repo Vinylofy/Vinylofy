@@ -6,6 +6,7 @@ from pathlib import Path
 
 CURRENT_FILE = Path(__file__).resolve()
 PROJECT_ROOT = CURRENT_FILE.parents[2]
+
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -40,6 +41,7 @@ def resolve_availability(listing_status: str | None, price: float | None) -> str
     return "in_stock" if price is not None else "unknown"
 
 
+
 def build_format_label(carrier: str | None, carrier_raw: str | None) -> str | None:
     cleaned_carrier = normalize_text(carrier)
     cleaned_raw = normalize_text(carrier_raw)
@@ -50,9 +52,34 @@ def build_format_label(carrier: str | None, carrier_raw: str | None) -> str | No
     return "Vinyl"
 
 
+
+def resolve_price(row: dict) -> float | None:
+    """
+    Variaworld raw files may contain:
+    - price_raw = 43.90   (correct euro value)
+    - price     = 4390.00 (incorrect factor-100 expanded value)
+
+    Prefer price_raw first. Fall back to price only when needed.
+    If both exist and price is 100x price_raw, keep price_raw.
+    """
+    price_raw_value = parse_price(row.get("price_raw"))
+    price_value = parse_price(row.get("price"))
+
+    if price_raw_value is not None and price_value is not None:
+        if abs(price_value - (price_raw_value * 100.0)) < 0.01:
+            return price_raw_value
+        return price_raw_value
+
+    if price_raw_value is not None:
+        return price_raw_value
+
+    return price_value
+
+
+
 def map_variaworld_row(row: dict, line_number: int) -> tuple[CanonicalRecord | None, str | None]:
     ean = normalize_ean(row.get("ean"))
-    price = parse_price(row.get("price"))
+    price = resolve_price(row)
     product_url = normalize_text(row.get("product_url"))
     artist, title = infer_artist_title(row.get("artist"), row.get("title"))
     captured_at = parse_timestamp(
@@ -73,26 +100,29 @@ def map_variaworld_row(row: dict, line_number: int) -> tuple[CanonicalRecord | N
     if not artist:
         return None, "missing_artist_after_inference"
 
-    return CanonicalRecord(
-        source_row_number=line_number,
-        shop_name=CONFIG.shop_name,
-        shop_domain=CONFIG.shop_domain,
-        shop_country=CONFIG.shop_country,
-        ean=ean,
-        artist=artist,
-        title=title,
-        format_label=format_label,
-        cover_url=None,
-        product_url=product_url,
-        price=price,
-        currency=CONFIG.currency,
-        availability=availability,
-        captured_at=captured_at,
-        product_handle=product_handle,
-        detail_status="ok",
-        is_secondhand=False,
-        raw=row,
-    ), None
+    return (
+        CanonicalRecord(
+            source_row_number=line_number,
+            shop_name=CONFIG.shop_name,
+            shop_domain=CONFIG.shop_domain,
+            shop_country=CONFIG.shop_country,
+            ean=ean,
+            artist=artist,
+            title=title,
+            format_label=format_label,
+            cover_url=None,
+            product_url=product_url,
+            price=price,
+            currency=CONFIG.currency,
+            availability=availability,
+            captured_at=captured_at,
+            product_handle=product_handle,
+            detail_status="ok",
+            is_secondhand=False,
+            raw=row,
+        ),
+        None,
+    )
 
 
 SHOP_DEFINITION = ShopImporterDefinition(
@@ -131,6 +161,7 @@ SHOP_DEFINITION = ShopImporterDefinition(
     ),
     tags=("vinyl", "single-csv", "listing-plus-ean"),
 )
+
 
 
 def main() -> None:
