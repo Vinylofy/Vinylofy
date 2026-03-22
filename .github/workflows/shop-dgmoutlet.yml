@@ -1,20 +1,8 @@
-name: Vinylofy Automation
+name: Shop - DGM Outlet
 
 on:
   workflow_dispatch:
     inputs:
-      shop:
-        description: "Welke shop wil je draaien?"
-        required: true
-        default: "all"
-        type: choice
-        options:
-          - all
-          - bobsvinyl
-          - dgmoutlet
-          - platomania
-          - platenzaak
-          - variaworld
       skip_scrape:
         description: "Scraper overslaan en bestaand CSV gebruiken"
         required: true
@@ -30,22 +18,28 @@ on:
         required: true
         default: false
         type: boolean
+  schedule:
+    - cron: "10 0 * * *"
+    - cron: "10 6 * * *"
+    - cron: "10 12 * * *"
+    - cron: "10 18 * * *"
+
+concurrency:
+  group: vinylofy-dgmoutlet
+  cancel-in-progress: false
 
 jobs:
-  pipeline:
+  dgmoutlet:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 25
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
-      VINYLOFY_SCRAPER_CMD_BOBSVINYL: ${{ vars.VINYLOFY_SCRAPER_CMD_BOBSVINYL }}
       VINYLOFY_SCRAPER_CMD_DGMOUTLET: ${{ vars.VINYLOFY_SCRAPER_CMD_DGMOUTLET }}
-      VINYLOFY_SCRAPER_CMD_PLATOMANIA: ${{ vars.VINYLOFY_SCRAPER_CMD_PLATOMANIA }}
-      VINYLOFY_SCRAPER_CMD_PLATENZAAK: ${{ vars.VINYLOFY_SCRAPER_CMD_PLATENZAAK }}
-      VINYLOFY_SCRAPER_CMD_VARIAWORLD: ${{ vars.VINYLOFY_SCRAPER_CMD_VARIAWORLD }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -66,19 +60,12 @@ jobs:
       - name: Create runtime folders
         shell: bash
         run: |
-          mkdir -p data/raw/bobsvinyl
           mkdir -p data/raw/dgmoutlet
-          mkdir -p data/raw/platomania
-          mkdir -p data/raw/platenzaak
-          mkdir -p data/raw/variaworld
           mkdir -p output
 
-      - name: Run pipeline
+      - name: Run DGM Outlet pipeline
         shell: bash
         run: |
-          SHOP_INPUT="${{ github.event.inputs.shop }}"
-          if [ -z "$SHOP_INPUT" ]; then SHOP_INPUT="all"; fi
-
           SKIP_SCRAPE=""
           if [ "${{ github.event.inputs.skip_scrape }}" = "true" ]; then
             SKIP_SCRAPE="--skip-scrape"
@@ -95,7 +82,7 @@ jobs:
           fi
 
           python -u scripts/automation/run_vinylofy_pipeline.py \
-            --shop "$SHOP_INPUT" \
+            --shop dgmoutlet \
             $SKIP_SCRAPE \
             $SKIP_UPLOAD \
             $DRY_RUN_IMPORT
@@ -104,9 +91,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: vinylofy-automation-${{ github.run_id }}
+          name: dgmoutlet-${{ github.run_id }}
           path: |
-            data/raw/**/*.csv
+            data/raw/dgmoutlet/**/*.csv
+            data/raw/dgmoutlet/*.csv
             output/**/*.json
             output/**/*.csv
           if-no-files-found: warn
