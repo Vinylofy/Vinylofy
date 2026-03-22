@@ -17,11 +17,6 @@ jobs:
     timeout-minutes: 25
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
-      SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
-      VINYLOFY_SCRAPER_CMD_BOBSVINYL: "python -u scripts/scrapers/bobsvinyl.py --mode step1 --workers 5 --output-dir data/raw/bobsvinyl"
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -37,7 +32,7 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
-          pip install beautifulsoup4 requests pandas "psycopg[binary]" python-dotenv supabase
+          pip install beautifulsoup4 requests pandas python-dotenv
 
       - name: Create runtime folders
         shell: bash
@@ -45,13 +40,10 @@ jobs:
           mkdir -p data/raw/bobsvinyl
           mkdir -p output
 
-      - name: Run pipeline
+      - name: Run Bobsvinyl step 1
         shell: bash
         run: |
-          python -u scripts/automation/run_vinylofy_pipeline.py \
-            --shop bobsvinyl \
-            --skip-import \
-            --skip-upload
+          python -u scripts/scrapers/bobsvinyl.py             --mode step1             --workers 5             --output-dir data/raw/bobsvinyl
 
       - name: Upload workflow artifacts
         if: always()
