@@ -14,7 +14,7 @@ from typing import Any
 from uuid import uuid4
 
 CURRENT_FILE = Path(__file__).resolve()
-PROJECT_ROOT = CURRENT_FILE.parents[2]
+PROJECT_ROOT = CURRENT_FILE.parents[2] if len(CURRENT_FILE.parents) >= 3 else CURRENT_FILE.parent
 
 if str(CURRENT_FILE.parent) not in sys.path:
     sys.path.insert(0, str(CURRENT_FILE.parent))
@@ -80,8 +80,21 @@ def log(message: str) -> None:
 
 def run_command(command: str | list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     if isinstance(command, str):
-        return subprocess.run(command, cwd=cwd, shell=True, text=True, capture_output=True, check=False)
-    return subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=False)
+        return subprocess.run(
+            command,
+            cwd=cwd,
+            shell=True,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    return subprocess.run(
+        command,
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
 
 
 def emit_process_output(label: str, proc: subprocess.CompletedProcess[str]) -> None:
@@ -89,7 +102,12 @@ def emit_process_output(label: str, proc: subprocess.CompletedProcess[str]) -> N
         print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n", flush=True)
     if proc.stderr:
         log(f"[{label}] stderr:")
-        print(proc.stderr, end="" if proc.stderr.endswith("\n") else "\n", file=sys.stderr, flush=True)
+        print(
+            proc.stderr,
+            end="" if proc.stderr.endswith("\n") else "\n",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def ensure_file_exists(path: Path, description: str) -> None:
@@ -123,8 +141,8 @@ def upload_files_to_supabase(
 
     if not url or not key or not bucket:
         raise PipelineError(
-            "Supabase upload requested but SUPABASE_URL, SUPABASE_SECRET_KEY (or SUPABASE_SERVICE_ROLE_KEY), "
-            "and SUPABASE_STORAGE_BUCKET are not all set."
+            "Supabase upload requested but SUPABASE_URL, SUPABASE_SECRET_KEY "
+            "(or SUPABASE_SERVICE_ROLE_KEY), and SUPABASE_STORAGE_BUCKET are not all set."
         )
 
     try:
@@ -209,8 +227,10 @@ def populate_result_metrics_from_summary(result: ShopRunResult) -> None:
     result.rows_raw = safe_int(summary.get("rows_raw"))
     result.rows_accepted = safe_int(summary.get("accepted_records"))
     result.rows_rejected = safe_int(summary.get("rejected_records"))
+
     if result.rows_raw == 0:
         result.rows_raw = result.rows_accepted + result.rows_rejected
+
     result.new_products = safe_int(summary.get("new_products"))
     result.new_price_rows = safe_int(summary.get("new_price_rows"))
     result.price_updates = safe_int(summary.get("price_updates"))
@@ -254,6 +274,7 @@ def maybe_open_logging_connection():
     if not db_url:
         log("[monitoring] DATABASE_URL ontbreekt; scraper_runs logging wordt overgeslagen")
         return None
+
     if psycopg is None:
         log("[monitoring] psycopg ontbreekt; scraper_runs logging wordt overgeslagen")
         return None
@@ -288,44 +309,43 @@ def insert_run_log(conn, pipeline_run_id: str, shop_config: ShopPipelineConfig, 
             cur.execute(
                 """
                 insert into public.scraper_runs (
-                  pipeline_run_id,
-                  shop_id,
-                  shop_key,
-                  shop_name,
-                  shop_domain,
-                  run_type,
-                  status,
-                  started_at,
-                  scraper_command,
-                  scraper_ran,
-                  scraper_ok,
-                  importer_ok,
-                  upload_ok,
-                  csv_path,
-                  rejects_path,
-                  summary_path,
-                  rows_raw,
-                  rows_accepted,
-                  rows_rejected,
-                  new_products,
-                  new_price_rows,
-                  price_updates,
-                  unchanged_prices,
-                  upserted_products,
-                  upserted_prices,
-                  inserted_history_rows,
-                  uploaded_files,
-                  upload_failures,
-                  error_message,
-                  importer_summary,
-                  uploads,
-                  created_at,
-                  updated_at
-                )
-                values (
-                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                  now(), now()
+                    pipeline_run_id,
+                    shop_id,
+                    shop_key,
+                    shop_name,
+                    shop_domain,
+                    run_type,
+                    status,
+                    started_at,
+                    scraper_command,
+                    scraper_ran,
+                    scraper_ok,
+                    importer_ok,
+                    upload_ok,
+                    csv_path,
+                    rejects_path,
+                    summary_path,
+                    rows_raw,
+                    rows_accepted,
+                    rows_rejected,
+                    new_products,
+                    new_price_rows,
+                    price_updates,
+                    unchanged_prices,
+                    upserted_products,
+                    upserted_prices,
+                    inserted_history_rows,
+                    uploaded_files,
+                    upload_failures,
+                    error_message,
+                    importer_summary,
+                    uploads,
+                    created_at,
+                    updated_at
+                ) values (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    now(), now()
                 )
                 returning id
                 """,
@@ -372,6 +392,7 @@ def insert_run_log(conn, pipeline_run_id: str, shop_config: ShopPipelineConfig, 
 
 def update_run_log(conn, run_id, pipeline_run_id: str, shop_config: ShopPipelineConfig, result: ShopRunResult) -> None:
     if conn is None or run_id is None:
+        summarize_uploads(result)
         return
 
     summarize_uploads(result)
@@ -382,7 +403,8 @@ def update_run_log(conn, run_id, pipeline_run_id: str, shop_config: ShopPipeline
             cur.execute(
                 """
                 update public.scraper_runs
-                set pipeline_run_id = %s,
+                set
+                    pipeline_run_id = %s,
                     shop_id = %s,
                     shop_key = %s,
                     shop_name = %s,
@@ -469,6 +491,7 @@ def run_single_shop(
     dry_run_import: bool,
 ) -> None:
     started = utc_now()
+
     csv_path = PROJECT_ROOT / shop_config.csv_output_path
     rejects_path = PROJECT_ROOT / shop_config.rejects_path
     summary_path = PROJECT_ROOT / shop_config.summary_path
@@ -489,15 +512,20 @@ def run_single_shop(
         log(f"[{shop_config.key}] Starting scraper: {scraper_command}")
         scraper_proc = run_command(scraper_command, cwd=PROJECT_ROOT)
         emit_process_output(f"{shop_config.key}:scraper", scraper_proc)
+
         result.scraper_ran = True
         result.scraper_ok = scraper_proc.returncode == 0
         if scraper_proc.returncode != 0:
-            raise PipelineError(f"Scraper failed for {shop_config.key} with exit code {scraper_proc.returncode}")
+            raise PipelineError(
+                f"Scraper failed for {shop_config.key} with exit code {scraper_proc.returncode}"
+            )
     else:
         log(f"[{shop_config.key}] Scrape skipped")
         result.scraper_ok = True
 
-    ensure_file_exists(csv_path, f"CSV output for {shop_config.key}")
+    csv_required = (not skip_import) or (not skip_upload)
+    if csv_required:
+        ensure_file_exists(csv_path, f"CSV output for {shop_config.key}")
 
     if not skip_import:
         importer_command = list(shop_config.importer_command)
@@ -507,9 +535,12 @@ def run_single_shop(
         log(f"[{shop_config.key}] Starting importer")
         importer_proc = run_command(importer_command, cwd=PROJECT_ROOT)
         emit_process_output(f"{shop_config.key}:importer", importer_proc)
+
         result.importer_ok = importer_proc.returncode == 0
         if importer_proc.returncode != 0:
-            raise PipelineError(f"Importer failed for {shop_config.key} with exit code {importer_proc.returncode}")
+            raise PipelineError(
+                f"Importer failed for {shop_config.key} with exit code {importer_proc.returncode}"
+            )
 
         result.importer_summary = maybe_load_json(summary_path)
         populate_result_metrics_from_summary(result)
@@ -529,8 +560,11 @@ def run_single_shop(
         result.uploads = uploads
         summarize_uploads(result)
         result.upload_ok = result.upload_failures == 0
+
         if not result.upload_ok:
-            raise PipelineError(f"Upload failed for {shop_config.key}: {result.upload_failures} file(s)")
+            raise PipelineError(
+                f"Upload failed for {shop_config.key}: {result.upload_failures} file(s)"
+            )
     else:
         log(f"[{shop_config.key}] Upload skipped")
         result.upload_ok = True
@@ -538,72 +572,92 @@ def run_single_shop(
     result.finished_at = utc_now().isoformat()
 
 
-def write_pipeline_summary(results: list[ShopRunResult], pipeline_run_id: str) -> Path:
-    summary_dir = PROJECT_ROOT / "output" / "pipeline_runs"
-    summary_dir.mkdir(parents=True, exist_ok=True)
-
-    timestamp = utc_now().strftime("%Y%m%dT%H%M%SZ")
-    summary_path = summary_dir / f"pipeline_run_{timestamp}.json"
-
-    payload = {
-        "generated_at": utc_now().isoformat(),
+def build_summary_payload(pipeline_run_id: str, results: list[ShopRunResult]) -> dict[str, Any]:
+    return {
         "pipeline_run_id": pipeline_run_id,
-        "results": [asdict(item) for item in results],
+        "results": [asdict(result) for result in results],
     }
+
+
+def write_summary(summary_path: Path, payload: dict[str, Any]) -> None:
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    return summary_path
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run Vinylofy scraper/import/upload pipeline")
+    parser.add_argument(
+        "--shop",
+        default="all",
+        choices=["all", *sorted(SHOPS.keys())],
+        help="Shop key to run, or 'all'",
+    )
+    parser.add_argument("--skip-scrape", action="store_true", help="Skip scraper execution")
+    parser.add_argument("--skip-import", action="store_true", help="Skip importer execution")
+    parser.add_argument("--skip-upload", action="store_true", help="Skip Supabase Storage upload")
+    parser.add_argument("--dry-run-import", action="store_true", help="Run importer with --dry-run")
+    parser.add_argument(
+        "--summary-out",
+        default="",
+        help="Optional path for the pipeline summary JSON",
+    )
+    return parser.parse_args()
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run Vinylofy scraper/import pipeline")
-    parser.add_argument("--shop", default="all", help="all | bobsvinyl | dgmoutlet | platomania")
-    parser.add_argument("--skip-scrape", action="store_true")
-    parser.add_argument("--skip-import", action="store_true")
-    parser.add_argument("--skip-upload", action="store_true")
-    parser.add_argument("--dry-run-import", action="store_true")
-    args = parser.parse_args()
+    args = parse_args()
 
-    selected_shops = resolve_shops(args.shop)
+    run_started = utc_now()
+    pipeline_run_id = f"{run_started.strftime('%Y%m%dT%H%M%SZ')}_{uuid4().hex[:8]}"
+
+    if args.summary_out:
+        summary_path = Path(args.summary_out)
+        if not summary_path.is_absolute():
+            summary_path = PROJECT_ROOT / summary_path
+    else:
+        summary_path = PROJECT_ROOT / "output" / "pipeline_runs" / f"pipeline_run_{run_started.strftime('%Y%m%dT%H%M%SZ')}.json"
+
+    conn = maybe_open_logging_connection()
     results: list[ShopRunResult] = []
     exit_code = 0
-    pipeline_run_id = f"{utc_now().strftime('%Y%m%dT%H%M%SZ')}_{uuid4().hex[:8]}"
-    logging_conn = maybe_open_logging_connection()
 
-    for shop_config in selected_shops:
-        result = create_initial_result(shop_config)
-        run_id = insert_run_log(logging_conn, pipeline_run_id, shop_config, result)
-
-        try:
-            run_single_shop(
-                result,
-                shop_config,
-                skip_scrape=args.skip_scrape,
-                skip_import=args.skip_import,
-                skip_upload=args.skip_upload,
-                dry_run_import=args.dry_run_import,
-            )
-        except Exception as exc:
-            exit_code = 1
-            result.error = str(exc)
-            result.finished_at = result.finished_at or utc_now().isoformat()
-            log(f"[{shop_config.key}] FAILED: {exc}")
-        finally:
-            if result.finished_at is None:
-                result.finished_at = utc_now().isoformat()
-            if result.importer_summary is None and result.summary_path:
-                result.importer_summary = maybe_load_json(Path(result.summary_path))
-                if result.importer_summary:
-                    populate_result_metrics_from_summary(result)
-            update_run_log(logging_conn, run_id, pipeline_run_id, shop_config, result)
+    try:
+        for shop_config in resolve_shops(args.shop):
+            result = create_initial_result(shop_config)
             results.append(result)
 
-    if logging_conn is not None:
-        logging_conn.close()
+            run_id = insert_run_log(conn, pipeline_run_id, shop_config, result)
 
-    summary_path = write_pipeline_summary(results, pipeline_run_id)
+            try:
+                run_single_shop(
+                    result,
+                    shop_config,
+                    skip_scrape=args.skip_scrape,
+                    skip_import=args.skip_import,
+                    skip_upload=args.skip_upload,
+                    dry_run_import=args.dry_run_import,
+                )
+            except Exception as exc:
+                result.error = str(exc)
+                result.finished_at = utc_now().isoformat()
+                log(f"[{shop_config.key}] FAILED: {exc}")
+                exit_code = 1
+            finally:
+                if not result.finished_at:
+                    result.finished_at = utc_now().isoformat()
+                update_run_log(conn, run_id, pipeline_run_id, shop_config, result)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    payload = build_summary_payload(pipeline_run_id, results)
+    write_summary(summary_path, payload)
     log(f"Pipeline summary written to {summary_path}")
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
 
-    print(json.dumps({"pipeline_run_id": pipeline_run_id, "results": [asdict(item) for item in results]}, indent=2, ensure_ascii=False))
     return exit_code
 
 
