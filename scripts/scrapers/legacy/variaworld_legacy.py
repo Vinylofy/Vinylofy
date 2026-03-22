@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Stand-alone Variaworld scraper.
+"""
+Stand-alone Variaworld scraper.
 
 Menu:
 1. Nieuwe items en prijzen
@@ -15,15 +16,12 @@ Fase 2
 - Leest product CSV
 - Opent detailpagina's
 - Verrijkt EAN in dezelfde CSV
-
-Opzet is modulair gehouden zodat dezelfde functies later eenvoudig in een
-bestaand dashboard of scraper-hub kunnen worden opgenomen.
 """
 
 from __future__ import annotations
 
 import csv
-import os
+import json
 import re
 import sys
 import time
@@ -41,6 +39,7 @@ from urllib3.util.retry import Retry
 # =========================
 # Config
 # =========================
+
 BASE_URL = "https://www.variaworld.nl"
 LISTING_URL_TEMPLATE = (
     "https://www.variaworld.nl/vinyl/lp-nieuw/"
@@ -53,7 +52,7 @@ MAX_RETRIES = 3
 BACKOFF_FACTOR = 0.7
 STOP_AFTER_CONSECUTIVE_EMPTY_PAGES = 1
 LISTING_SAVE_EVERY_PAGES = 5
-EAN_SAVE_EVERY_RECORDS = 25
+EAN_SAVE_EVERY_RECORDS = 100
 
 OUTPUT_DIR = Path("output")
 PRODUCTS_CSV = OUTPUT_DIR / "variaworld_products.csv"
@@ -101,6 +100,7 @@ class ScrapeError:
 # =========================
 # Helpers
 # =========================
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -158,7 +158,7 @@ def normalize_carrier(carrier_raw: str) -> str:
         return "CD"
     if "box" in value:
         return "BOX"
-    if "12 inch" in value or "12\"" in value:
+    if "12 inch" in value or '12"' in value:
         return "12 INCH"
     return clean_text(carrier_raw).upper()
 
@@ -171,9 +171,13 @@ def normalize_price_text(price_raw: str) -> str:
 
 def parse_price(price_raw: str) -> str:
     cleaned = NON_DIGIT_RE.sub("", normalize_price_text(price_raw))
-    cleaned = cleaned.replace(".", "").replace(",", ".")
     if not cleaned:
         return ""
+    # Correct omgaan met zowel 43.90 als 43,90
+    if "," in cleaned and "." in cleaned:
+        cleaned = cleaned.replace(".", "").replace(",", ".")
+    elif "," in cleaned:
+        cleaned = cleaned.replace(",", ".")
     try:
         return f"{float(cleaned):.2f}"
     except ValueError:
@@ -199,7 +203,7 @@ def load_rows(csv_path: Path) -> List[Dict[str, str]]:
         for row in reader:
             normalized = {field: row.get(field, "") for field in CSV_FIELDS}
             rows.append(normalized)
-        return rows
+    return rows
 
 
 def write_rows(csv_path: Path, rows: Iterable[Dict[str, str]]) -> None:
@@ -265,8 +269,45 @@ def row_sort_key(row: Dict[str, str]) -> Tuple[str, str, str]:
 
 
 # =========================
+# Rotation helpers
+# =========================
+
+def load_rotation_state(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_rotation_state(path: Path, state: dict) -> None:
+    ensure_output_dir()
+    path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def select_round_robin_batch(rows: List[Dict[str, str]], limit: int, state: dict, key: str) -> List[Dict[str, str]]:
+    if limit <= 0 or not rows:
+        return rows
+
+    total = len(rows)
+    if total <= limit:
+        state[key] = 0
+        return rows
+
+    offset = int(state.get(key, 0) or 0) % total
+    selected = rows[offset : offset + limit]
+    if len(selected) < limit:
+        selected += rows[: limit - len(selected)]
+
+    state[key] = (offset + limit) % total
+    return selected
+
+
+# =========================
 # Listing parsing
 # =========================
+
 def parse_listing_page(html: str, page_number: int) -> List[Dict[str, str]]:
     soup = BeautifulSoup(html, "html.parser")
     items: List[Dict[str, str]] = []
@@ -285,7 +326,9 @@ def parse_listing_page(html: str, page_number: int) -> List[Dict[str, str]]:
             continue
 
         product_url = urljoin(BASE_URL, href)
-        artist = clean_text(anchor.select_one("div.koptekst").get_text(" ", strip=True) if anchor.select_one("div.koptekst") else "")
+
+        artist_node = anchor.select_one("div.koptekst")
+        artist = clean_text(artist_node.get_text(" ", strip=True) if artist_node else "")
 
         text_blocks = [
             clean_text(div.get_text(" ", strip=True))
@@ -302,6 +345,7 @@ def parse_listing_page(html: str, page_number: int) -> List[Dict[str, str]]:
                 if "€" in span.get_text(" ", strip=True):
                     price_node = span
                     break
+
         price_raw = clean_text(price_node.get_text(" ", strip=True) if price_node else "")
         price = parse_price(price_raw)
 
@@ -332,6 +376,7 @@ def parse_listing_page(html: str, page_number: int) -> List[Dict[str, str]]:
 # =========================
 # Detail / EAN parsing
 # =========================
+
 def extract_ean_from_html(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
 
@@ -349,6 +394,7 @@ def extract_ean_from_html(html: str) -> str:
 # =========================
 # Phases
 # =========================
+
 def run_listing_phase() -> None:
     print("\n[FASE 1] Nieuwe items en prijzen")
     ensure_output_dir()
@@ -393,6 +439,7 @@ def run_listing_phase() -> None:
         for item in items:
             upsert_row(row_map, item)
         after_count = len(row_map)
+
         page_new = max(after_count - before_count, 0)
         total_upserted += item_count
 
@@ -404,7 +451,8 @@ def run_listing_phase() -> None:
             save_status = "nog_niet_opgeslagen"
 
         print(
-            f"[PAGINA {page}] items={item_count} | nieuw={page_new} | totaal_uniek={len(row_map)} | {save_status}"
+            f"[PAGINA {page}] items={item_count} | nieuw={page_new} | "
+            f"totaal_uniek={len(row_map)} | {save_status}"
         )
 
         page += 1
@@ -413,7 +461,8 @@ def run_listing_phase() -> None:
     write_rows(PRODUCTS_CSV, sorted(row_map.values(), key=row_sort_key))
     append_errors(errors)
     print(
-        f"[LISTING] klaar. Gezien={total_seen} | unieke records={len(row_map)} | verwerkt={total_upserted} | eindsave={PRODUCTS_CSV}"
+        f"[LISTING] klaar. Gezien={total_seen} | unieke records={len(row_map)} | "
+        f"verwerkt={total_upserted} | eindsave={PRODUCTS_CSV}"
     )
 
 
@@ -428,6 +477,7 @@ def run_ean_phase(limit_ean: int | None = None) -> None:
 
     targets = [row for row in rows if not clean_text(row.get("ean", ""))]
     total_candidates = len(targets)
+
     if limit_ean is not None and limit_ean > 0:
         rotation_state = load_rotation_state(EAN_ROTATION_STATE_FILE)
         targets = select_round_robin_batch(targets, limit_ean, rotation_state, "ean_targets")
@@ -436,7 +486,9 @@ def run_ean_phase(limit_ean: int | None = None) -> None:
             f"[ROTATIE] ean_candidates={total_candidates} | geselecteerd={len(targets)} | "
             f"state={EAN_ROTATION_STATE_FILE}"
         )
+
     print(f"[DETAIL] totaal records={len(rows)} | zonder EAN={len(targets)} | limit_ean={limit_ean}")
+
     if not targets:
         print("[DETAIL] Alles is al verrijkt met een EAN.")
         return
@@ -458,6 +510,7 @@ def run_ean_phase(limit_ean: int | None = None) -> None:
         try:
             html = fetch_html(session, product_url)
             ean = extract_ean_from_html(html)
+
             if ean:
                 row_map[key]["ean"] = ean
                 row_map[key]["ean_status"] = "found"
@@ -469,6 +522,7 @@ def run_ean_phase(limit_ean: int | None = None) -> None:
                 print(f"[DETAIL {index}/{len(targets)}] Geen EAN | {product_url}")
 
             row_map[key]["updated_at"] = utc_now_iso()
+
         except Exception as exc:  # noqa: BLE001
             message = f"{type(exc).__name__}: {exc}"
             row_map[key]["ean_status"] = "error"
@@ -477,7 +531,6 @@ def run_ean_phase(limit_ean: int | None = None) -> None:
             print(f"[DETAIL {index}/{len(targets)}] FOUT | {message} | {product_url}")
 
         processed += 1
-
         if processed % EAN_SAVE_EVERY_RECORDS == 0:
             write_rows(PRODUCTS_CSV, sorted(row_map.values(), key=row_sort_key))
             print(f"[DETAIL] tussensave na {processed} records | {PRODUCTS_CSV}")
@@ -487,13 +540,15 @@ def run_ean_phase(limit_ean: int | None = None) -> None:
     write_rows(PRODUCTS_CSV, sorted(row_map.values(), key=row_sort_key))
     append_errors(errors)
     print(
-        f"[DETAIL] klaar. Verwerkt={processed} | found={found} | not_found={not_found} | errors={len(errors)} | eindsave={PRODUCTS_CSV}"
+        f"[DETAIL] klaar. Verwerkt={processed} | found={found} | not_found={not_found} | "
+        f"errors={len(errors)} | eindsave={PRODUCTS_CSV}"
     )
 
 
 # =========================
 # Menu
 # =========================
+
 def print_menu() -> None:
     print("\n=== VARIAWORLD SCRAPER ===")
     print("1. Nieuwe items en prijzen")
@@ -504,6 +559,7 @@ def print_menu() -> None:
 
 def main() -> None:
     ensure_output_dir()
+
     while True:
         print_menu()
         choice = input("Maak een keuze [1-4]: ").strip()
