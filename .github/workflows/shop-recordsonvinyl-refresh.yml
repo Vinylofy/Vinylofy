@@ -1,0 +1,66 @@
+name: Shop - RecordsOnVinyl Refresh
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "10 0 * * *"
+    - cron: "10 6 * * *"
+    - cron: "10 12 * * *"
+    - cron: "10 18 * * *"
+
+concurrency:
+  group: vinylofy-recordsonvinyl
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
+      VINYLOFY_SCRAPER_CMD_RECORDSONVINYL: python -u scripts/scrapers/recordsonvinyl_automation.py --mode refresh --master-csv data/raw/recordsonvinyl/recordsonvinyl_master.csv --out data/raw/recordsonvinyl/recordsonvinyl_products.csv --max-pages 30 --limit-products 400
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
+          pip install beautifulsoup4 requests pandas "psycopg[binary]" python-dotenv supabase playwright
+
+      - name: Create runtime folders
+        shell: bash
+        run: |
+          mkdir -p data/raw/recordsonvinyl
+          mkdir -p output
+
+      - name: Run pipeline
+        shell: bash
+        run: |
+          python -u scripts/automation/run_vinylofy_pipeline.py \
+            --shop recordsonvinyl
+
+      - name: Upload workflow artifacts
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: recordsonvinyl-refresh-${{ github.run_id }}
+          path: |
+            data/raw/recordsonvinyl/**/*.csv
+            data/raw/recordsonvinyl/*.csv
+            output/**/*.json
+            output/**/*.csv
+          if-no-files-found: warn

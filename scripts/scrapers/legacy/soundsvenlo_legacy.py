@@ -409,7 +409,7 @@ def parse_detail_worker(url: str) -> tuple[str, Dict[str, str]]:
     return url, details
 
 
-def scrape_step2() -> Dict[str, Dict[str, str]]:
+def scrape_step2(limit_detail: int | None = None) -> Dict[str, Dict[str, str]]:
     source_path = STEP2_FILE if os.path.exists(STEP2_FILE) else STEP1_FILE
     rows_by_url = load_csv_as_dict(source_path, STEP2_COLUMNS)
 
@@ -420,6 +420,8 @@ def scrape_step2() -> Dict[str, Dict[str, str]]:
     print(f"[INFO] Bronbestand geladen: {source_path} ({len(rows_by_url)} records)")
 
     urls_to_process = [url for url, row in rows_by_url.items() if needs_detail_enrichment(row)]
+    if limit_detail is not None and limit_detail > 0:
+        urls_to_process = urls_to_process[:limit_detail]
     total = len(urls_to_process)
 
     if total == 0:
@@ -427,7 +429,7 @@ def scrape_step2() -> Dict[str, Dict[str, str]]:
         print(f"[INFO] Alle records zijn al verrijkt. Bestand opnieuw opgeslagen: {STEP2_FILE}")
         return rows_by_url
 
-    print(f"[INFO] Detailverrijking gestart voor {total} records | workers={DETAIL_WORKERS} | batch-save={STEP2_WRITE_EVERY_RECORDS}")
+    print(f"[INFO] Detailverrijking gestart voor {total} records | workers={DETAIL_WORKERS} | batch-save={STEP2_WRITE_EVERY_RECORDS} | limit_detail={limit_detail}")
 
     updated = 0
     failed = 0
@@ -465,7 +467,7 @@ def scrape_step2() -> Dict[str, Dict[str, str]]:
     return rows_by_url
 
 
-def run_both() -> None:
+def run_both(limit_detail: int | None = None) -> None:
     step1_rows = scrape_step1()
     if not step1_rows:
         return
@@ -475,7 +477,7 @@ def run_both() -> None:
         seed_for_step2[url] = {col: row.get(col, "") for col in STEP2_COLUMNS}
     write_csv(STEP2_FILE, seed_for_step2, STEP2_COLUMNS)
 
-    scrape_step2()
+    scrape_step2(limit_detail=limit_detail)
 
 
 def print_menu() -> None:
@@ -499,7 +501,7 @@ def main() -> int:
                 scrape_step1()
                 return 0
             if choice == "2":
-                scrape_step2()
+                scrape_step2(limit_detail=limit_detail)
                 return 0
             if choice == "3" or choice == "":
                 run_both()

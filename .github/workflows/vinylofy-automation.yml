@@ -15,6 +15,10 @@ on:
           - platomania
           - platenzaak
           - variaworld
+          - groovespin
+          - soundsvenlo
+          - recordsonvinyl
+          - shop3345
       skip_scrape:
         description: "Scraper overslaan en bestaand CSV gebruiken"
         required: true
@@ -46,6 +50,11 @@ jobs:
       VINYLOFY_SCRAPER_CMD_PLATOMANIA: ${{ vars.VINYLOFY_SCRAPER_CMD_PLATOMANIA }}
       VINYLOFY_SCRAPER_CMD_PLATENZAAK: ${{ vars.VINYLOFY_SCRAPER_CMD_PLATENZAAK }}
       VINYLOFY_SCRAPER_CMD_VARIAWORLD: ${{ vars.VINYLOFY_SCRAPER_CMD_VARIAWORLD }}
+      VINYLOFY_SCRAPER_CMD_GROOVESPIN: python -u scripts/scrapers/groovespin_automation.py --mode full --output-dir data/raw/groovespin --max-pages 30 --limit-ean 250
+      VINYLOFY_SCRAPER_CMD_SOUNDSVENLO: python -u scripts/scrapers/soundsvenlo.py --mode both --limit-detail 250 --output-dir data/raw/soundsvenlo
+      VINYLOFY_SCRAPER_CMD_RECORDSONVINYL: python -u scripts/scrapers/recordsonvinyl_automation.py --mode crawl --master-csv data/raw/recordsonvinyl/recordsonvinyl_master.csv --out data/raw/recordsonvinyl/recordsonvinyl_products.csv --max-pages 20 --limit-products 250 --workers 4
+      VINYLOFY_SCRAPER_CMD_SHOP3345: python -u scripts/scrapers/shop3345_automation.py --mode both --links-file data/raw/shop3345/3345_product_links.txt --csv-file data/raw/shop3345/3345_products.csv --max-pages 20 --limit-details 250
+
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -61,7 +70,7 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
-          pip install beautifulsoup4 requests pandas "psycopg[binary]" python-dotenv supabase
+          pip install beautifulsoup4 requests pandas "psycopg[binary]" python-dotenv supabase playwright
 
       - name: Create runtime folders
         shell: bash
@@ -71,6 +80,10 @@ jobs:
           mkdir -p data/raw/platomania
           mkdir -p data/raw/platenzaak
           mkdir -p data/raw/variaworld
+          mkdir -p data/raw/groovespin
+          mkdir -p data/raw/soundsvenlo
+          mkdir -p data/raw/recordsonvinyl
+          mkdir -p data/raw/shop3345
           mkdir -p output
 
       - name: Run pipeline
@@ -94,11 +107,15 @@ jobs:
             DRY_RUN_IMPORT="--dry-run-import"
           fi
 
-          python -u scripts/automation/run_vinylofy_pipeline.py             --shop "$SHOP_INPUT"             $SKIP_SCRAPE             $SKIP_UPLOAD             $DRY_RUN_IMPORT
+          python -u scripts/automation/run_vinylofy_pipeline.py \
+            --shop "$SHOP_INPUT" \
+            $SKIP_SCRAPE \
+            $SKIP_UPLOAD \
+            $DRY_RUN_IMPORT
 
       - name: Upload workflow artifacts
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v5
         with:
           name: vinylofy-automation-${{ github.run_id }}
           path: |
