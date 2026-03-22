@@ -126,9 +126,22 @@ def normalize_price(value: str) -> str:
     value = clean_text(value)
     if not value:
         return ""
-    if not value.startswith("€"):
-        value = f"€{value}"
-    return value.replace("€ ", "€")
+
+    value = value.replace("EUR", "").replace("€", "")
+    value = clean_text(value)
+    value = value.replace(" ", "")
+
+    if "," in value and "." in value:
+        value = value.replace(".", "").replace(",", ".")
+    elif "," in value:
+        value = value.replace(",", ".")
+
+    try:
+        numeric = float(value)
+    except Exception:
+        return ""
+
+    return f"€{numeric:.2f}".replace(".", ",")
 
 
 def first_match(pattern: str, text: str, flags: int = 0) -> str:
@@ -252,8 +265,6 @@ def scrape_listing_pages(
             f"[PAGINA {page}] gevonden={len(links)} | nieuw opgeslagen={added} | totaal nieuw={total_new_links}"
         )
 
-        # Belangrijk: niet stoppen op 0 nieuwe links.
-        # We lopen alle pagina's af, want oudere pagina's kunnen al bekend zijn terwijl latere pagina's wel nieuw bevatten.
         page += 1
         time.sleep(SLEEP_BETWEEN_REQUESTS)
 
@@ -274,9 +285,14 @@ def extract_json_ld_product(soup: BeautifulSoup) -> dict:
             continue
 
         candidates = data if isinstance(data, list) else [data]
+        expanded: list[dict] = []
         for item in candidates:
-            if not isinstance(item, dict):
-                continue
+            if isinstance(item, dict) and isinstance(item.get("@graph"), list):
+                expanded.extend(x for x in item["@graph"] if isinstance(x, dict))
+            elif isinstance(item, dict):
+                expanded.append(item)
+
+        for item in expanded:
             if item.get("@type") == "Product":
                 return item
     return {}
@@ -311,174 +327,62 @@ def extract_artist_and_title(soup: BeautifulSoup, page_text: str) -> tuple[str, 
     return artist, title
 
 
-def _price_to_float(value: str) -> float | None:
-    value = clean_text(value)
-    if not value:
-        return None
-    value = value.replace("€", "").replace(" ", "").replace("\xa0", "")
-    if "," in value and "." in value:
-        value = value.replace(".", "").replace(",", ".")
-    elif "," in value:
-        value = value.replace(",", ".")
-    try:
-        return float(value)
-    except ValueError:
-        return None
+def extract_price(soup: BeautifulSoup) -> str:
+    selectors = [
+        "main .price__sale .price-item",
+        "main .price__regular .price-item",
+        "main .price .price-item",
+        "main [data-product-block] .price-item",
+        "main .product__info-container .price-item",
+    ]
 
+    bad_tokens = {
+        "unit price",
+        "vanaf",
+        "from",
+        "compare at",
+        "bespaar",
+        "save",
+        "free shipping",
+        "shipping",
+    }
 
-def _best_normalized_price(values: Iterable[str]) -> str:
-    best_value = ""
-    best_number: float | None = None
+    numeric_candidates: list[tuple[float, str]] = []
+    seen: set[str] = set()
 
-    for value in values:
-        normalized = normalize_price(value)
-        number = _price_to_float(normalized)
-        if number is None or number <= 0:
-            continue
-        if best_number is None or number < best_number:
-            best_value = normalized
-            best_number = number
-
-    return best_value
-
-
-def extract_price_from_product_json(product_json: dict) -> str:
-    offers = product_json.get("offers")
-    offer_candidates = offers if isinstance(offers, list) else [offers]
-
-    values: list[str] = []
-    for offer in offer_candidates:
-        if not isinstance(offer, dict):
-            continue
-        price_value = clean_text(str(offer.get("price", "")))
-        if not price_value:
-            continue
-        values.append(price_value.replace(".", ","))
-
-    return _best_normalized_price(values)
-
-
-def extract_price_from_meta_tags(soup: BeautifulSoup) -> str:
-    values: list[str] = []
-
-    for selector, attr in [
-        ('meta[property="product:price:amount"]', "content"),
-        ('meta[name="product:price:amount"]', "content"),
-        ('meta[property="og:price:amount"]', "content"),
-    ]:
+    for selector in selectors:
         for node in soup.select(selector):
-            raw = clean_text(node.get(attr, ""))
-            if raw:
-                values.append(raw.replace(".", ","))
+            txt = clean_text(node.get_text(" ", strip=True))
+            if not txt:
+                continue
 
-    return _best_normalized_price(values)
+            lower = txt.lower()
+            if "€" not in txt:
+                continue
+            if any(token in lower for token in bad_tokens):
+                continue
+            if any(cls in (node.get("class") or []) for cls in ["visually-hidden", "sr-only"]):
+                continue
 
+            match = re.search(r"€\s*([\d\.,]+)", txt)
+            if not match:
+                continue
 
-def extract_price_from_page_labels(page_text: str) -> str:
-    values: list[str] = []
+            normalized = normalize_price(match.group(1))
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
 
-    patterns = [
-        r"Sale price\s*€\s*([\d\.,]+)",
-        r"Aanbiedingsprijs\s*€\s*([\d\.,]+)",
-        r"Regular price\s*€\s*([\d\.,]+)",
-        r"Normale prijs\s*€\s*([\d\.,]+)",
-        r"Default Title\s*(?:-|–)?\s*(?:Sold out|Uitverkocht)?\s*(?:-|–)?\s*€\s*([\d\.,]+)",
-    ]
-    for pattern in patterns:
-        values.extend(re.findall(pattern, page_text, flags=re.IGNORECASE))
+            try:
+                numeric_value = float(normalized.replace("€", "").replace(",", "."))
+            except Exception:
+                continue
 
-    return _best_normalized_price(values)
+            numeric_candidates.append((numeric_value, normalized))
 
-
-def _node_is_hidden_or_blocked_price(node) -> bool:
-    blocked_keywords = ("free shipping", "gratis verzending", "pickup", "afhalen", "/ per")
-    text = clean_text(node.get_text(" ", strip=True)).lower()
-    if not text or "€" not in text:
-        return True
-    if any(keyword in text for keyword in blocked_keywords):
-        return True
-
-    for ancestor in [node, *list(getattr(node, "parents", []))]:
-        name = (getattr(ancestor, "name", "") or "").lower()
-        if name in {"s", "del", "strike"}:
-            return True
-
-        classes = " ".join(getattr(ancestor, "get", lambda *args, **kwargs: [])("class", [])).lower()
-        if any(
-            blocked in classes
-            for blocked in (
-                "compare",
-                "compare-at",
-                "old-price",
-                "was-price",
-                "unit-price",
-                "badge",
-                "pickup",
-                "shipping",
-                "hidden",
-                "visually-hidden",
-            )
-        ):
-            return True
-
-        aria_hidden = clean_text(getattr(ancestor, "get", lambda *args, **kwargs: "")("aria-hidden", "")).lower()
-        if aria_hidden == "true":
-            return True
-
-    return False
-
-
-def extract_price_from_dom(soup: BeautifulSoup) -> str:
-    sale_values: list[str] = []
-    regular_values: list[str] = []
-
-    sale_selectors = [
-        ".product__info-container .price__sale .price-item",
-        ".product__info-container .price-item--sale",
-        ".price__sale .price-item",
-        ".price-item--sale",
-    ]
-    regular_selectors = [
-        ".product__info-container .price__regular .price-item",
-        ".product__info-container .price-item--regular",
-        ".product__info-container .price .price-item",
-        "product-info .price__regular .price-item",
-        "product-info .price-item--regular",
-        ".price__regular .price-item",
-        ".price-item--regular",
-        "variant-selects .price-item",
-        "buy-buttons .price-item",
-    ]
-
-    def collect(selectors: Sequence[str]) -> list[str]:
-        values: list[str] = []
-        for selector in selectors:
-            for node in soup.select(selector):
-                if _node_is_hidden_or_blocked_price(node):
-                    continue
-                txt = clean_text(node.get_text(" ", strip=True))
-                values.extend(re.findall(r"€\s*([\d\.,]+)", txt))
-        return values
-
-    sale_values = collect(sale_selectors)
-    if sale_values:
-        return _best_normalized_price(sale_values)
-
-    regular_values = collect(regular_selectors)
-    return _best_normalized_price(regular_values)
-
-
-def extract_price(soup: BeautifulSoup, page_text: str, product_json: dict | None = None) -> str:
-    product_json = product_json or {}
-
-    for candidate in (
-        extract_price_from_page_labels(page_text),
-        extract_price_from_dom(soup),
-        extract_price_from_meta_tags(soup),
-        extract_price_from_product_json(product_json),
-    ):
-        if candidate:
-            return candidate
+    if numeric_candidates:
+        numeric_candidates.sort(key=lambda x: x[0])
+        return numeric_candidates[0][1]
 
     return ""
 
@@ -581,7 +485,13 @@ def extract_detail_fields(html: str, url: str) -> dict:
         if m:
             format_value = clean_text(m.group(1))
 
-    price = extract_price(soup, page_text, product_json)
+    price = extract_price(soup)
+    if not price:
+        offers = product_json.get("offers")
+        if isinstance(offers, dict):
+            offer_price = offers.get("price")
+            if offer_price:
+                price = normalize_price(str(offer_price))
 
     return {
         "artist": artist,
@@ -651,7 +561,7 @@ def select_links_for_detail_refresh(
 
 def write_all_rows_to_csv(csv_path: Path, rows_by_url: dict[str, dict[str, str]]) -> None:
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-    with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
+    with csv_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
         writer.writeheader()
         for url in sorted(rows_by_url.keys()):
@@ -661,7 +571,7 @@ def write_all_rows_to_csv(csv_path: Path, rows_by_url: dict[str, dict[str, str]]
 def append_row_to_csv(csv_path: Path, row: dict) -> None:
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     file_exists = csv_path.exists()
-    with csv_path.open("a", encoding="utf-8-sig", newline="") as f:
+    with csv_path.open("a", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
         if not file_exists:
             writer.writeheader()
@@ -847,7 +757,12 @@ def run_refresh_default(*, links_file: Path, csv_file: Path, limit_details: int 
     print(f"csv_file   : {csv_file}")
     print("=" * 72)
 
-    all_links = read_links_file(links_file)
+    all_links = select_links_for_detail_refresh(
+        links_file=links_file,
+        csv_file=csv_file,
+        limit_details=limit_details,
+        state_file=state_file,
+    )
     written = scrape_product_details(
         session=session,
         links=all_links,
