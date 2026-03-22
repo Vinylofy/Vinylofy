@@ -21,6 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--workers", type=int, default=10)
     p.add_argument("--links-file", default="data/raw/shop3345/3345_product_links.txt")
     p.add_argument("--csv-file", default="data/raw/shop3345/3345_products.csv")
+    p.add_argument("--state-file", default="data/raw/shop3345/3345_detail_rotation_state.json")
     return p
 
 
@@ -31,11 +32,13 @@ def ensure_parent(path: str | Path) -> None:
 
 def main() -> int:
     args = build_parser().parse_args()
+
     links_file = Path(args.links_file)
     csv_file = Path(args.csv_file)
-
+    state_file = Path(args.state_file)
     ensure_parent(links_file)
     ensure_parent(csv_file)
+    ensure_parent(state_file)
 
     session = base.build_session()
 
@@ -54,17 +57,16 @@ def main() -> int:
         print("Klaar.")
         return 0
 
-    if args.mode == "details":
-        all_links = base.read_links_file(links_file)
-    else:
-        all_links = base.read_links_file(links_file)
-
-    if args.limit_details and args.limit_details > 0:
-        all_links = all_links[: args.limit_details]
+    selected_links = base.select_links_for_detail_refresh(
+        links_file=links_file,
+        csv_file=csv_file,
+        limit_details=args.limit_details,
+        state_file=state_file,
+    )
 
     written = base.scrape_product_details(
         session=session,
-        links=all_links,
+        links=selected_links,
         csv_path=csv_file,
         update_existing=True,
         workers=max(1, args.workers),

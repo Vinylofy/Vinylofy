@@ -10,6 +10,14 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List
 from urllib.parse import urljoin, urlsplit, urlunsplit
+from pathlib import Path
+
+CURRENT_DIR = Path(__file__).resolve().parent
+PARENT_DIR = CURRENT_DIR.parent
+if str(PARENT_DIR) not in sys.path:
+    sys.path.insert(0, str(PARENT_DIR))
+
+from _rotation import load_rotation_state, save_rotation_state, select_round_robin_batch
 
 import requests
 from bs4 import BeautifulSoup
@@ -25,6 +33,7 @@ STEP1_WRITE_EVERY_PAGES = 50
 STEP2_WRITE_EVERY_RECORDS = 50
 STEP1_FILE = "sounds_venlo_step1.csv"
 STEP2_FILE = "sounds_venlo_step2_enriched.csv"
+DETAIL_ROTATION_STATE_FILE = "sounds_venlo_detail_rotation_state.json"
 
 SEED_URLS = [
     "https://www.sounds-venlo.nl/pop-2/?filter-type=2213183",
@@ -420,8 +429,16 @@ def scrape_step2(limit_detail: int | None = None) -> Dict[str, Dict[str, str]]:
     print(f"[INFO] Bronbestand geladen: {source_path} ({len(rows_by_url)} records)")
 
     urls_to_process = [url for url, row in rows_by_url.items() if needs_detail_enrichment(row)]
+    total_candidates = len(urls_to_process)
     if limit_detail is not None and limit_detail > 0:
-        urls_to_process = urls_to_process[:limit_detail]
+        rotation_state_path = Path(DETAIL_ROTATION_STATE_FILE)
+        rotation_state = load_rotation_state(rotation_state_path)
+        urls_to_process = select_round_robin_batch(urls_to_process, limit_detail, rotation_state, "detail_urls")
+        save_rotation_state(rotation_state_path, rotation_state)
+        print(
+            f"[ROTATIE] detail_candidates={total_candidates} | geselecteerd={len(urls_to_process)} | "
+            f"state={rotation_state_path}"
+        )
     total = len(urls_to_process)
 
     if total == 0:

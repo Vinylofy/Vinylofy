@@ -58,6 +58,7 @@ EAN_SAVE_EVERY_RECORDS = 25
 OUTPUT_DIR = Path("output")
 PRODUCTS_CSV = OUTPUT_DIR / "variaworld_products.csv"
 ERRORS_CSV = OUTPUT_DIR / "variaworld_errors.csv"
+EAN_ROTATION_STATE_FILE = OUTPUT_DIR / "variaworld_ean_rotation_state.json"
 
 CSV_FIELDS = [
     "source",
@@ -426,8 +427,15 @@ def run_ean_phase(limit_ean: int | None = None) -> None:
         return
 
     targets = [row for row in rows if not clean_text(row.get("ean", ""))]
+    total_candidates = len(targets)
     if limit_ean is not None and limit_ean > 0:
-        targets = targets[:limit_ean]
+        rotation_state = load_rotation_state(EAN_ROTATION_STATE_FILE)
+        targets = select_round_robin_batch(targets, limit_ean, rotation_state, "ean_targets")
+        save_rotation_state(EAN_ROTATION_STATE_FILE, rotation_state)
+        print(
+            f"[ROTATIE] ean_candidates={total_candidates} | geselecteerd={len(targets)} | "
+            f"state={EAN_ROTATION_STATE_FILE}"
+        )
     print(f"[DETAIL] totaal records={len(rows)} | zonder EAN={len(targets)} | limit_ean={limit_ean}")
     if not targets:
         print("[DETAIL] Alles is al verrijkt met een EAN.")

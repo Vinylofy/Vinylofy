@@ -28,6 +28,7 @@ import re
 import sys
 import time
 from copy import deepcopy
+from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -47,6 +48,7 @@ ENRICHED_CSV = "platenzaak_enriched.csv"
 MASTER_CSV = "platenzaak_master.csv"
 CHANGES_CSV = "platenzaak_changes.csv"
 ERROR_LOG = "platenzaak_errors.log"
+ENRICH_ROTATION_STATE_FILE = "platenzaak_enrich_rotation_state.json"
 
 HEADERS = {
     "User-Agent": (
@@ -465,7 +467,14 @@ def determine_enrichment_targets(force_all: bool = False, limit_enrich: int | No
             targets.append(product_url)
             continue
     if limit_enrich is not None and limit_enrich > 0:
-        targets = targets[:limit_enrich]
+        rotation_state_path = Path(ENRICH_ROTATION_STATE_FILE)
+        rotation_state = load_rotation_state(rotation_state_path)
+        targets = select_round_robin_batch(targets, limit_enrich, rotation_state, "enrich_targets")
+        save_rotation_state(rotation_state_path, rotation_state)
+        print(
+            f"[ROTATIE] enrich_candidates={len(listing)} | geselecteerd={len(targets)} | "
+            f"state={rotation_state_path}"
+        )
     return targets
 
 

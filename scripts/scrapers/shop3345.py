@@ -45,12 +45,15 @@ from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from _rotation import load_rotation_state, save_rotation_state, select_priority_then_round_robin
+
 BASE_URL = "https://3345.nl"
 COLLECTION_URL_PAGE_1 = "https://3345.nl/collections/all"
 COLLECTION_URL_PAGED = "https://3345.nl/collections/all?page={page}"
 
 DEFAULT_LINKS_FILE = "3345_product_links.txt"
 DEFAULT_CSV_FILE = "3345_products.csv"
+DEFAULT_STATE_FILE = "3345_detail_rotation_state.json"
 REQUEST_TIMEOUT = 30
 SLEEP_BETWEEN_REQUESTS = 0.5
 SAVE_EVERY_REFRESHED_PRODUCTS = 25
@@ -475,6 +478,48 @@ def read_existing_csv_rows(csv_path: Path) -> dict[str, dict[str, str]]:
     return rows_by_url
 
 
+def select_links_for_detail_refresh(
+    *,
+    links_file: Path,
+    csv_file: Path,
+    limit_details: int | None = None,
+    state_file: Path | None = None,
+) -> list[str]:
+    all_links = select_links_for_detail_refresh(
+        links_file=links_file,
+        csv_file=csv_file,
+        limit_details=limit_details,
+        state_file=state_file,
+    )
+    if not all_links:
+        return []
+
+    if limit_details is None or limit_details <= 0:
+        return all_links
+
+    rows_by_url = read_existing_csv_rows(csv_file)
+    missing_ean_links = [url for url in all_links if not clean_text(rows_by_url.get(url, {}).get("ean", ""))]
+    known_ean_links = [url for url in all_links if clean_text(rows_by_url.get(url, {}).get("ean", ""))]
+
+    rotation_state_path = state_file or (csv_file.parent / DEFAULT_STATE_FILE)
+    rotation_state = load_rotation_state(rotation_state_path)
+    selected_links = select_priority_then_round_robin(
+        missing_ean_links,
+        known_ean_links,
+        limit_details,
+        rotation_state,
+        "missing_ean_links",
+        "known_ean_links",
+    )
+    save_rotation_state(rotation_state_path, rotation_state)
+
+    print(
+        f"[ROTATIE] totaal_links={len(all_links)} | zonder_ean={len(missing_ean_links)} | "
+        f"met_ean={len(known_ean_links)} | geselecteerd={len(selected_links)} | state={rotation_state_path}"
+    )
+    return selected_links
+
+
 def write_all_rows_to_csv(csv_path: Path, rows_by_url: dict[str, dict[str, str]]) -> None:
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
@@ -662,7 +707,7 @@ def run_new_default(*, links_file: Path, csv_file: Path, start_page: int = 1, ma
     return {"new_links": len(new_links), "written": written, "mode": "new"}
 
 
-def run_refresh_default(*, links_file: Path, csv_file: Path) -> dict[str, int | str]:
+def run_refresh_default(*, links_file: Path, csv_file: Path, limit_details: int | None = None, state_file: Path | None = None) -> dict[str, int | str]:
     session = build_session()
     print("=" * 72)
     print("3345.nl scraper gestart")
@@ -719,6 +764,17 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_CSV_FILE,
         help=f"CSV-bestand voor productdetails. standaard: {DEFAULT_CSV_FILE}",
     )
+    parser.add_argument(
+        "--limit-details",
+        type=int,
+        default=None,
+        help="Maximaal aantal detailpagina's in refresh/both. Leeg = alles.",
+    )
+    parser.add_argument(
+        "--state-file",
+        default=None,
+        help="Optioneel rotatie-statebestand voor detailrefresh.",
+    )
     return parser.parse_args()
 
 
@@ -742,6 +798,7 @@ def main() -> int:
 
     links_file = Path(args.links_file)
     csv_file = Path(args.csv_file)
+    state_file = Path(args.state_file) if args.state_file else (csv_file.parent / DEFAULT_STATE_FILE)
     session = build_session()
 
     print("=" * 72)
@@ -774,7 +831,12 @@ def main() -> int:
         print(f"[DETAILS] klaar. Nieuw geschreven productregels: {written}")
 
     elif mode == "refresh":
-        all_links = read_links_file(links_file)
+        all_links = select_links_for_detail_refresh(
+            links_file=links_file,
+            csv_file=csv_file,
+            limit_details=args.limit_details,
+            state_file=state_file,
+        )
         written = scrape_product_details(
             session=session,
             links=all_links,
@@ -785,7 +847,12 @@ def main() -> int:
         print(f"[DETAILS] klaar. Ververste productregels: {written}")
 
     elif mode == "both":
-        all_links = read_links_file(links_file)
+        all_links = select_links_for_detail_refresh(
+            links_file=links_file,
+            csv_file=csv_file,
+            limit_details=args.limit_details,
+            state_file=state_file,
+        )
         written = scrape_product_details(
             session=session,
             links=all_links,

@@ -19,6 +19,13 @@ from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+CURRENT_DIR = Path(__file__).resolve().parent
+PARENT_DIR = CURRENT_DIR.parent
+if str(PARENT_DIR) not in sys.path:
+    sys.path.insert(0, str(PARENT_DIR))
+
+from _rotation import load_rotation_state, save_rotation_state, select_round_robin_batch
+
 BASE_DOMAIN = "https://bobsvinyl.nl"
 BASE_COLLECTION_URL = "https://bobsvinyl.nl/collections/nieuwe-lps"
 COLLECTION_NAME = "nieuwe-lps"
@@ -30,6 +37,7 @@ DETAIL_RETRY_SLEEP_SECONDS = 1.2
 STEP1_FILE = "bobsvinyl_step1.csv"
 STEP2_FILE = "bobsvinyl_step2_enriched.csv"
 DETAIL_ISSUES_FILE = "bobsvinyl_missing_eans.csv"
+DETAIL_ROTATION_STATE_FILE = "bobsvinyl_detail_rotation_state.json"
 
 RESOLVED_DETAIL_STATUSES = {"ok", "2e_hands_bevestigd"}
 
@@ -644,9 +652,17 @@ def enrich_all(
         return rows_by_url
 
     todo_rows = {url: row for url, row in rows_by_url.items() if needs_enrichment(row)}
+    total_candidates = len(todo_rows)
     if limit_detail is not None and limit_detail > 0:
-        todo_items = list(todo_rows.items())[:limit_detail]
-        todo_rows = OrderedDict(todo_items)
+        rotation_state_path = Path(DETAIL_ROTATION_STATE_FILE)
+        rotation_state = load_rotation_state(rotation_state_path)
+        selected_urls = select_round_robin_batch(list(todo_rows.keys()), limit_detail, rotation_state, "detail_candidates")
+        save_rotation_state(rotation_state_path, rotation_state)
+        todo_rows = OrderedDict((url, todo_rows[url]) for url in selected_urls)
+        print(
+            f"[ROTATIE] detail_candidates={total_candidates} | geselecteerd={len(todo_rows)} | "
+            f"state={rotation_state_path}"
+        )
     skipped = len(rows_by_url) - len(todo_rows)
 
     print(

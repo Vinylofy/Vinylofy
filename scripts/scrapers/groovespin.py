@@ -34,6 +34,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
+from _rotation import load_rotation_state, save_rotation_state, select_round_robin_batch
+
 # -----------------------
 # Defaults
 # -----------------------
@@ -431,6 +433,7 @@ class RunConfig:
 
     # ean-only input
     stage1_file: Optional[Path] = None
+    ean_rotation_state: Optional[Path] = None
 
 
 def stage1_scrape(cfg: RunConfig, stage1_csv: Path) -> Tuple[int, Dict[str, str]]:
@@ -622,13 +625,20 @@ def stage2_enrich_ean(
                 year = (row.get("year") or "").strip()
                 labels[u] = f"{artist} | {title}" + (f" ({year})" if year else "")
 
-    # limit_ean (test mode) applies to fetch candidates only
+    # limit_ean applies to records without an existing EAN. Rotate through that backlog so
+    # repeated runs do not keep hitting the same first N URLs.
     fetch_candidates = [u for u in urls if not existing_eans.get(u)]
     if cfg.limit_ean:
-        fetch_candidates = fetch_candidates[: cfg.limit_ean]
+        rotation_state_path = cfg.ean_rotation_state or (cfg.out_dir / "groovespin_ean_rotation_state.json")
+        rotation_state = load_rotation_state(rotation_state_path)
+        fetch_candidates = select_round_robin_batch(fetch_candidates, cfg.limit_ean, rotation_state, "missing_ean_urls")
+        save_rotation_state(rotation_state_path, rotation_state)
         allowed = set(existing_eans) | set(fetch_candidates)
         urls = [u for u in urls if u in allowed]
-        log(f"[STAGE2] limit_ean applied -> urls={len(urls)} fetch_candidates={len(fetch_candidates)}")
+        log(
+            f"[STAGE2] limit_ean applied with rotation -> urls={len(urls)} "
+            f"fetch_candidates={len(fetch_candidates)} state={rotation_state_path}"
+        )
 
     # Seed cache with already known EANs from the input file so they are preserved and skipped.
     preserved = 0
@@ -793,6 +803,7 @@ def wizard() -> RunConfig:
         sleep=sleep,
         ean_workers=workers,
         ean_cache=out_dir / "ean_cache.json",
+        ean_rotation_state=out_dir / "groovespin_ean_rotation_state.json",
     )
 
     if choice == 1:
@@ -863,6 +874,7 @@ def parse_args(argv: List[str]) -> Optional[RunConfig]:
         "ean_log_cache_hits": True,
         "limit_ean": 0,
         "stage1_file": "",
+        "ean_rotation_state": "",
     }
 
     i = 0
@@ -906,6 +918,8 @@ def parse_args(argv: List[str]) -> Optional[RunConfig]:
             args["limit_ean"] = int(pop())
         elif a == "--stage1-file":
             args["stage1_file"] = pop()
+        elif a == "--ean-rotation-state":
+            args["ean_rotation_state"] = pop()
         elif a in ("-h", "--help"):
             print(
                 "python groovespinean.py [--mode test|full|listing|ean-only] [options]\n"
@@ -921,6 +935,7 @@ def parse_args(argv: List[str]) -> Optional[RunConfig]:
                 "  --ean-log-cache-hits <true|false>\n"
                 "  --limit-ean <n>\n"
                 "  --stage1-file <path> (for mode ean-only)\n"
+                "  --ean-rotation-state <path.json>\n"
             )
             sys.exit(0)
         else:
@@ -945,6 +960,7 @@ def parse_args(argv: List[str]) -> Optional[RunConfig]:
         ean_log_cache_hits=bool(args["ean_log_cache_hits"]),
         limit_ean=int(args["limit_ean"]),
         stage1_file=Path(args["stage1_file"]) if args["stage1_file"] else None,
+        ean_rotation_state=Path(args["ean_rotation_state"]) if args["ean_rotation_state"] else (out_dir / "groovespin_ean_rotation_state.json"),
     )
     return cfg
 
