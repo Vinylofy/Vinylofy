@@ -39,17 +39,20 @@ jobs:
   pipeline:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
+
       VINYLOFY_SCRAPER_CMD_BOBSVINYL: ${{ vars.VINYLOFY_SCRAPER_CMD_BOBSVINYL }}
       VINYLOFY_SCRAPER_CMD_DGMOUTLET: ${{ vars.VINYLOFY_SCRAPER_CMD_DGMOUTLET }}
       VINYLOFY_SCRAPER_CMD_PLATOMANIA: ${{ vars.VINYLOFY_SCRAPER_CMD_PLATOMANIA }}
       VINYLOFY_SCRAPER_CMD_PLATENZAAK: ${{ vars.VINYLOFY_SCRAPER_CMD_PLATENZAAK }}
       VINYLOFY_SCRAPER_CMD_VARIAWORLD: ${{ vars.VINYLOFY_SCRAPER_CMD_VARIAWORLD }}
+
       VINYLOFY_SCRAPER_CMD_GROOVESPIN: python -u scripts/scrapers/groovespin_automation.py --mode full --output-dir data/raw/groovespin --max-pages 30 --limit-ean 250
       VINYLOFY_SCRAPER_CMD_SOUNDSVENLO: python -u scripts/scrapers/soundsvenlo.py --mode both --limit-detail 250 --output-dir data/raw/soundsvenlo
       VINYLOFY_SCRAPER_CMD_RECORDSONVINYL: python -u scripts/scrapers/recordsonvinyl_automation.py --mode crawl --master-csv data/raw/recordsonvinyl/recordsonvinyl_master.csv --out data/raw/recordsonvinyl/recordsonvinyl_products.csv --max-pages 20 --limit-products 250 --workers 4
@@ -71,6 +74,11 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
           pip install beautifulsoup4 requests pandas "psycopg[binary]" python-dotenv supabase playwright
+
+      - name: Install Playwright Chromium
+        shell: bash
+        run: |
+          python -m playwright install --with-deps chromium
 
       - name: Create runtime folders
         shell: bash
