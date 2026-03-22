@@ -311,6 +311,21 @@ def extract_artist_and_title(soup: BeautifulSoup, page_text: str) -> tuple[str, 
     return artist, title
 
 
+def extract_price_from_product_json(product_json: dict) -> str:
+    offers = product_json.get("offers")
+    offer_candidates = offers if isinstance(offers, list) else [offers]
+
+    for offer in offer_candidates:
+        if not isinstance(offer, dict):
+            continue
+        price_value = clean_text(str(offer.get("price", "")))
+        if not price_value:
+            continue
+        return normalize_price(price_value.replace(".", ","))
+
+    return ""
+
+
 def extract_price(soup: BeautifulSoup, page_text: str) -> str:
     selectors = [
         ".price-item--sale",
@@ -318,14 +333,20 @@ def extract_price(soup: BeautifulSoup, page_text: str) -> str:
         ".price__sale .price-item",
         ".price__regular .price-item",
         ".price .price-item",
+        "product-info .price-item",
+        "variant-selects .price-item",
+        "buy-buttons .price-item",
     ]
     for selector in selectors:
         for node in soup.select(selector):
             txt = clean_text(node.get_text(" ", strip=True))
-            if "€" in txt:
-                m = re.search(r"€\s*([\d\.,]+)", txt)
-                if m:
-                    return normalize_price(m.group(0))
+            if "€" not in txt:
+                continue
+            if any(blocked in txt.lower() for blocked in ("free shipping", "gratis verzending", "pickup", "afhalen")):
+                continue
+            m = re.search(r"€\s*([\d\.,]+)", txt)
+            if m:
+                return normalize_price(m.group(1))
 
     patterns = [
         r"Sale price\s*€\s*([\d\.,]+)",
@@ -339,9 +360,6 @@ def extract_price(soup: BeautifulSoup, page_text: str) -> str:
         if m:
             return normalize_price(m.group(1))
 
-    m = re.search(r"€\s*([\d\.,]+)", page_text)
-    if m:
-        return normalize_price(m.group(1))
     return ""
 
 
@@ -443,11 +461,9 @@ def extract_detail_fields(html: str, url: str) -> dict:
         if m:
             format_value = clean_text(m.group(1))
 
-    price = extract_price(soup, page_text)
+    price = extract_price_from_product_json(product_json)
     if not price:
-        offers = product_json.get("offers")
-        if isinstance(offers, dict) and offers.get("price"):
-            price = normalize_price(str(offers["price"]).replace(".", ","))
+        price = extract_price(soup, page_text)
 
     return {
         "artist": artist,
