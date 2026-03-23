@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { formatEuro, type HomeProduct } from "@/lib/vinylofy-data";
 
 type TopVinylListProps = {
@@ -7,53 +6,43 @@ type TopVinylListProps = {
 
 export function TopVinylList({ items }: TopVinylListProps) {
   return (
-    <section className="mx-auto max-w-5xl px-6 py-10">
-      <div className="mb-6">
-        <h2 className="text-2xl font-semibold tracking-tight">
-          Top 25 vinyl van dit moment
-        </h2>
-      </div>
+    <section className="mx-auto w-full max-w-6xl px-6 py-8">
+      <h2 className="mb-4 text-2xl font-semibold tracking-tight text-neutral-950">
+        Top 25 vinyl van dit moment
+      </h2>
 
-      <div className="rounded-2xl border border-neutral-200 bg-white">
-        {items.length === 0 ? (
-          <div className="px-6 py-8 text-sm text-neutral-500">
-            Nog geen resultaten beschikbaar.
-          </div>
-        ) : (
-          <ol className="divide-y divide-neutral-200">
-            {items.map((item, index) => (
-              <li
-                key={item.id}
-                className="flex items-center justify-between gap-4 px-4 py-4 md:px-6"
-              >
-                <div className="flex min-w-0 items-start gap-4">
-                  <span className="w-6 shrink-0 text-sm font-medium text-neutral-400">
-                    {index + 1}
+      {items.length === 0 ? (
+        <div className="rounded-2xl border border-neutral-200 bg-white px-5 py-6 text-sm text-neutral-500">
+          Nog geen resultaten beschikbaar.
+        </div>
+      ) : (
+        <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-white">
+          {items.map((item, index) => (
+            <div
+              key={`${item.artist}-${item.title}-${index}`}
+              className="grid grid-cols-[22px_minmax(0,1fr)_auto] items-center gap-3 border-b border-neutral-200 px-4 py-3 last:border-b-0 md:grid-cols-[26px_minmax(0,1fr)_auto] md:px-5 md:py-3"
+            >
+              <div className="text-sm font-medium tabular-nums text-neutral-400">
+                {index + 1}
+              </div>
+
+              <div className="min-w-0">
+                <div className="truncate text-sm leading-snug md:text-[15px]">
+                  <span className="font-semibold text-neutral-950">
+                    {item.artist}
                   </span>
-
-                  <div className="min-w-0">
-                    <Link
-                      href={`/search?q=${encodeURIComponent(`${item.artist} ${item.title}`)}`}
-                      className="block"
-                    >
-                      <p className="truncate font-medium hover:text-orange-600">
-                        {item.artist}
-                      </p>
-                      <p className="truncate text-sm text-neutral-500">
-                        {item.title}
-                      </p>
-                    </Link>
-                  </div>
+                  <span className="mx-1.5 text-neutral-300">—</span>
+                  <span className="text-neutral-700">{item.title}</span>
                 </div>
+              </div>
 
-                <div className="shrink-0 text-sm font-semibold text-orange-600">
-                  vanaf {formatEuro(item.lowestPrice)}
-                </div>
-              </li>
-            ))}
-          </ol>
-        )}
-      </div>
+              <div className="whitespace-nowrap text-sm font-semibold text-orange-600 md:text-[15px]">
+                vanaf {formatEuro(item.lowestPrice)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { formatEuro, type SearchResultItem } from "@/lib/vinylofy-data";
 
 type ProductResultCardProps = {
@@ -5,61 +6,79 @@ type ProductResultCardProps = {
 };
 
 export function ProductResultCard({ item }: ProductResultCardProps) {
-  const primaryOffer = item.shops[0];
+  const visibleShopCount = item.shops.length;
+  const effectiveShopCount = Math.max(item.foundIn ?? 0, visibleShopCount);
+  const shouldShowShopCount = effectiveShopCount > 3;
+  const hasMeta = Boolean(item.freshnessLabel) || shouldShowShopCount;
+  const coverSrc = item.coverUrl ?? "/placeholders/vinylofy-cover-placeholder.png";
+  const hasRealCover = Boolean(item.coverUrl);
 
   return (
-    <article className="rounded-2xl border border-neutral-200 bg-white p-4 md:p-6">
-      <div className="flex flex-col gap-5 md:flex-row">
-        {item.coverUrl ? (
-          <img
-            src={item.coverUrl}
-            alt={`${item.artist} - ${item.title}`}
-            className="h-32 w-32 shrink-0 rounded-xl bg-neutral-100 object-cover"
-          />
-        ) : (
-          <div className="h-32 w-32 shrink-0 rounded-xl bg-neutral-100" />
-        )}
+    <article className="rounded-3xl border border-neutral-200 bg-white p-4 shadow-sm md:p-5">
+      <div className="grid gap-3 md:grid-cols-[96px_minmax(0,1fr)] md:gap-4">
+        <div className="flex items-start">
+          <div className="flex h-[96px] w-[96px] items-center justify-center overflow-hidden rounded-2xl bg-neutral-50">
+            <img
+              src={coverSrc}
+              alt={`${item.artist} - ${item.title}`}
+              className={
+                hasRealCover
+                  ? "h-[96px] w-[96px] object-cover"
+                  : "h-[82px] w-[82px] object-contain"
+              }
+            />
+          </div>
+        </div>
 
-        <div className="min-w-0 flex-1">
-          <p className="text-lg font-semibold">{item.artist}</p>
-          <p className="text-neutral-600">
+        <div className="min-w-0">
+          <p className="text-xs text-neutral-500">{item.artist}</p>
+
+          <h2 className="mt-1 text-lg font-semibold leading-tight tracking-tight text-neutral-950 md:text-[20px]">
             {item.title}
             {item.formatLabel ? ` · ${item.formatLabel}` : ""}
-          </p>
+          </h2>
 
-          <div className="mt-4 text-2xl font-semibold tracking-tight text-orange-600">
-            Vanaf {formatEuro(item.lowestPrice)}
-          </div>
-
-          <div className="mt-4 space-y-2">
+          <div className="mt-3 grid gap-x-4 gap-y-2 md:grid-cols-[minmax(0,1fr)_140px]">
             {item.shops.map((shop) => (
-              <div
-                key={`${item.id}-${shop.domain}`}
-                className="flex items-center justify-between rounded-lg bg-neutral-50 px-3 py-2 text-sm"
-              >
-                <span className="font-medium">{shop.name}</span>
-                <span className="font-semibold">{formatEuro(shop.price)}</span>
+              <div key={`${shop.name}-${shop.productUrl}`} className="contents">
+                <a
+                  href={shop.productUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="min-w-0 truncate text-sm text-neutral-700 transition hover:text-orange-600 hover:underline"
+                >
+                  {shop.name}
+                </a>
+
+                <a
+                  href={shop.productUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="shrink-0 text-right text-sm font-medium text-neutral-950 transition hover:text-orange-600 hover:underline"
+                >
+                  {formatEuro(shop.price)}
+                </a>
               </div>
             ))}
-          </div>
 
-          <div className="mt-4 flex flex-col gap-3 text-sm text-neutral-500 md:flex-row md:items-center md:justify-between">
-            <span>gevonden in {item.foundIn} winkels</span>
-            <span>{item.freshnessLabel ?? "geen verse prijsdata"}</span>
-          </div>
-
-          {primaryOffer ? (
-            <div className="mt-5">
-              <a
-                href={primaryOffer.productUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex rounded-full bg-orange-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-orange-700"
+            <div className="pt-2">
+              <Link
+                href={`/product/${item.id}`}
+                className="inline-flex items-center rounded-full bg-orange-500/80 px-4 py-2 text-sm font-medium text-white transition hover:bg-orange-500"
               >
-                ga naar shop
-              </a>
+                Bekijk details
+              </Link>
             </div>
-          ) : null}
+
+            <div className="pt-2 text-xs text-neutral-500">
+              {hasMeta ? (
+                <div className="space-y-0.5">
+                  {item.freshnessLabel ? <p>{item.freshnessLabel}</p> : null}
+                  {shouldShowShopCount ? <p>gevonden in {effectiveShopCount} winkels</p> : null}
+                </div>
+              ) : null}
+            </div>
+          </div>
         </div>
       </div>
     </article>

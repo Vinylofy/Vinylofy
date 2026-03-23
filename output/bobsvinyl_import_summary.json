@@ -4,13 +4,13 @@
   "accepted_records": 4237,
   "rejected_records": 132,
   "shop_domain": "bobsvinyl.nl",
-  "dry_run": true,
-  "generated_at": "2026-03-18T05:47:12.180029+00:00",
+  "dry_run": false,
+  "generated_at": "2026-03-18T07:23:58.536637+00:00",
   "new_products": 0,
   "new_price_rows": 0,
   "price_updates": 0,
-  "unchanged_prices": 0,
-  "upserted_products": 0,
-  "upserted_prices": 0,
-  "inserted_history_rows": 0
+  "unchanged_prices": 4237,
+  "upserted_products": 4237,
+  "upserted_prices": 4237,
+  "inserted_history_rows": 4227
 }
