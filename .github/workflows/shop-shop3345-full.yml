@@ -19,7 +19,7 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
-      VINYLOFY_SCRAPER_CMD_SHOP3345: python -u scripts/scrapers/shop3345_automation.py --mode both --links-file data/raw/shop3345/3345_product_links.txt --csv-file data/raw/shop3345/3345_products.csv --max-pages 999 --limit-details 1000
+      VINYLOFY_SCRAPER_CMD_SHOP3345: python -u scripts/scrapers/shop3345_automation.py --mode both --links-file data/raw/shop3345/3345_product_links.txt --csv-file data/raw/shop3345/3345_products.csv --max-pages 50 --limit-details 250
 
     steps:
       - name: Checkout

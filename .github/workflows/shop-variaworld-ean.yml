@@ -23,7 +23,7 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
-      VINYLOFY_SCRAPER_CMD_VARIAWORLD: "python -u scripts/scrapers/variaworld.py --mode ean --limit-ean 250 --output-dir data/raw/variaworld"
+      VINYLOFY_SCRAPER_CMD_VARIAWORLD: "python -u scripts/scrapers/variaworld.py --mode ean --limit-ean 100 --output-dir data/raw/variaworld"
 
     steps:
       - name: Checkout
