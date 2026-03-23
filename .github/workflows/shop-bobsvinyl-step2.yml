@@ -14,7 +14,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.decide.outputs.should_run }}
+    steps:
+      - id: decide
+        name: Decide whether enrich should run
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          DAY_INDEX=$(( $(date -u +%s) / 86400 ))
+          if [ $(( DAY_INDEX % 2 )) -eq 0 ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
   run:
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -24,7 +47,6 @@ jobs:
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
       VINYLOFY_SCRAPER_CMD_BOBSVINYL: "python -u scripts/scrapers/bobsvinyl.py --mode step2 --workers 5 --limit-detail 250 --output-dir data/raw/bobsvinyl"
-
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -58,32 +80,26 @@ jobs:
           WORKFLOW_NAME="Shop - Bobsvinyl Step 1"
           ARTIFACT_PREFIX="bobsvinyl-step1-"
           TARGET_DIR="data/raw/bobsvinyl"
-
           echo "Zoek laatste succesvolle run van: $WORKFLOW_NAME"
           RUN_JSON="$(gh run list --repo "$REPO" --workflow "$WORKFLOW_NAME" --status completed --json databaseId,conclusion -L 20)"
           export RUN_JSON
           RUN_ID="$(python -c 'import json, os; runs=json.loads(os.environ["RUN_JSON"]); print(next((str(r["databaseId"]) for r in runs if r.get("conclusion")=="success"), ""))')"
-
           if [ -z "$RUN_ID" ]; then
             echo "Geen succesvolle bronrun gevonden voor $WORKFLOW_NAME"
             exit 1
           fi
-
           echo "Gebruik run id: $RUN_ID"
           ARTIFACTS_JSON="$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts")"
           export ARTIFACTS_JSON ARTIFACT_PREFIX
           ARTIFACT_NAME="$(python -c 'import json, os; data=json.loads(os.environ["ARTIFACTS_JSON"]); prefix=os.environ["ARTIFACT_PREFIX"]; print(next((a["name"] for a in data.get("artifacts", []) if a.get("name","").startswith(prefix)), ""))')"
-
           if [ -z "$ARTIFACT_NAME" ]; then
             echo "Geen artifact gevonden met prefix $ARTIFACT_PREFIX"
             exit 1
           fi
-
           echo "Download artifact: $ARTIFACT_NAME"
           rm -rf "$TARGET_DIR/_restore"
           mkdir -p "$TARGET_DIR/_restore"
           gh run download "$RUN_ID" --repo "$REPO" -n "$ARTIFACT_NAME" -D "$TARGET_DIR/_restore"
-
           echo "Kopieer CSV-bestanden naar $TARGET_DIR"
           find "$TARGET_DIR/_restore" -name '*.csv' -type f -exec cp -f {} "$TARGET_DIR/" \;
           ls -la "$TARGET_DIR"
@@ -91,8 +107,7 @@ jobs:
       - name: Run pipeline
         shell: bash
         run: |
-          python -u scripts/automation/run_vinylofy_pipeline.py \
-            --shop bobsvinyl
+          python -u scripts/automation/run_vinylofy_pipeline.py             --shop bobsvinyl
 
       - name: Upload workflow artifacts
         if: always()

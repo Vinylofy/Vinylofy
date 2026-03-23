@@ -4,8 +4,6 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "40 1 * * *"
-    - cron: "40 9 * * *"
-    - cron: "40 17 * * *"
 
 concurrency:
   group: vinylofy-platenzaak
@@ -43,7 +41,7 @@ jobs:
       - name: Run Platenzaak listing
         shell: bash
         run: |
-          python -u scripts/scrapers/platenzaak.py             --mode listing             --max-pages 40             --output-dir data/raw/platenzaak
+          python -u scripts/scrapers/platenzaak.py --mode listing --max-pages 40 --output-dir data/raw/platenzaak
 
       - name: Upload workflow artifacts
         if: always()

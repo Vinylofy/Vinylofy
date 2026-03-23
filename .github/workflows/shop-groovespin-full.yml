@@ -10,7 +10,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.decide.outputs.should_run }}
+    steps:
+      - id: decide
+        name: Decide whether enrich should run
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          DAY_INDEX=$(( $(date -u +%s) / 86400 ))
+          if [ $(( DAY_INDEX % 2 )) -eq 0 ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
   run:
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -20,7 +43,6 @@ jobs:
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
       VINYLOFY_SCRAPER_CMD_GROOVESPIN: python -u scripts/scrapers/groovespin_automation.py --mode full --output-dir data/raw/groovespin --max-pages 30 --limit-ean 250 --ean-workers 4
-
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -46,8 +68,7 @@ jobs:
       - name: Run pipeline
         shell: bash
         run: |
-          python -u scripts/automation/run_vinylofy_pipeline.py \
-            --shop groovespin
+          python -u scripts/automation/run_vinylofy_pipeline.py             --shop groovespin
 
       - name: Upload workflow artifacts
         if: always()

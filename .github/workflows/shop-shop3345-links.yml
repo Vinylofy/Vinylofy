@@ -4,8 +4,6 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "40 2 * * *"
-    - cron: "40 10 * * *"
-    - cron: "40 18 * * *"
 
 concurrency:
   group: vinylofy-shop3345
@@ -22,7 +20,6 @@ jobs:
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
       VINYLOFY_SCRAPER_CMD_SHOP3345: python -u scripts/scrapers/shop3345_automation.py --mode links --links-file data/raw/shop3345/3345_product_links.txt --csv-file data/raw/shop3345/3345_products.csv --max-pages 20
-
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -49,10 +46,7 @@ jobs:
       - name: Run pipeline
         shell: bash
         run: |
-          python -u scripts/automation/run_vinylofy_pipeline.py \
-            --shop shop3345 \
-            --skip-import \
-            --skip-upload
+          python -u scripts/automation/run_vinylofy_pipeline.py             --shop shop3345             --skip-import             --skip-upload
 
       - name: Upload workflow artifacts
         if: always()

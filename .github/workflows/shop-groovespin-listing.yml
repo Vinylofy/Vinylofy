@@ -4,8 +4,6 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "20 1 * * *"
-    - cron: "20 9 * * *"
-    - cron: "20 17 * * *"
 
 concurrency:
   group: vinylofy-groovespin
@@ -22,7 +20,6 @@ jobs:
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
       VINYLOFY_SCRAPER_CMD_GROOVESPIN: python -u scripts/scrapers/groovespin_automation.py --mode listing --output-dir data/raw/groovespin --max-pages 25
-
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -48,10 +45,7 @@ jobs:
       - name: Run pipeline
         shell: bash
         run: |
-          python -u scripts/automation/run_vinylofy_pipeline.py \
-            --shop groovespin \
-            --skip-import \
-            --skip-upload
+          python -u scripts/automation/run_vinylofy_pipeline.py             --shop groovespin             --skip-import             --skip-upload
 
       - name: Upload workflow artifacts
         if: always()

@@ -4,8 +4,6 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "40 0 * * *"
-    - cron: "40 8 * * *"
-    - cron: "40 16 * * *"
 
 concurrency:
   group: vinylofy-bobsvinyl
@@ -43,7 +41,7 @@ jobs:
       - name: Run Bobsvinyl step 1
         shell: bash
         run: |
-          python -u scripts/scrapers/bobsvinyl.py             --mode step1             --workers 5             --output-dir data/raw/bobsvinyl
+          python -u scripts/scrapers/bobsvinyl.py --mode step1 --workers 5 --output-dir data/raw/bobsvinyl
 
       - name: Upload workflow artifacts
         if: always()

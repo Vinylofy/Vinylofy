@@ -10,7 +10,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.decide.outputs.should_run }}
+    steps:
+      - id: decide
+        name: Decide whether enrich should run
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          DAY_INDEX=$(( $(date -u +%s) / 86400 ))
+          if [ $(( DAY_INDEX % 2 )) -eq 0 ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
   run:
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true'
     runs-on: [self-hosted, linux, x64]
     timeout-minutes: 90
     env:
@@ -20,7 +43,6 @@ jobs:
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
       VINYLOFY_SCRAPER_CMD_SOUNDSVENLO: xvfb-run -a python -u scripts/scrapers/soundsvenlo.py --mode both --limit-detail 250 --output-dir data/raw/soundsvenlo --headful
-
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -36,13 +58,11 @@ jobs:
           if command -v xvfb-run >/dev/null 2>&1; then
             exit 0
           fi
-
           if command -v sudo >/dev/null 2>&1; then
             sudo apt-get update
             sudo apt-get install -y xvfb
             exit 0
           fi
-
           echo "xvfb-run ontbreekt op deze self-hosted runner. Installeer xvfb of voeg sudo toe."
           exit 1
 
@@ -62,8 +82,7 @@ jobs:
       - name: Run pipeline
         shell: bash
         run: |
-          python -u scripts/automation/run_vinylofy_pipeline.py \
-            --shop soundsvenlo
+          python -u scripts/automation/run_vinylofy_pipeline.py             --shop soundsvenlo
 
       - name: Upload workflow artifacts
         if: always()
