@@ -112,7 +112,6 @@ export function getFreshnessLabel(iso: string | null | undefined): string | null
   if (Number.isNaN(lastSeen)) return null;
 
   const diffHours = (Date.now() - lastSeen) / (1000 * 60 * 60);
-
   if (diffHours < 24) return "vandaag gecontroleerd";
   if (diffHours < 48) return "1 dag oud";
   if (diffHours < 72) return "2 dagen oud";
@@ -129,7 +128,6 @@ async function getProductsByIds(ids: string[]): Promise<ProductRow[]> {
   if (ids.length === 0) return [];
 
   const supabase = createSupabaseServerClient();
-
   const { data, error } = await supabase
     .from("products")
     .select("id, ean, artist, title, format_label, cover_url, created_at")
@@ -145,7 +143,7 @@ async function getBestPriceMap(productIds?: string[]) {
   let query = supabase
     .from("product_best_prices_v1")
     .select(
-      "product_id, lowest_fresh_price, fresh_instock_shop_count, total_active_shop_count, best_price_last_seen_at"
+      "product_id, lowest_fresh_price, fresh_instock_shop_count, total_active_shop_count, best_price_last_seen_at",
     );
 
   if (productIds && productIds.length > 0) {
@@ -153,13 +151,13 @@ async function getBestPriceMap(productIds?: string[]) {
   }
 
   const { data, error } = await query;
-
   if (error) throw error;
 
   const map = new Map<string, BestPriceRow>();
   for (const row of (data ?? []) as BestPriceRow[]) {
     map.set(row.product_id, row);
   }
+
   return map;
 }
 
@@ -201,12 +199,10 @@ async function getOffersMap(productIds: string[]) {
   }
 
   for (const [productId, offers] of grouped.entries()) {
-    const deduped = offers
-      .sort((a, b) => {
-        if (a.price !== b.price) return a.price - b.price;
-        return b.lastSeenAt.localeCompare(a.lastSeenAt);
-      })
-      .slice(0, 5);
+    const deduped = offers.sort((a, b) => {
+      if (a.price !== b.price) return a.price - b.price;
+      return b.lastSeenAt.localeCompare(a.lastSeenAt);
+    });
 
     grouped.set(productId, deduped);
   }
@@ -214,11 +210,7 @@ async function getOffersMap(productIds: string[]) {
   return grouped;
 }
 
-function scoreProductMatch(
-  product: ProductRow,
-  query: string,
-  best: BestPriceRow | undefined
-): number {
+function scoreProductMatch(product: ProductRow, query: string, best: BestPriceRow | undefined): number {
   const normalizedQuery = normalizeQuery(query);
   const tokens = tokenize(query);
   const digits = query.replace(/\D/g, "");
@@ -230,15 +222,12 @@ function scoreProductMatch(
   let score = 0;
 
   if (digits && product.ean === digits) score += 5000;
-
   if (combined === normalizedQuery) score += 1200;
   if (title === normalizedQuery) score += 1000;
   if (artist === normalizedQuery) score += 900;
-
   if (combined.startsWith(normalizedQuery)) score += 600;
   if (title.startsWith(normalizedQuery)) score += 500;
   if (artist.startsWith(normalizedQuery)) score += 450;
-
   if (combined.includes(normalizedQuery)) score += 250;
   if (title.includes(normalizedQuery)) score += 220;
   if (artist.includes(normalizedQuery)) score += 200;
@@ -256,7 +245,6 @@ function scoreProductMatch(
 
   const freshShops = best?.fresh_instock_shop_count ?? 0;
   const totalShops = best?.total_active_shop_count ?? 0;
-
   score += Math.min(freshShops, 5) * 20;
   score += Math.min(totalShops, 5) * 8;
 
@@ -278,7 +266,7 @@ export async function getHomePageData(): Promise<{
   const { data: topRows, error: topError } = await supabase
     .from("product_best_prices_v1")
     .select(
-      "product_id, lowest_fresh_price, fresh_instock_shop_count, total_active_shop_count, best_price_last_seen_at"
+      "product_id, lowest_fresh_price, fresh_instock_shop_count, total_active_shop_count, best_price_last_seen_at",
     )
     .gt("fresh_instock_shop_count", 0)
     .order("fresh_instock_shop_count", { ascending: false })
@@ -360,31 +348,24 @@ export async function searchProducts(query: string): Promise<SearchResultItem[]>
   async function collect(promise: PromiseLike<{ data: unknown; error: unknown }>) {
     const result = (await promise) as { data: unknown; error: unknown };
     if (result.error) throw result.error;
+
     for (const row of (result.data ?? []) as ProductRow[]) {
       candidates.set(row.id, row);
     }
   }
 
   if (/^\d+$/.test(digits) && [8, 12, 13, 14].includes(digits.length)) {
-    await collect(
-      supabase.from("products").select(baseSelect).eq("ean", digits).limit(10)
-    );
+    await collect(supabase.from("products").select(baseSelect).eq("ean", digits).limit(10));
   }
 
-  await collect(
-    supabase.from("products").select(baseSelect).ilike("artist", `%${normalizedQuery}%`).limit(20)
-  );
-
-  await collect(
-    supabase.from("products").select(baseSelect).ilike("title", `%${normalizedQuery}%`).limit(20)
-  );
-
+  await collect(supabase.from("products").select(baseSelect).ilike("artist", `%${normalizedQuery}%`).limit(20));
+  await collect(supabase.from("products").select(baseSelect).ilike("title", `%${normalizedQuery}%`).limit(20));
   await collect(
     supabase
       .from("products")
       .select(baseSelect)
       .ilike("search_text", `%${normalizeQuery(normalizedQuery)}%`)
-      .limit(30)
+      .limit(30),
   );
 
   const productList = Array.from(candidates.values());
