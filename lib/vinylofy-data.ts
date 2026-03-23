@@ -73,9 +73,43 @@ export type SearchResultItem = {
   shops: SearchShopOffer[];
 };
 
+export type ProductDetail = {
+  id: string;
+  ean: string | null;
+  artist: string;
+  title: string;
+  formatLabel: string | null;
+  coverUrl: string | null;
+  lowestPrice: number | null;
+  freshShopCount: number;
+  totalShopCount: number;
+  lastSeenAt: string | null;
+  freshnessLabel: string | null;
+  shops: SearchShopOffer[];
+};
+
 type RankedSearchResult = SearchResultItem & {
   _score: number;
 };
+
+const BLACKLISTED_FORMAT_LABELS = new Set([
+  "CD",
+  "POSTER",
+  "ACCESSORIES",
+  "PHOTOBOOK",
+]);
+
+function normalizeFormatLabel(formatLabel: string | null | undefined): string {
+  return (formatLabel ?? "").trim().toUpperCase();
+}
+
+function isBlacklistedFormat(formatLabel: string | null | undefined): boolean {
+  return BLACKLISTED_FORMAT_LABELS.has(normalizeFormatLabel(formatLabel));
+}
+
+function isAllowedProduct(product: Pick<ProductRow, "format_label">): boolean {
+  return !isBlacklistedFormat(product.format_label);
+}
 
 function toNumber(value: number | string | null | undefined): number | null {
   if (value === null || value === undefined) return null;
@@ -271,13 +305,13 @@ export async function getHomePageData(): Promise<{
     .gt("fresh_instock_shop_count", 0)
     .order("fresh_instock_shop_count", { ascending: false })
     .order("lowest_fresh_price", { ascending: true })
-    .limit(25);
+    .limit(100);
 
   if (topError) throw topError;
 
   const topBestRows = (topRows ?? []) as BestPriceRow[];
   const topIds = topBestRows.map((row) => row.product_id);
-  const topProducts = await getProductsByIds(topIds);
+  const topProducts = (await getProductsByIds(topIds)).filter(isAllowedProduct);
   const topProductsMap = new Map(topProducts.map((row) => [row.id, row]));
 
   const top25: HomeProduct[] = topBestRows
@@ -298,17 +332,18 @@ export async function getHomePageData(): Promise<{
         lastSeenAt: row.best_price_last_seen_at,
       };
     })
-    .filter((item): item is HomeProduct => Boolean(item && item.lowestPrice !== null));
+    .filter((item): item is HomeProduct => Boolean(item && item.lowestPrice !== null))
+    .slice(0, 25);
 
   const { data: latestProductsData, error: latestProductsError } = await supabase
     .from("products")
     .select("id, ean, artist, title, format_label, cover_url, created_at")
     .order("created_at", { ascending: false })
-    .limit(20);
+    .limit(50);
 
   if (latestProductsError) throw latestProductsError;
 
-  const latestProducts = (latestProductsData ?? []) as ProductRow[];
+  const latestProducts = ((latestProductsData ?? []) as ProductRow[]).filter(isAllowedProduct);
   const latestIds = latestProducts.map((row) => row.id);
   const latestBestMap = await getBestPriceMap(latestIds);
 
@@ -333,6 +368,46 @@ export async function getHomePageData(): Promise<{
     .slice(0, 8);
 
   return { top25, newReleases };
+}
+
+export async function getProductDetail(id: string): Promise<ProductDetail | null> {
+  const supabase = createSupabaseServerClient();
+
+  const { data, error } = await supabase
+    .from("products")
+    .select("id, ean, artist, title, format_label, cover_url, created_at")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) return null;
+
+  const product = data as ProductRow;
+  if (!isAllowedProduct(product)) return null;
+
+  const bestMap = await getBestPriceMap([product.id]);
+  const offersMap = await getOffersMap([product.id]);
+  const best = bestMap.get(product.id);
+  const offers = offersMap.get(product.id) ?? [];
+  const lowestPrice = toNumber(best?.lowest_fresh_price) ?? (offers[0]?.price ?? null);
+  const freshShopCount = best?.fresh_instock_shop_count ?? offers.length;
+  const totalShopCount = best?.total_active_shop_count ?? offers.length;
+  const lastSeenAt = best?.best_price_last_seen_at ?? offers[0]?.lastSeenAt ?? null;
+
+  return {
+    id: product.id,
+    ean: product.ean,
+    artist: product.artist,
+    title: product.title,
+    formatLabel: product.format_label,
+    coverUrl: product.cover_url,
+    lowestPrice,
+    freshShopCount,
+    totalShopCount,
+    lastSeenAt,
+    freshnessLabel: getFreshnessLabel(lastSeenAt),
+    shops: offers,
+  };
 }
 
 export async function searchProducts(query: string): Promise<SearchResultItem[]> {
@@ -368,7 +443,7 @@ export async function searchProducts(query: string): Promise<SearchResultItem[]>
       .limit(30),
   );
 
-  const productList = Array.from(candidates.values());
+  const productList = Array.from(candidates.values()).filter(isAllowedProduct);
   if (productList.length === 0) return [];
 
   const ids = productList.map((row) => row.id);
