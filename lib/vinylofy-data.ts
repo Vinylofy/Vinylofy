@@ -98,6 +98,7 @@ const BLACKLISTED_FORMAT_LABELS = new Set([
   "ACCESSORIES",
   "PHOTOBOOK",
   "BLUERAY"
+  "BLURAY"
 ]);
 
 function normalizeFormatLabel(formatLabel: string | null | undefined): string {
