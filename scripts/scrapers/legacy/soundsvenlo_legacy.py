@@ -1,12 +1,10 @@
-
 #!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
 import csv
-import os
+import random
 import re
-import sys
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -14,16 +12,21 @@ from typing import Dict, Iterable, List
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
-from playwright.sync_api import Browser, BrowserContext, Page, Playwright, sync_playwright
+from playwright.sync_api import (
+    Browser,
+    BrowserContext,
+    Error as PlaywrightError,
+    Page,
+    Playwright,
+    TimeoutError as PlaywrightTimeoutError,
+    sync_playwright,
+)
 
 BASE_DOMAIN = "https://www.sounds-venlo.nl"
 DEFAULT_OUTPUT_DIR = "data/raw/soundsvenlo"
 STEP1_FILE = "sounds_venlo_step1.csv"
 STEP2_FILE = "sounds_venlo_step2_enriched.csv"
 
-# The site now serves vinyl pages behind anti-bot rules that reject simple HTTP requests.
-# We intentionally crawl through a browser and keep the seed list minimal: /vinyl/ exposes
-# the full vinyl assortment, while the product detail pages provide the importer fields we need.
 SEED_URLS = [
     f"{BASE_DOMAIN}/vinyl/",
 ]
@@ -46,16 +49,51 @@ STEP2_COLUMNS = STEP1_COLUMNS + [
 ]
 
 TIMEOUT_MS = 45_000
-DEFAULT_DELAY_SECONDS = 0.35
-DETAIL_DELAY_SECONDS = 0.20
+DEFAULT_DELAY_SECONDS = 0.45
+DETAIL_DELAY_SECONDS = 0.30
 STEP1_WRITE_EVERY_PAGES = 25
 STEP2_WRITE_EVERY_RECORDS = 25
+FETCH_RETRIES = 3
+RETRY_BACKOFF_SECONDS = 3.0
+MAX_EMPTY_PAGES = 2
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/123.0.0.0 Safari/537.36"
-)
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+]
+
+WARMUP_URLS = [
+    f"{BASE_DOMAIN}/",
+    f"{BASE_DOMAIN}/vinyl/",
+]
+
+COOKIE_SELECTORS = [
+    "button:has-text('Accepteren')",
+    "button:has-text('Alles accepteren')",
+    "button:has-text('Accept')",
+    "button:has-text('I agree')",
+    "button:has-text('Akkoord')",
+    "#onetrust-accept-btn-handler",
+    "button[aria-label='Accept']",
+]
+
+LISTING_CARD_SELECTORS = [
+    "div.relative.group",
+    "main div.group",
+    "a.full-click",
+]
+
+BLOCK_PATTERNS = [
+    "403 forbidden",
+    "access denied",
+    "request unsuccessful",
+    "toegang geweigerd",
+    "forbidden",
+    "not allowed",
+    "blocked",
+    "captcha",
+]
 
 
 def normalize_text(value: str | None) -> str:
@@ -113,8 +151,7 @@ def load_csv_as_dict(path: Path, columns: List[str]) -> Dict[str, Dict[str, str]
             url = normalize_text(raw.get("url", ""))
             if not url:
                 continue
-            row = {col: normalize_text(raw.get(col, "")) for col in columns}
-            rows[url] = row
+            rows[url] = {col: normalize_text(raw.get(col, "")) for col in columns}
     return rows
 
 
@@ -131,25 +168,21 @@ def write_csv(path: Path, rows_by_url: Dict[str, Dict[str, str]], columns: List[
                 item[0],
             ),
         ):
-            safe_row = {col: normalize_text(row.get(col, "")) for col in columns}
-            writer.writerow(safe_row)
+            writer.writerow({col: normalize_text(row.get(col, "")) for col in columns})
 
 
 def merge_row(existing: Dict[str, str] | None, incoming: Dict[str, str], columns: List[str]) -> Dict[str, str]:
     if existing is None:
-        merged = {col: "" for col in columns}
-        merged.update(incoming)
-        return merged
+        base = {col: "" for col in columns}
+        base.update(incoming)
+        return base
 
     merged = dict(existing)
     for key, value in incoming.items():
-        if key == "bron_categorieen":
-            merged[key] = unique_pipe_join(merged.get(key, ""), value)
-        elif key == "bron_listing_urls":
+        if key in {"bron_categorieen", "bron_listing_urls"}:
             merged[key] = unique_pipe_join(merged.get(key, ""), value)
         elif value:
             merged[key] = value
-
     for col in columns:
         merged.setdefault(col, "")
     return merged
@@ -164,12 +197,17 @@ def infer_stock_label(text: str) -> str:
     return ""
 
 
+def contains_block_text(text: str) -> bool:
+    lower = normalize_text(text).lower()
+    return any(pattern in lower for pattern in BLOCK_PATTERNS)
+
+
 def parse_listing_card(card, category_name: str, listing_url: str) -> Dict[str, str] | None:
     artist_node = card.select_one("span.font-bold")
-    title_node = card.select_one("a.full-click")
+    title_node = card.select_one("a.full-click") or card.select_one("a[href*='/vinyl/']")
     meta_node = card.select_one("p.text-xs") or card.select_one("p.text-gray-700")
-
     raw_text = normalize_text(card.get_text(" ", strip=True))
+
     if title_node is None:
         return None
 
@@ -178,13 +216,13 @@ def parse_listing_card(card, category_name: str, listing_url: str) -> Dict[str, 
     href = normalize_text(title_node.get("href", ""))
     url = urljoin(BASE_DOMAIN, href)
 
+    if not title or not url:
+        return None
+
     meta_text = normalize_text(meta_node.get_text(" ", strip=True) if meta_node else raw_text)
     drager_match = re.search(r"\b(2-LP|3-LP|4-LP|5-LP|LP|12\"|7\")\b", meta_text, flags=re.IGNORECASE)
     price_match = re.search(r"€\s*([0-9]+(?:[.,][0-9]{2})?)", raw_text)
     stock_label = infer_stock_label(raw_text)
-
-    if not title or not url:
-        return None
 
     if not artist:
         lines = [normalize_text(x) for x in raw_text.split("\n") if normalize_text(x)]
@@ -205,22 +243,35 @@ def parse_listing_card(card, category_name: str, listing_url: str) -> Dict[str, 
 
 def parse_listing_page_html(html: str, listing_url: str, category_name: str) -> List[Dict[str, str]]:
     soup = BeautifulSoup(html, "html.parser")
-    cards = soup.select("div.relative.group")
+
+    cards = []
+    for selector in LISTING_CARD_SELECTORS:
+        cards = soup.select(selector)
+        if cards:
+            break
+
     rows: List[Dict[str, str]] = []
+    seen_urls: set[str] = set()
     for card in cards:
         row = parse_listing_card(card, category_name, listing_url)
-        if row is not None and row.get("url"):
-            rows.append(row)
+        if row is None:
+            continue
+        url = row.get("url", "")
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        rows.append(row)
     return rows
 
 
 def parse_detail_page_html(html: str, url: str) -> Dict[str, str]:
     soup = BeautifulSoup(html, "html.parser")
     page_text = normalize_text(soup.get_text(" ", strip=True))
+    title_h1 = soup.select_one("h1")
 
     details = {
         "artist": "",
-        "title": "",
+        "title": normalize_text(title_h1.get_text(" ", strip=True) if title_h1 else ""),
         "drager": "",
         "prijs": "",
         "op_voorraad": "",
@@ -230,14 +281,8 @@ def parse_detail_page_html(html: str, url: str) -> Dict[str, str]:
         "maatschappij": "",
     }
 
-    # Core product info area
-    title_h1 = soup.select_one("h1")
-    if title_h1 is not None:
-        details["title"] = normalize_text(title_h1.get_text(" ", strip=True))
-
-    # Prefer visible structured block near the title, but also keep regex fallbacks on the rendered page text.
     if not details["artist"]:
-        artist_candidates = []
+        artist_candidates: List[str] = []
         for node in soup.select("main a, main p, main span"):
             text = normalize_text(node.get_text(" ", strip=True))
             if not text:
@@ -260,324 +305,330 @@ def parse_detail_page_html(html: str, url: str) -> Dict[str, str]:
     if price_match:
         details["prijs"] = nl_price(price_match.group(1))
 
-    stock_match = re.search(r"(Op voorraad:[^€#]{0,80}|Levertijd:[^€#]{0,80}|Uitverkocht)", page_text, flags=re.IGNORECASE)
+    stock_match = re.search(r"(Op voorraad:[^€#]{0,120}|Levertijd:[^€#]{0,120}|Uitverkocht)", page_text, flags=re.IGNORECASE)
     if stock_match:
         details["op_voorraad"] = infer_stock_label(stock_match.group(1))
 
-    # Use the visible info block that is currently present on product pages.
-    if not details["genre"] or not details["maatschappij"] or not details["ean"] or not details["release"]:
-        product_anchor = title_h1.find_parent("main") if title_h1 else soup
-        all_text = [normalize_text(x.get_text(" ", strip=True)) for x in product_anchor.find_all(["a", "p", "span"], recursive=True)]
-        all_text = [x for x in all_text if x]
+    text_chunks = [normalize_text(x.get_text(" ", strip=True)) for x in soup.find_all(["a", "p", "span", "li", "div"]) ]
+    text_chunks = [x for x in text_chunks if x]
 
-        if not details["ean"]:
-            for part in all_text:
-                if re.fullmatch(r"\d{8,14}", part):
-                    details["ean"] = part
-                    break
+    if not details["ean"]:
+        for chunk in text_chunks:
+            if re.fullmatch(r"\d{8,14}", chunk):
+                details["ean"] = chunk
+                break
 
-        if not details["release"]:
-            m = re.search(r"Release\s+(\d{2}-\d{2}-\d{4})", page_text, flags=re.IGNORECASE)
+    if not details["release"]:
+        m = re.search(r"Release\s+(\d{2}-\d{2}-\d{4})", page_text, flags=re.IGNORECASE)
+        if m:
+            details["release"] = m.group(1)
+        else:
+            m = re.search(r"(\d{2}-\d{2}-\d{4})", page_text)
             if m:
                 details["release"] = m.group(1)
 
-        if not details["genre"]:
-            # On current product pages the sequence is typically:
-            # breadcrumb -> artist -> title -> genre -> label -> format -> ean -> release
-            title_index = -1
-            if details["title"] in all_text:
-                title_index = all_text.index(details["title"])
-            if title_index >= 0:
-                window = all_text[title_index + 1 : title_index + 8]
-                for idx, item in enumerate(window):
-                    if not item or item == details["artist"] or item == details["title"]:
-                        continue
-                    if item.startswith("Release "):
-                        continue
-                    if re.fullmatch(r"\d{8,14}", item):
-                        continue
-                    if re.fullmatch(r"(2-LP|3-LP|4-LP|5-LP|LP|12\"|7\")", item, flags=re.IGNORECASE):
-                        continue
-                    details["genre"] = item
-                    if idx + 1 < len(window):
-                        next_item = window[idx + 1]
-                        if (
-                            next_item
-                            and not re.fullmatch(r"\d{8,14}", next_item)
-                            and not next_item.startswith("Release ")
-                            and not re.fullmatch(r"(2-LP|3-LP|4-LP|5-LP|LP|12\"|7\")", next_item, flags=re.IGNORECASE)
-                        ):
-                            details["maatschappij"] = next_item
-                    break
+    if details["title"] in text_chunks:
+        title_index = text_chunks.index(details["title"])
+        window = text_chunks[title_index + 1 : title_index + 10]
+        filtered = []
+        for item in window:
+            if not item:
+                continue
+            if item == details["artist"] or item == details["title"]:
+                continue
+            if item.startswith("Release "):
+                continue
+            if re.fullmatch(r"\d{8,14}", item):
+                continue
+            if re.fullmatch(r"(2-LP|3-LP|4-LP|5-LP|LP|12\"|7\")", item, flags=re.IGNORECASE):
+                continue
+            filtered.append(item)
+        if filtered:
+            details["genre"] = filtered[0]
+        if len(filtered) >= 2:
+            details["maatschappij"] = filtered[1]
 
-        if not details["maatschappij"]:
-            # Label often appears right before format or right after genre.
-            m = re.search(
-                r"#\s*[^\n]+?\s+([A-Za-zÀ-ÿ/&][A-Za-zÀ-ÿ0-9 '&/.\-]+)\s+(2-LP|3-LP|4-LP|5-LP|LP|12\"|7\")\s+\d{8,14}",
-                page_text,
-                flags=re.IGNORECASE,
-            )
+    if not details["genre"]:
+        m = re.search(r"Genre\s*:?\s*([A-Za-z0-9&/'\- ]{2,80})", page_text, flags=re.IGNORECASE)
+        if m:
+            details["genre"] = normalize_text(m.group(1))
+
+    if not details["maatschappij"]:
+        m = re.search(r"Maatschappij\s*:?\s*([A-Za-z0-9&/'\- ]{2,80})", page_text, flags=re.IGNORECASE)
+        if m:
+            details["maatschappij"] = normalize_text(m.group(1))
+        else:
+            m = re.search(r"Label\s*:?\s*([A-Za-z0-9&/'\- ]{2,80})", page_text, flags=re.IGNORECASE)
             if m:
                 details["maatschappij"] = normalize_text(m.group(1))
 
+    details["url"] = url
     return details
-
-
-def needs_detail_enrichment(row: Dict[str, str]) -> bool:
-    needed = ("ean", "genre", "release", "maatschappij")
-    return not all(normalize_text(row.get(field, "")) for field in needed)
 
 
 class BrowserFetcher:
     def __init__(self, headless: bool = True) -> None:
         self.headless = headless
-        self._playwright: Playwright | None = None
+        self.user_agent = random.choice(USER_AGENTS)
+        self.playwright: Playwright | None = None
         self.browser: Browser | None = None
         self.context: BrowserContext | None = None
         self.page: Page | None = None
 
     def __enter__(self) -> "BrowserFetcher":
-        self._playwright = sync_playwright().start()
-        self.browser = self._playwright.chromium.launch(
+        self.playwright = sync_playwright().start()
+        self.browser = self.playwright.chromium.launch(
             headless=self.headless,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--disable-dev-shm-usage",
+                "--disable-infobars",
+                "--disable-popup-blocking",
+                "--disable-renderer-backgrounding",
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--window-size=1440,2000",
                 "--no-sandbox",
             ],
         )
         self.context = self.browser.new_context(
-            user_agent=USER_AGENT,
+            user_agent=self.user_agent,
+            viewport={"width": 1440, "height": 2000},
             locale="nl-NL",
             timezone_id="Europe/Amsterdam",
-            viewport={"width": 1440, "height": 2200},
-            extra_http_headers={
+            java_script_enabled=True,
+            ignore_https_errors=True,
+        )
+        self.context.set_extra_http_headers(
+            {
                 "Accept-Language": "nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7",
                 "Upgrade-Insecure-Requests": "1",
-                "DNT": "1",
-            },
+            }
         )
         self.context.add_init_script(
             """
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            Object.defineProperty(navigator, 'language', { get: () => 'nl-NL' });
-            Object.defineProperty(navigator, 'languages', { get: () => ['nl-NL', 'nl', 'en-US', 'en'] });
-            Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+            Object.defineProperty(navigator, 'language', {get: () => 'nl-NL'});
+            Object.defineProperty(navigator, 'languages', {get: () => ['nl-NL', 'nl', 'en-US', 'en']});
+            Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+            Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
+            window.chrome = { runtime: {} };
             """
         )
         self.page = self.context.new_page()
         self.page.set_default_navigation_timeout(TIMEOUT_MS)
         self.page.set_default_timeout(TIMEOUT_MS)
+        self._warm_up_session()
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        try:
-            if self.page is not None:
-                self.page.close()
-        finally:
+        for obj in (self.page, self.context, self.browser, self.playwright):
             try:
-                if self.context is not None:
-                    self.context.close()
-            finally:
-                try:
-                    if self.browser is not None:
-                        self.browser.close()
-                finally:
-                    if self._playwright is not None:
-                        self._playwright.stop()
-
-    def fetch_html(self, url: str) -> str:
-        assert self.page is not None
-
-        response = self.page.goto(url, wait_until="domcontentloaded")
-        self.page.wait_for_timeout(900)
-        self._dismiss_overlays()
-
-        status = response.status if response is not None else 0
-        html = self.page.content()
-        if status >= 400:
-            raise RuntimeError(f"{status} response for {url}")
-
-        if self.page.locator("div.relative.group").count() == 0 and "toegang geweigerd" in html.lower():
-            raise RuntimeError(f"Access denied for {url}")
-
-        return html
-
-    def _dismiss_overlays(self) -> None:
-        assert self.page is not None
-        selectors = [
-            "button:has-text('Accepteren')",
-            "button:has-text('Accept')",
-            "button:has-text('Alles accepteren')",
-            "button:has-text('Sluiten')",
-        ]
-        for selector in selectors:
-            try:
-                locator = self.page.locator(selector).first
-                if locator.count() > 0 and locator.is_visible():
-                    locator.click(timeout=2_000)
-                    self.page.wait_for_timeout(250)
+                if obj is not None:
+                    obj.close() if hasattr(obj, "close") else obj.stop()
             except Exception:
                 pass
+        self.page = None
+        self.context = None
+        self.browser = None
+        self.playwright = None
+
+    def _dismiss_overlays(self) -> None:
+        if self.page is None:
+            return
+        for selector in COOKIE_SELECTORS:
+            try:
+                locator = self.page.locator(selector).first
+                if locator.is_visible(timeout=1200):
+                    locator.click(timeout=1500)
+                    self.page.wait_for_timeout(500)
+            except Exception:
+                continue
+
+    def _warm_up_session(self) -> None:
+        if self.page is None:
+            return
+        for warmup_url in WARMUP_URLS:
+            try:
+                self.page.goto(warmup_url, wait_until="domcontentloaded")
+                self.page.wait_for_timeout(1500)
+                self._dismiss_overlays()
+                self.page.mouse.move(200, 300)
+                self.page.mouse.wheel(0, 900)
+                self.page.wait_for_timeout(500)
+            except Exception:
+                continue
+
+    def _new_page(self) -> Page:
+        assert self.context is not None
+        page = self.context.new_page()
+        page.set_default_navigation_timeout(TIMEOUT_MS)
+        page.set_default_timeout(TIMEOUT_MS)
+        return page
+
+    def _looks_like_listing(self, html: str) -> bool:
+        lower = html.lower()
+        if contains_block_text(lower):
+            return False
+        return (
+            "full-click" in lower
+            or "font-bold" in lower
+            or "/vinyl/" in lower
+            or "relative group" in lower
+        )
+
+    def fetch_html(self, url: str, expect_listing: bool = False) -> str:
+        last_error: Exception | None = None
+
+        for attempt in range(1, FETCH_RETRIES + 1):
+            page = self._new_page()
+            try:
+                response = page.goto(url, wait_until="domcontentloaded")
+                page.wait_for_timeout(1500 + attempt * 500)
+                self.page = page
+                self._dismiss_overlays()
+                page.mouse.move(250, 420)
+                page.mouse.wheel(0, 1200)
+                page.wait_for_timeout(800)
+                html = page.content()
+                status = response.status if response is not None else 0
+
+                if status == 403 or contains_block_text(html):
+                    raise RuntimeError(f"403/block response for {url}")
+                if status >= 400:
+                    raise RuntimeError(f"HTTP {status} for {url}")
+                if expect_listing and not self._looks_like_listing(html):
+                    raise RuntimeError(f"Listing markup not detected for {url}")
+                return html
+            except (PlaywrightTimeoutError, PlaywrightError, RuntimeError) as exc:
+                last_error = exc
+                try:
+                    page.close()
+                except Exception:
+                    pass
+                self.page = self._new_page()
+                self._warm_up_session()
+                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+            except Exception as exc:
+                last_error = exc
+                try:
+                    page.close()
+                except Exception:
+                    pass
+                self.page = self._new_page()
+                self._warm_up_session()
+                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+
+        raise RuntimeError(str(last_error) if last_error else f"Failed to fetch {url}")
 
 
-def scrape_step1(output_dir: Path, headless: bool = True) -> Dict[str, Dict[str, str]]:
-    step1_path = output_dir / STEP1_FILE
-    rows_by_url = load_csv_as_dict(step1_path, STEP1_COLUMNS)
-    if rows_by_url:
-        print(f"[INFO] Bestaand bestand geladen: {step1_path} ({len(rows_by_url)} records)")
-    else:
-        print(f"[INFO] Start met leeg bestand: {step1_path}")
-
-    total_pages_done = 0
-    pages_since_write = 0
+def scrape_step1(output_dir: str = DEFAULT_OUTPUT_DIR, headless: bool = True) -> Path:
+    output_path = Path(output_dir) / STEP1_FILE
+    rows_by_url = load_csv_as_dict(output_path, STEP1_COLUMNS)
 
     with BrowserFetcher(headless=headless) as fetcher:
+        total_pages = 0
         for seed_url in SEED_URLS:
             category_name = category_name_from_seed(seed_url)
-            seen_in_category: set[str] = set()
-            page_no = 1
+            empty_pages = 0
+            known_urls_on_seed: set[str] = set()
 
-            while True:
-                page_url = build_page_url(seed_url, page_no)
-                try:
-                    html = fetcher.fetch_html(page_url)
-                    page_rows = parse_listing_page_html(html, page_url, category_name)
-                except Exception as exc:
-                    print(f"[FOUT] {category_name} | pagina {page_no} kon niet worden geladen: {exc}")
-                    break
+            for page_num in range(1, 999):
+                listing_url = build_page_url(seed_url, page_num)
+                print(f"[soundsvenlo] step1 page {page_num}: {listing_url}")
+                html = fetcher.fetch_html(listing_url, expect_listing=True)
+                page_rows = parse_listing_page_html(html, listing_url, category_name)
 
                 if not page_rows:
-                    print(f"[STOP] {category_name} | pagina {page_no} bevat geen artikelen meer.")
-                    break
+                    empty_pages += 1
+                    if empty_pages >= MAX_EMPTY_PAGES:
+                        print(f"[soundsvenlo] stop after {empty_pages} lege pagina's vanaf {listing_url}")
+                        break
+                    time.sleep(DEFAULT_DELAY_SECONDS)
+                    continue
 
-                page_urls = [row["url"] for row in page_rows]
-                new_in_category = [u for u in page_urls if u not in seen_in_category]
-                if not new_in_category:
-                    print(f"[STOP] {category_name} | pagina {page_no} bevat geen nieuwe URL's meer.")
-                    break
-
-                new_in_file = 0
-                updated_in_file = 0
-
+                empty_pages = 0
+                new_on_page = 0
+                duplicate_page = 0
                 for row in page_rows:
-                    existing = rows_by_url.get(row["url"])
-                    if existing is None:
-                        new_in_file += 1
+                    url = row["url"]
+                    if url in known_urls_on_seed:
+                        duplicate_page += 1
                     else:
-                        updated_in_file += 1
-                    rows_by_url[row["url"]] = merge_row(existing, row, STEP1_COLUMNS)
+                        known_urls_on_seed.add(url)
+                    before = rows_by_url.get(url)
+                    rows_by_url[url] = merge_row(before, row, STEP1_COLUMNS)
+                    if before is None:
+                        new_on_page += 1
 
-                seen_in_category.update(new_in_category)
-                total_pages_done += 1
-                pages_since_write += 1
-
-                if pages_since_write >= STEP1_WRITE_EVERY_PAGES:
-                    write_csv(step1_path, rows_by_url, STEP1_COLUMNS)
-                    print(
-                        f"[SAVE] tussentijds opgeslagen na {pages_since_write} pagina's | "
-                        f"totaal bestand: {len(rows_by_url)}"
-                    )
-                    pages_since_write = 0
+                total_pages += 1
+                if total_pages % STEP1_WRITE_EVERY_PAGES == 0:
+                    write_csv(output_path, rows_by_url, STEP1_COLUMNS)
 
                 print(
-                    f"[OK] {category_name} | pagina {page_no} | artikelen: {len(page_rows)} | "
-                    f"nieuw in categorie: {len(new_in_category)} | nieuw in bestand: {new_in_file} | "
-                    f"geüpdatet: {updated_in_file} | totaal bestand: {len(rows_by_url)}"
+                    f"[soundsvenlo] page {page_num}: rows={len(page_rows)} new={new_on_page} "
+                    f"known_on_seed={len(known_urls_on_seed)} duplicates_seen={duplicate_page} total={len(rows_by_url)}"
                 )
+                time.sleep(DEFAULT_DELAY_SECONDS + random.uniform(0.1, 0.4))
 
-                page_no += 1
-                time.sleep(DEFAULT_DELAY_SECONDS)
-
-    write_csv(step1_path, rows_by_url, STEP1_COLUMNS)
-    print(f"[KLAAR] {step1_path.name} opgeslagen met {len(rows_by_url)} records uit {total_pages_done} pagina's.")
-    return rows_by_url
+    write_csv(output_path, rows_by_url, STEP1_COLUMNS)
+    print(f"[soundsvenlo] step1 klaar: {len(rows_by_url)} records -> {output_path}")
+    return output_path
 
 
-def scrape_step2(output_dir: Path, headless: bool = True, limit_detail: int | None = None) -> Dict[str, Dict[str, str]]:
-    step1_path = output_dir / STEP1_FILE
-    step2_path = output_dir / STEP2_FILE
+def iter_step2_targets(step1_rows: Dict[str, Dict[str, str]], step2_rows: Dict[str, Dict[str, str]]) -> Iterable[Dict[str, str]]:
+    for url, row in step1_rows.items():
+        existing = step2_rows.get(url)
+        if existing and normalize_text(existing.get("ean", "")):
+            continue
+        yield row
 
-    source_path = step2_path if step2_path.exists() else step1_path
-    rows_by_url = load_csv_as_dict(source_path, STEP2_COLUMNS)
 
-    if not rows_by_url:
-        print("[INFO] Geen bronbestand gevonden. Draai eerst stap 1 of both.")
-        write_csv(step2_path, rows_by_url, STEP2_COLUMNS)
-        return rows_by_url
+def scrape_step2(
+    output_dir: str = DEFAULT_OUTPUT_DIR,
+    limit_detail: int | None = None,
+    headless: bool = True,
+) -> Path:
+    step1_path = Path(output_dir) / STEP1_FILE
+    step2_path = Path(output_dir) / STEP2_FILE
 
-    print(f"[INFO] Bronbestand geladen: {source_path} ({len(rows_by_url)} records)")
+    step1_rows = load_csv_as_dict(step1_path, STEP1_COLUMNS)
+    if not step1_rows:
+        raise SystemExit(f"Geen step1-bestand gevonden of leeg: {step1_path}")
 
-    urls_to_process = [url for url, row in rows_by_url.items() if needs_detail_enrichment(row)]
+    step2_rows = load_csv_as_dict(step2_path, STEP2_COLUMNS)
+    targets = list(iter_step2_targets(step1_rows, step2_rows))
     if limit_detail is not None:
-        urls_to_process = urls_to_process[:limit_detail]
-
-    total = len(urls_to_process)
-    if total == 0:
-        write_csv(step2_path, rows_by_url, STEP2_COLUMNS)
-        print(f"[INFO] Alle records zijn al verrijkt. {step2_path.name} is opnieuw opgeslagen.")
-        return rows_by_url
-
-    processed_since_write = 0
-    done = 0
+        targets = targets[:limit_detail]
 
     with BrowserFetcher(headless=headless) as fetcher:
-        for url in urls_to_process:
-            try:
-                html = fetcher.fetch_html(url)
-                details = parse_detail_page_html(html, url)
-            except Exception as exc:
-                print(f"[FOUT] detail kon niet worden geladen: {url} | {exc}")
-                details = {
-                    "artist": "",
-                    "title": "",
-                    "drager": "",
-                    "prijs": "",
-                    "op_voorraad": "",
-                    "ean": "",
-                    "genre": "",
-                    "release": "",
-                    "maatschappij": "",
-                }
-
-            existing = rows_by_url.get(url, {col: "" for col in STEP2_COLUMNS})
-            merged = dict(existing)
-
-            for field in ("artist", "title", "drager", "prijs", "op_voorraad", "ean", "genre", "release", "maatschappij"):
-                value = normalize_text(details.get(field, ""))
-                if value:
-                    merged[field] = value
-
+        processed = 0
+        for row in targets:
+            url = row["url"]
+            print(f"[soundsvenlo] step2 detail {processed + 1}/{len(targets)}: {url}")
+            html = fetcher.fetch_html(url, expect_listing=False)
+            detail = parse_detail_page_html(html, url)
+            merged = {col: "" for col in STEP2_COLUMNS}
+            for col in STEP1_COLUMNS:
+                merged[col] = normalize_text(row.get(col, ""))
             for col in STEP2_COLUMNS:
-                merged.setdefault(col, "")
-            rows_by_url[url] = merged
+                if detail.get(col):
+                    merged[col] = normalize_text(detail.get(col, ""))
+            step2_rows[url] = merge_row(step2_rows.get(url), merged, STEP2_COLUMNS)
 
-            done += 1
-            processed_since_write += 1
+            processed += 1
+            if processed % STEP2_WRITE_EVERY_RECORDS == 0:
+                write_csv(step2_path, step2_rows, STEP2_COLUMNS)
+            time.sleep(DETAIL_DELAY_SECONDS + random.uniform(0.1, 0.35))
 
-            print(
-                f"[DETAIL] {done}/{total} | {normalize_text(merged.get('artist'))} - "
-                f"{normalize_text(merged.get('title'))} | ean={normalize_text(merged.get('ean'))} | "
-                f"prijs={normalize_text(merged.get('prijs'))}"
-            )
-
-            if processed_since_write >= STEP2_WRITE_EVERY_RECORDS:
-                write_csv(step2_path, rows_by_url, STEP2_COLUMNS)
-                print(
-                    f"[SAVE] step2 tussentijds opgeslagen na {processed_since_write} detailrecords | "
-                    f"totaal bestand: {len(rows_by_url)}"
-                )
-                processed_since_write = 0
-
-            time.sleep(DETAIL_DELAY_SECONDS)
-
-    write_csv(step2_path, rows_by_url, STEP2_COLUMNS)
-    print(f"[KLAAR] {step2_path.name} opgeslagen met {len(rows_by_url)} records.")
-    return rows_by_url
+    write_csv(step2_path, step2_rows, STEP2_COLUMNS)
+    print(f"[soundsvenlo] step2 klaar: {len(step2_rows)} records -> {step2_path}")
+    return step2_path
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Sounds Venlo scraper via Playwright")
+    parser = argparse.ArgumentParser(description="Sounds Venlo scraper (legacy engine)")
     parser.add_argument("--mode", choices=["step1", "step2", "both"], default="both")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--limit-detail", type=int, default=None)
@@ -585,19 +636,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Iterable[str] | None = None) -> int:
-    args = build_parser().parse_args(list(argv) if argv is not None else None)
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
+def main(argv: List[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     headless = not args.headful
 
     if args.mode in {"step1", "both"}:
-        scrape_step1(output_dir=output_dir, headless=headless)
-
+        scrape_step1(output_dir=args.output_dir, headless=headless)
     if args.mode in {"step2", "both"}:
-        scrape_step2(output_dir=output_dir, headless=headless, limit_detail=args.limit_detail)
-
+        scrape_step2(output_dir=args.output_dir, limit_detail=args.limit_detail, headless=headless)
     return 0
 
 
