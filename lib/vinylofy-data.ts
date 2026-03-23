@@ -97,7 +97,7 @@ const BLACKLISTED_FORMAT_LABELS = new Set([
   "POSTER",
   "ACCESSORIES",
   "PHOTOBOOK",
-  "BLUERAY"
+  "BLUERAY",
   "BLURAY"
 ]);
 
@@ -201,7 +201,7 @@ async function getOffersMap(productIds: string[]) {
   if (productIds.length === 0) return new Map<string, SearchShopOffer[]>();
 
   const supabase = createSupabaseServerClient();
-  const cutoff = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+  const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
 
   const { data, error } = await supabase
     .from("prices")
