@@ -45,7 +45,7 @@ def prepare_shop3345_run(csv_path: str) -> None:
 
 
 def normalize_availability(value: str | None) -> str:
-    raw = normalize_text(value).lower().replace("-", "_")
+    raw = normalize_text(value).lower().replace("-", "_").replace(" ", "_")
     if raw in {"out_of_stock", "sold_out"}:
         return "out_of_stock"
     if raw in {"preorder", "pre_order", "coming_soon"}:
@@ -53,6 +53,14 @@ def normalize_availability(value: str | None) -> str:
     if raw in {"in_stock", "available"}:
         return "in_stock"
     return "in_stock"
+
+
+def parse_secondhand(value: str | None, artist: str, title: str, detail_status: str) -> bool:
+    raw = normalize_text(value).lower()
+    if raw in {"1", "true", "yes", "y"}:
+        return True
+    combined = f"{artist} {title} {detail_status}".lower()
+    return combined.startswith("used") or "secondhand" in combined or "second_hand" in combined
 
 
 def map_shop3345_row(row: dict, line_number: int) -> tuple[CanonicalRecord | None, str | None]:
@@ -65,6 +73,8 @@ def map_shop3345_row(row: dict, line_number: int) -> tuple[CanonicalRecord | Non
     format_label = normalize_text(row.get("format")) or "Vinyl"
     availability = normalize_availability(row.get("availability"))
     captured_at = _CAPTURED_AT or datetime.now(timezone.utc)
+    detail_status = normalize_text(row.get("detail_status")) or "ok"
+    is_secondhand = parse_secondhand(row.get("is_secondhand"), artist, title, detail_status)
 
     if not ean:
         return None, "missing_or_invalid_ean"
@@ -93,8 +103,8 @@ def map_shop3345_row(row: dict, line_number: int) -> tuple[CanonicalRecord | Non
         availability=availability,
         captured_at=captured_at,
         product_handle=None,
-        detail_status="ok",
-        is_secondhand=False,
+        detail_status=detail_status,
+        is_secondhand=is_secondhand,
         raw=row,
     ), None
 
@@ -113,7 +123,17 @@ SHOP_DEFINITION = ShopImporterDefinition(
     row_mapper=map_shop3345_row,
     description="Import 3345 detail CSV into Supabase/Postgres",
     required_columns=("title", "price", "url", "ean"),
-    optional_columns=("artist", "release_date", "genre", "style", "format", "availability"),
+    optional_columns=(
+        "artist",
+        "release_date",
+        "genre",
+        "style",
+        "format",
+        "availability",
+        "detail_status",
+        "is_secondhand",
+        "source_collection",
+    ),
     tags=("vinyl", "detail-csv", "mtime-captured-at"),
     before_run=prepare_shop3345_run,
 )

@@ -1,18 +1,41 @@
-name: Shop - 3345 Refresh Known
+name: Shop - 3345 Backfill Unmatched
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "40 5 * * *"
+    - cron: "10 6 * * *"
 
 concurrency:
   group: vinylofy-shop3345
   cancel-in-progress: false
 
 jobs:
-  run:
+  gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    outputs:
+      should_run: ${{ steps.decide.outputs.should_run }}
+    steps:
+      - id: decide
+        name: Decide whether backfill should run
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          DAY_INDEX=$(( $(date -u +%s) / 86400 ))
+          if [ $(( DAY_INDEX % 2 )) -eq 0 ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  run:
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -21,12 +44,12 @@ jobs:
       SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
       VINYLOFY_SCRAPER_CMD_SHOP3345: >-
         python -u scripts/scrapers/shop3345_automation.py
-        --mode refresh-known
+        --mode backfill
         --links-file data/raw/shop3345/3345_product_links.txt
         --csv-file data/raw/shop3345/3345_products.csv
         --state-file data/raw/shop3345/3345_detail_rotation_state.json
-        --limit-details 200
-        --workers 10
+        --limit-details 50
+        --workers 8
 
     steps:
       - name: Checkout
@@ -62,7 +85,7 @@ jobs:
           mkdir -p data/raw/shop3345
           mkdir -p output
 
-      - name: Run refresh-known pipeline
+      - name: Run unmatched backfill pipeline
         shell: bash
         run: |
           python -u scripts/automation/run_vinylofy_pipeline.py --shop shop3345
@@ -81,7 +104,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: shop3345-refresh-known-${{ github.run_id }}
+          name: shop3345-backfill-${{ github.run_id }}
           path: |
             data/raw/shop3345/**/*.csv
             data/raw/shop3345/*.csv

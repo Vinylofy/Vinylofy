@@ -1,4 +1,4 @@
-name: Shop - 3345 Links
+name: Shop - 3345 Discovery
 
 on:
   workflow_dispatch:
@@ -21,11 +21,14 @@ jobs:
       SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
       VINYLOFY_SCRAPER_CMD_SHOP3345: >-
         python -u scripts/scrapers/shop3345_automation.py
-        --mode links
+        --mode discovery
         --links-file data/raw/shop3345/3345_product_links.txt
         --csv-file data/raw/shop3345/3345_products.csv
         --state-file data/raw/shop3345/3345_detail_rotation_state.json
-        --max-pages 50
+        --max-pages 15
+        --source browse-all-music
+        --source all
+        --source used-records
 
     steps:
       - name: Checkout
@@ -61,7 +64,7 @@ jobs:
           mkdir -p data/raw/shop3345
           mkdir -p output
 
-      - name: Run pipeline
+      - name: Run discovery-only pipeline
         shell: bash
         run: |
           python -u scripts/automation/run_vinylofy_pipeline.py --shop shop3345 --skip-import --skip-upload
@@ -80,7 +83,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: shop3345-links-${{ github.run_id }}
+          name: shop3345-discovery-${{ github.run_id }}
           path: |
             data/raw/shop3345/**/*.csv
             data/raw/shop3345/*.csv
