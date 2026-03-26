@@ -13,16 +13,16 @@ import shop3345 as base  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Automation wrapper voor 3345 scraper")
-    p.add_argument("--mode", choices=["links", "details", "both"], default="both")
-    p.add_argument("--start-page", type=int, default=1)
-    p.add_argument("--max-pages", type=int, default=20)
-    p.add_argument("--limit-details", type=int, default=250)
-    p.add_argument("--workers", type=int, default=10)
-    p.add_argument("--links-file", default="data/raw/shop3345/3345_product_links.txt")
-    p.add_argument("--csv-file", default="data/raw/shop3345/3345_products.csv")
-    p.add_argument("--state-file", default="data/raw/shop3345/3345_detail_rotation_state.json")
-    return p
+    parser = argparse.ArgumentParser(description="Automation wrapper voor 3345 scraper")
+    parser.add_argument("--mode", choices=["links", "details", "both"], default="both")
+    parser.add_argument("--start-page", type=int, default=1)
+    parser.add_argument("--max-pages", type=int, default=20)
+    parser.add_argument("--limit-details", type=int, default=250)
+    parser.add_argument("--workers", type=int, default=10)
+    parser.add_argument("--links-file", default="data/raw/shop3345/3345_product_links.txt")
+    parser.add_argument("--csv-file", default="data/raw/shop3345/3345_products.csv")
+    parser.add_argument("--state-file", default="data/raw/shop3345/3345_detail_rotation_state.json")
+    return parser
 
 
 def ensure_parent(path: str | Path) -> None:
@@ -36,6 +36,7 @@ def main() -> int:
     links_file = Path(args.links_file)
     csv_file = Path(args.csv_file)
     state_file = Path(args.state_file)
+
     ensure_parent(links_file)
     ensure_parent(csv_file)
     ensure_parent(state_file)
@@ -71,6 +72,7 @@ def main() -> int:
         update_existing=True,
         workers=max(1, args.workers),
     )
+
     print(f"[DETAILS] verwerkt: {written}")
     print("Klaar.")
     return 0

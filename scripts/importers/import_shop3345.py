@@ -44,6 +44,17 @@ def prepare_shop3345_run(csv_path: str) -> None:
     _CAPTURED_AT = resolve_captured_at(csv_path)
 
 
+def normalize_availability(value: str | None) -> str:
+    raw = normalize_text(value).lower().replace("-", "_")
+    if raw in {"out_of_stock", "sold_out"}:
+        return "out_of_stock"
+    if raw in {"preorder", "pre_order", "coming_soon"}:
+        return "preorder"
+    if raw in {"in_stock", "available"}:
+        return "in_stock"
+    return "in_stock"
+
+
 def map_shop3345_row(row: dict, line_number: int) -> tuple[CanonicalRecord | None, str | None]:
     global _CAPTURED_AT
 
@@ -52,6 +63,7 @@ def map_shop3345_row(row: dict, line_number: int) -> tuple[CanonicalRecord | Non
     product_url = normalize_text(row.get("url"))
     artist, title = infer_artist_title(row.get("artist"), row.get("title"))
     format_label = normalize_text(row.get("format")) or "Vinyl"
+    availability = normalize_availability(row.get("availability"))
     captured_at = _CAPTURED_AT or datetime.now(timezone.utc)
 
     if not ean:
@@ -78,7 +90,7 @@ def map_shop3345_row(row: dict, line_number: int) -> tuple[CanonicalRecord | Non
         product_url=product_url,
         price=price,
         currency=CONFIG.currency,
-        availability="in_stock",
+        availability=availability,
         captured_at=captured_at,
         product_handle=None,
         detail_status="ok",
@@ -101,7 +113,7 @@ SHOP_DEFINITION = ShopImporterDefinition(
     row_mapper=map_shop3345_row,
     description="Import 3345 detail CSV into Supabase/Postgres",
     required_columns=("title", "price", "url", "ean"),
-    optional_columns=("artist", "release_date", "genre", "style", "format"),
+    optional_columns=("artist", "release_date", "genre", "style", "format", "availability"),
     tags=("vinyl", "detail-csv", "mtime-captured-at"),
     before_run=prepare_shop3345_run,
 )

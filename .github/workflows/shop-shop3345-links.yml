@@ -19,10 +19,28 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
-      VINYLOFY_SCRAPER_CMD_SHOP3345: python -u scripts/scrapers/shop3345_automation.py --mode links --links-file data/raw/shop3345/3345_product_links.txt --csv-file data/raw/shop3345/3345_products.csv --max-pages 20
+      VINYLOFY_SCRAPER_CMD_SHOP3345: >-
+        python -u scripts/scrapers/shop3345_automation.py
+        --mode links
+        --links-file data/raw/shop3345/3345_product_links.txt
+        --csv-file data/raw/shop3345/3345_products.csv
+        --state-file data/raw/shop3345/3345_detail_rotation_state.json
+        --max-pages 50
+
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Restore persisted 3345 state
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/raw/shop3345/3345_product_links.txt
+            data/raw/shop3345/3345_products.csv
+            data/raw/shop3345/3345_detail_rotation_state.json
+          key: shop3345-state-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            shop3345-state-${{ github.ref_name }}-
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -46,7 +64,17 @@ jobs:
       - name: Run pipeline
         shell: bash
         run: |
-          python -u scripts/automation/run_vinylofy_pipeline.py             --shop shop3345             --skip-import             --skip-upload
+          python -u scripts/automation/run_vinylofy_pipeline.py --shop shop3345 --skip-import --skip-upload
+
+      - name: Save persisted 3345 state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/raw/shop3345/3345_product_links.txt
+            data/raw/shop3345/3345_products.csv
+            data/raw/shop3345/3345_detail_rotation_state.json
+          key: shop3345-state-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Upload workflow artifacts
         if: always()
@@ -56,6 +84,8 @@ jobs:
           path: |
             data/raw/shop3345/**/*.csv
             data/raw/shop3345/*.csv
+            data/raw/shop3345/*.txt
+            data/raw/shop3345/*.json
             output/**/*.json
             output/**/*.csv
           if-no-files-found: warn
