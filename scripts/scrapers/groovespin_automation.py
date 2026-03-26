@@ -18,7 +18,11 @@ def ensure_dir(path: str | Path) -> Path:
 
 
 def find_latest_stage1(out_dir: Path) -> Path:
-    candidates = sorted(out_dir.glob("groovespin_albums_*.stage1.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
+    candidates = sorted(
+        out_dir.glob("groovespin_albums_*.stage1.csv"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
     if not candidates:
         raise FileNotFoundError(f"Geen stage1 CSV gevonden in {out_dir}")
     return candidates[0]
@@ -26,8 +30,7 @@ def find_latest_stage1(out_dir: Path) -> Path:
 
 def find_latest_final(out_dir: Path) -> Path:
     candidates = [
-        p for p in out_dir.glob("groovespin_albums_*.csv")
-        if not p.name.endswith(".stage1.csv")
+        p for p in out_dir.glob("groovespin_albums_*.csv") if not p.name.endswith(".stage1.csv")
     ]
     candidates = sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
     if not candidates:
@@ -47,6 +50,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output-dir", default="data/raw/groovespin")
     p.add_argument("--max-pages", type=int, default=30)
     p.add_argument("--limit-ean", type=int, default=250)
+    p.add_argument(
+        "--ean-workers",
+        type=int,
+        default=1,
+        help="Compatibiliteitsargument voor oudere workflow-commands; momenteel ongebruikt.",
+    )
     p.add_argument("--stage1-file", default="")
     p.add_argument("--headless", default="true")
     return p
@@ -61,11 +70,17 @@ def main() -> int:
 
     if args.mode == "listing":
         cmd = [
-            sys.executable, "-u", str(TARGET),
-            "--mode", "listing",
-            "--headless", str(args.headless),
-            "--out-dir", str(out_dir),
-            "--max-pages", str(max(1, args.max_pages)),
+            sys.executable,
+            "-u",
+            str(TARGET),
+            "--mode",
+            "listing",
+            "--headless",
+            str(args.headless),
+            "--out-dir",
+            str(out_dir),
+            "--max-pages",
+            str(max(1, args.max_pages)),
         ]
         run_command(cmd)
         shutil.copy2(find_latest_stage1(out_dir), canonical_stage1)
@@ -79,13 +94,21 @@ def main() -> int:
         stage1_source = Path(args.stage1_file) if args.stage1_file else canonical_stage1
         if not stage1_source.exists():
             raise FileNotFoundError(f"Stage1 bestand ontbreekt: {stage1_source}")
+
         cmd = [
-            sys.executable, "-u", str(TARGET),
-            "--mode", "ean-only",
-            "--headless", str(args.headless),
-            "--out-dir", str(out_dir),
-            "--stage1-file", str(stage1_source),
-            "--limit-ean", str(max(1, args.limit_ean)),
+            sys.executable,
+            "-u",
+            str(TARGET),
+            "--mode",
+            "ean-only",
+            "--headless",
+            str(args.headless),
+            "--out-dir",
+            str(out_dir),
+            "--stage1-file",
+            str(stage1_source),
+            "--limit-ean",
+            str(max(1, args.limit_ean)),
         ]
         run_command(cmd)
         shutil.copy2(find_latest_final(out_dir), canonical_final)
@@ -93,12 +116,19 @@ def main() -> int:
         return 0
 
     cmd = [
-        sys.executable, "-u", str(TARGET),
-        "--mode", "full",
-        "--headless", str(args.headless),
-        "--out-dir", str(out_dir),
-        "--max-pages", str(max(1, args.max_pages)),
-        "--limit-ean", str(max(1, args.limit_ean)),
+        sys.executable,
+        "-u",
+        str(TARGET),
+        "--mode",
+        "full",
+        "--headless",
+        str(args.headless),
+        "--out-dir",
+        str(out_dir),
+        "--max-pages",
+        str(max(1, args.max_pages)),
+        "--limit-ean",
+        str(max(1, args.limit_ean)),
     ]
     run_command(cmd)
     shutil.copy2(find_latest_stage1(out_dir), canonical_stage1)
