@@ -88,6 +88,24 @@ export type ProductDetail = {
   shops: SearchShopOffer[];
 };
 
+
+export type PriceHistoryWindow = "30d" | "90d" | "1y";
+
+export type ProductPriceHistoryPoint = {
+  day: string;
+  price: number;
+  shopCount: number;
+  lastCapturedAt: string | null;
+};
+
+type PriceHistoryDailyRow = {
+  product_id: string;
+  day: string;
+  min_instock_price: number | string | null;
+  instock_shop_count: number | null;
+  last_captured_at: string | null;
+};
+
 type RankedSearchResult = SearchResultItem & {
   _score: number;
 };
@@ -493,3 +511,36 @@ export async function searchProducts(query: string): Promise<SearchResultItem[]>
 
   return ranked.slice(0, 24).map(({ _score, ...rest }) => rest);
 }
+
+export async function getProductPriceHistory(
+  productId: string,
+  maxDays = 365,
+): Promise<ProductPriceHistoryPoint[]> {
+  const supabase = createSupabaseServerClient();
+  const cutoff = new Date();
+  cutoff.setUTCDate(cutoff.getUTCDate() - Math.max(maxDays, 30));
+
+  const { data, error } = await supabase
+    .from("product_price_history_daily_v1")
+    .select("product_id, day, min_instock_price, instock_shop_count, last_captured_at")
+    .eq("product_id", productId)
+    .gte("day", cutoff.toISOString().slice(0, 10))
+    .order("day", { ascending: true });
+
+  if (error) throw error;
+
+  return ((data ?? []) as PriceHistoryDailyRow[])
+    .map((row) => {
+      const price = toNumber(row.min_instock_price);
+      if (price === null) return null;
+
+      return {
+        day: row.day,
+        price,
+        shopCount: row.instock_shop_count ?? 0,
+        lastCapturedAt: row.last_captured_at ?? null,
+      } satisfies ProductPriceHistoryPoint;
+    })
+    .filter((row): row is ProductPriceHistoryPoint => Boolean(row));
+}
+
