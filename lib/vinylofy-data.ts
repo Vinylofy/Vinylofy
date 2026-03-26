@@ -110,6 +110,22 @@ type RankedSearchResult = SearchResultItem & {
   _score: number;
 };
 
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isUuidLike(value: string): boolean {
+  return UUID_RE.test(value.trim());
+}
+
+function normalizeProductRouteKey(value: string): string {
+  return value.trim();
+}
+
+function extractDigits(value: string): string {
+  return value.replace(/\D/g, "");
+}
+
 const BLACKLISTED_FORMAT_LABELS = new Set([
   "CD",
   "POSTER",
@@ -390,19 +406,40 @@ export async function getHomePageData(): Promise<{
   return { top25, newReleases };
 }
 
-export async function getProductDetail(id: string): Promise<ProductDetail | null> {
+
+async function resolveProductRowByRouteKey(routeKey: string): Promise<ProductRow | null> {
   const supabase = createSupabaseServerClient();
+  const key = normalizeProductRouteKey(routeKey);
+  const digits = extractDigits(key);
 
-  const { data, error } = await supabase
-    .from("products")
-    .select("id, ean, artist, title, format_label, cover_url, created_at")
-    .eq("id", id)
-    .maybeSingle();
+  if (isUuidLike(key)) {
+    const { data, error } = await supabase
+      .from("products")
+      .select("id, ean, artist, title, format_label, cover_url, created_at")
+      .eq("id", key)
+      .maybeSingle();
 
-  if (error) throw error;
-  if (!data) return null;
+    if (error) throw error;
+    return (data as ProductRow | null) ?? null;
+  }
 
-  const product = data as ProductRow;
+  if ([8, 12, 13, 14].includes(digits.length)) {
+    const { data, error } = await supabase
+      .from("products")
+      .select("id, ean, artist, title, format_label, cover_url, created_at")
+      .eq("ean", digits)
+      .maybeSingle();
+
+    if (error) throw error;
+    return (data as ProductRow | null) ?? null;
+  }
+
+  return null;
+}
+
+export async function getProductDetail(id: string): Promise<ProductDetail | null> {
+  const product = await resolveProductRowByRouteKey(id);
+  if (!product) return null;
   if (!isAllowedProduct(product)) return null;
 
   const bestMap = await getBestPriceMap([product.id]);

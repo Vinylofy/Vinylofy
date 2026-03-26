@@ -29,7 +29,7 @@ export default async function ProductDetailPage({ params }: ProductPageProps) {
   const { id } = params;
 
   const product = await getProductDetail(id);
-  const priceHistory = product ? await getProductPriceHistory(id) : [];
+  const priceHistory = product ? await getProductPriceHistory(product.id) : [];
 
   if (!product) {
     notFound();
