@@ -11,9 +11,7 @@ import {
 } from "@/lib/vinylofy-data";
 
 type ProductPageProps = {
-  params: {
-    id: string;
-  };
+  params: Promise<{ id?: string }> | { id?: string };
 };
 
 function InsightCard({ title, children }: { title: string; children: ReactNode }) {
@@ -26,9 +24,10 @@ function InsightCard({ title, children }: { title: string; children: ReactNode }
 }
 
 export default async function ProductDetailPage({ params }: ProductPageProps) {
-  const { id } = params;
+  const resolvedParams = await Promise.resolve(params);
+  const routeId = typeof resolvedParams?.id === "string" ? resolvedParams.id : "";
 
-  const product = await getProductDetail(id);
+  const product = await getProductDetail(routeId);
   const priceHistory = product ? await getProductPriceHistory(product.id) : [];
 
   if (!product) {

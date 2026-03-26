@@ -118,8 +118,13 @@ function isUuidLike(value: string): boolean {
   return UUID_RE.test(value.trim());
 }
 
-function normalizeProductRouteKey(value: string): string {
-  return value.trim();
+function normalizeProductRouteKey(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  return trimmed;
 }
 
 function extractDigits(value: string): string {
@@ -407,9 +412,11 @@ export async function getHomePageData(): Promise<{
 }
 
 
-async function resolveProductRowByRouteKey(routeKey: string): Promise<ProductRow | null> {
-  const supabase = createSupabaseServerClient();
+async function resolveProductRowByRouteKey(routeKey: unknown): Promise<ProductRow | null> {
   const key = normalizeProductRouteKey(routeKey);
+  if (!key) return null;
+
+  const supabase = createSupabaseServerClient();
   const digits = extractDigits(key);
 
   if (isUuidLike(key)) {
@@ -437,7 +444,7 @@ async function resolveProductRowByRouteKey(routeKey: string): Promise<ProductRow
   return null;
 }
 
-export async function getProductDetail(id: string): Promise<ProductDetail | null> {
+export async function getProductDetail(id: unknown): Promise<ProductDetail | null> {
   const product = await resolveProductRowByRouteKey(id);
   if (!product) return null;
   if (!isAllowedProduct(product)) return null;
