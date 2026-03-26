@@ -25,6 +25,8 @@ const WINDOW_DAYS: Record<PriceHistoryWindow, number> = {
   "1y": 365,
 };
 
+const MIN_POINTS_FOR_CHART = 7;
+
 function parseIsoDay(value: string): Date {
   return new Date(`${value}T00:00:00Z`);
 }
@@ -65,113 +67,135 @@ function formatAxisEuro(value: number) {
   }).format(value);
 }
 
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
 export function PriceHistoryCard({
   currentPrice,
   points,
   defaultWindow = "90d",
 }: PriceHistoryCardProps) {
   const [window, setWindow] = useState<PriceHistoryWindow>(defaultWindow);
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
 
   const filtered = useMemo(() => filterWindow(points, window), [points, window]);
 
+  const activePoint = activeIndex !== null ? filtered[activeIndex] : filtered[filtered.length - 1] ?? null;
+  const latestPoint = filtered[filtered.length - 1] ?? null;
+
+  const lowestInWindow = filtered.reduce<number | null>((lowest, point) => {
+    if (lowest === null || point.price < lowest) return point.price;
+    return lowest;
+  }, null);
+
+  const maxShopCount = filtered.reduce((highest, point) => Math.max(highest, point.shopCount), 0);
+  const hasEnoughPoints = filtered.length >= MIN_POINTS_FOR_CHART;
+  const isCurrentAtPeriodLow = currentPrice !== null && lowestInWindow !== null && currentPrice <= lowestInWindow;
+
   const chart = useMemo(() => {
-    if (filtered.length === 0) return null;
+    if (!hasEnoughPoints) return null;
 
-    const width = 760;
-    const height = 280;
-    const padding = { top: 18, right: 16, bottom: 34, left: 62 };
-    const innerWidth = width - padding.left - padding.right;
-    const innerHeight = height - padding.top - padding.bottom;
+    const width = 920;
+    const height = 330;
+    const padding = { top: 22, right: 22, bottom: 36, left: 74 };
 
-    const values = filtered.map((point) => point.price);
-    const minValue = Math.min(...values);
-    const maxValue = Math.max(...values);
-    const spread = Math.max(maxValue - minValue, Math.max(maxValue * 0.08, 1));
-    const yMin = Math.max(0, minValue - spread * 0.22);
-    const yMax = maxValue + spread * 0.22;
-    const valueRange = Math.max(yMax - yMin, 1);
+    const min = Math.min(...filtered.map((point) => point.price));
+    const max = Math.max(...filtered.map((point) => point.price));
+    const spread = Math.max(max - min, 2);
+    const yMin = Math.max(0, Math.floor((min - spread * 0.18) * 2) / 2);
+    const yMax = Math.ceil((max + spread * 0.18) * 2) / 2;
 
     const x = (index: number) => {
-      if (filtered.length === 1) return padding.left + innerWidth / 2;
-      return padding.left + (index / (filtered.length - 1)) * innerWidth;
+      if (filtered.length === 1) return padding.left;
+      return padding.left + (index / (filtered.length - 1)) * (width - padding.left - padding.right);
     };
 
-    const y = (value: number) =>
-      padding.top + ((yMax - value) / valueRange) * innerHeight;
+    const y = (price: number) => {
+      const ratio = (price - yMin) / Math.max(yMax - yMin, 1);
+      return height - padding.bottom - ratio * (height - padding.top - padding.bottom);
+    };
 
     const linePath = filtered
       .map((point, index) => `${index === 0 ? "M" : "L"} ${x(index)} ${y(point.price)}`)
       .join(" ");
 
-    const areaPath = filtered.length
-      ? `${linePath} L ${x(filtered.length - 1)} ${padding.top + innerHeight} L ${x(0)} ${
-          padding.top + innerHeight
-        } Z`
-      : "";
+    const areaPath = [
+      `M ${x(0)} ${height - padding.bottom}`,
+      ...filtered.map((point, index) => `L ${x(index)} ${y(point.price)}`),
+      `L ${x(filtered.length - 1)} ${height - padding.bottom}`,
+      "Z",
+    ].join(" ");
 
-    const tickValues = [yMin, yMin + valueRange / 2, yMax];
+    const tickValues = Array.from({ length: 4 }, (_, index) => {
+      const ratio = index / 3;
+      return yMin + (yMax - yMin) * (1 - ratio);
+    }).map((value) => Math.round(value));
+
     const xLabelIndexes = Array.from(
-      new Set([0, Math.max(0, Math.floor((filtered.length - 1) / 2)), filtered.length - 1]),
+      new Set([
+        0,
+        Math.floor((filtered.length - 1) / 2),
+        filtered.length - 1,
+      ]),
     );
 
-    return {
-      width,
-      height,
-      padding,
-      linePath,
-      areaPath,
-      tickValues,
-      xLabelIndexes,
-      y,
-      x,
-    };
-  }, [filtered]);
-
-  const lowestInWindow = filtered.length > 0 ? Math.min(...filtered.map((point) => point.price)) : null;
-  const maxShopCount = filtered.reduce((max, point) => Math.max(max, point.shopCount), 0);
-  const latestPoint = filtered[filtered.length - 1] ?? null;
+    return { width, height, padding, x, y, yMin, yMax, linePath, areaPath, tickValues, xLabelIndexes };
+  }, [filtered, hasEnoughPoints]);
 
   return (
-    <section className="rounded-[28px] border border-[rgba(234,88,12,0.22)] bg-white p-5 shadow-sm md:p-6">
-      <div className="flex flex-col gap-4 border-b border-[rgba(234,88,12,0.18)] pb-5 md:flex-row md:items-end md:justify-between">
+    <section className="rounded-[28px] border border-[rgba(230,126,34,0.18)] bg-white p-5 shadow-sm md:p-6">
+      <div className="flex flex-col gap-4 border-b border-[rgba(63,38,22,0.08)] pb-4 md:flex-row md:items-center md:justify-between">
         <div>
-          <h2 className="text-2xl font-semibold tracking-tight text-[color:var(--foreground)]">
-            Prijsontwikkeling
-          </h2>
-          <p className="mt-1 text-sm text-neutral-500">
-            Gebaseerd op waargenomen laagste dagprijs per product.
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-2xl font-semibold tracking-tight text-[#3f2616]">Prijsontwikkeling</h2>
+            {isCurrentAtPeriodLow ? (
+              <span className="rounded-full border border-[rgba(230,126,34,0.22)] bg-[#fff7f0] px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-[#c46817]">
+                Laagste punt in {WINDOW_LABELS[window]}
+              </span>
+            ) : null}
+          </div>
+          <p className="mt-1 text-sm text-[#7d6b5d]">
+            Gebaseerd op de laagste waargenomen dagprijs van alle actuele winkels.
           </p>
         </div>
 
-        <div className="inline-flex w-fit rounded-full border border-[rgba(234,88,12,0.18)] bg-[#fffaf6] p-1">
-          {(["30d", "90d", "1y"] as PriceHistoryWindow[]).map((option) => {
-            const active = option === window;
-
+        <div className="inline-flex w-fit rounded-full border border-[rgba(230,126,34,0.16)] bg-[#fffaf6] p-1">
+          {(Object.keys(WINDOW_LABELS) as PriceHistoryWindow[]).map((key) => {
+            const isActive = key === window;
             return (
               <button
-                key={option}
+                key={key}
                 type="button"
-                onClick={() => setWindow(option)}
-                className={`rounded-full px-4 py-2 text-sm font-medium transition ${
-                  active
-                    ? "bg-orange-500 text-white shadow-sm"
-                    : "text-neutral-700 hover:bg-orange-50"
-                }`}
+                onClick={() => {
+                  setWindow(key);
+                  setActiveIndex(null);
+                }}
+                className={[
+                  "rounded-full px-4 py-2 text-sm font-semibold transition",
+                  isActive
+                    ? "bg-[#e67e22] text-white shadow-sm"
+                    : "text-[#7d6b5d] hover:bg-white hover:text-[#3f2616]",
+                ].join(" ")}
               >
-                {WINDOW_LABELS[option]}
+                {WINDOW_LABELS[key]}
               </button>
             );
           })}
         </div>
       </div>
 
-      {filtered.length < 2 || !chart ? (
-        <div className="py-10 text-sm text-neutral-500">
-          Nog te weinig prijshistorie beschikbaar om een grafiek te tonen.
+      {points.length === 0 ? (
+        <div className="mt-5 rounded-[24px] border border-dashed border-[rgba(230,126,34,0.28)] bg-[#fffaf6] px-5 py-8 text-sm leading-6 text-[#7d6b5d]">
+          Nog geen prijshistorie beschikbaar voor dit product. Zodra Vinylofy voldoende dagwaarnemingen heeft verzameld, verschijnt hier een rustige prijsgrafiek.
         </div>
-      ) : (
-        <div className="pt-6">
-          <svg viewBox={`0 0 ${chart.width} ${chart.height}`} className="h-auto w-full">
+      ) : !hasEnoughPoints ? (
+        <div className="mt-5 rounded-[24px] border border-dashed border-[rgba(230,126,34,0.28)] bg-[#fffaf6] px-5 py-8 text-sm leading-6 text-[#7d6b5d]">
+          Er is al prijshistorie gevonden, maar nog te weinig voor een betrouwbare grafiek in deze periode. Kom later terug voor een vollediger beeld.
+        </div>
+      ) : chart ? (
+        <div className="mt-5 rounded-[24px] border border-[rgba(63,38,22,0.08)] bg-[#fffdfb] p-3 md:p-4">
+          <svg viewBox={`0 0 ${chart.width} ${chart.height}`} className="h-auto w-full overflow-visible">
             {chart.tickValues.map((tick) => {
               const yPosition = chart.y(tick);
               return (
@@ -181,38 +205,55 @@ export function PriceHistoryCard({
                     x2={chart.width - chart.padding.right}
                     y1={yPosition}
                     y2={yPosition}
-                    stroke="rgba(58,36,22,0.12)"
+                    stroke="rgba(63,38,22,0.10)"
                     strokeDasharray="4 6"
                   />
-                  <text
-                    x={14}
-                    y={yPosition + 5}
-                    fontSize="14"
-                    fill="rgba(58,36,22,0.78)"
-                  >
+                  <text x={14} y={yPosition + 5} fontSize="14" fill="rgba(63,38,22,0.72)">
                     {formatAxisEuro(tick)}
                   </text>
                 </g>
               );
             })}
 
-            <path d={chart.areaPath} fill="rgba(234,88,12,0.16)" />
+            <path d={chart.areaPath} fill="rgba(230,126,34,0.16)" />
             <path
               d={chart.linePath}
               fill="none"
-              stroke="#ea580c"
+              stroke="#e67e22"
               strokeWidth="4"
               strokeLinecap="round"
               strokeLinejoin="round"
             />
 
             {filtered.map((point, index) => {
-              if (index !== filtered.length - 1) return null;
+              const x = chart.x(index);
+              const y = chart.y(point.price);
+              const isActive = index === (activeIndex ?? filtered.length - 1);
 
               return (
-                <g key={`${point.day}-${point.price}`}>
-                  <circle cx={chart.x(index)} cy={chart.y(point.price)} r="7" fill="#ffffff" />
-                  <circle cx={chart.x(index)} cy={chart.y(point.price)} r="4" fill="#ea580c" />
+                <g key={`${point.day}-${point.price}-${index}`}>
+                  <circle
+                    cx={x}
+                    cy={y}
+                    r={isActive ? 7 : 0}
+                    fill="#ffffff"
+                    stroke="#e67e22"
+                    strokeWidth="3"
+                  />
+                  <circle
+                    cx={x}
+                    cy={y}
+                    r={14}
+                    fill="transparent"
+                    onMouseEnter={() => setActiveIndex(index)}
+                    onFocus={() => setActiveIndex(index)}
+                    onMouseLeave={() => setActiveIndex(null)}
+                    tabIndex={0}
+                  >
+                    <title>
+                      {formatDayLabel(point.day)} — {formatEuro(point.price)}
+                    </title>
+                  </circle>
                 </g>
               );
             })}
@@ -226,44 +267,49 @@ export function PriceHistoryCard({
                   y={chart.height - 8}
                   textAnchor={index === 0 ? "start" : index === filtered.length - 1 ? "end" : "middle"}
                   fontSize="14"
-                  fill="rgba(58,36,22,0.72)"
+                  fill="rgba(63,38,22,0.70)"
                 >
                   {formatMonthLabel(point.day)}
                 </text>
               );
             })}
           </svg>
+
+          {activePoint ? (
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[rgba(230,126,34,0.18)] bg-[#fffaf6] px-4 py-3 text-sm text-[#7d6b5d]">
+              <div>
+                <span className="font-semibold text-[#3f2616]">{formatDayLabel(activePoint.day)}</span>
+                <span className="mx-2 text-[#c7b6aa]">•</span>
+                <span>Laagste dagprijs {formatEuro(activePoint.price)}</span>
+              </div>
+              <div className="font-medium">Gezien bij {activePoint.shopCount} winkels</div>
+            </div>
+          ) : null}
         </div>
-      )}
+      ) : null}
 
       <div className="mt-6 grid gap-3 md:grid-cols-3">
-        <div className="rounded-3xl border border-[rgba(234,88,12,0.28)] bg-[#fffaf6] px-5 py-4 text-center">
-          <p className="text-sm text-neutral-600">Nu</p>
-          <p className="mt-2 text-3xl font-semibold tracking-tight text-[color:var(--foreground)]">
+        <div className="rounded-3xl border border-[rgba(230,126,34,0.28)] bg-[#fffaf6] px-5 py-4 text-center">
+          <p className="text-sm text-[#7d6b5d]">Nu</p>
+          <p className="mt-2 text-3xl font-semibold tracking-tight text-[#3f2616]">
             {formatEuro(currentPrice ?? latestPoint?.price ?? null)}
           </p>
         </div>
 
-        <div className="rounded-3xl border border-[rgba(234,88,12,0.28)] bg-[#fffaf6] px-5 py-4 text-center">
-          <p className="text-sm text-neutral-600">Laagste prijs in {WINDOW_LABELS[window]}</p>
-          <p className="mt-2 text-3xl font-semibold tracking-tight text-[color:var(--foreground)]">
+        <div className="rounded-3xl border border-[rgba(230,126,34,0.28)] bg-[#fffaf6] px-5 py-4 text-center">
+          <p className="text-sm text-[#7d6b5d]">Laagste prijs in {WINDOW_LABELS[window]}</p>
+          <p className="mt-2 text-3xl font-semibold tracking-tight text-[#3f2616]">
             {formatEuro(lowestInWindow)}
           </p>
         </div>
 
-        <div className="rounded-3xl border border-[rgba(234,88,12,0.28)] bg-[#fffaf6] px-5 py-4 text-center">
-          <p className="text-sm text-neutral-600">Gezien bij</p>
-          <p className="mt-2 text-3xl font-semibold tracking-tight text-[color:var(--foreground)]">
+        <div className="rounded-3xl border border-[rgba(230,126,34,0.28)] bg-[#fffaf6] px-5 py-4 text-center">
+          <p className="text-sm text-[#7d6b5d]">Gezien bij</p>
+          <p className="mt-2 text-3xl font-semibold tracking-tight text-[#3f2616]">
             {maxShopCount} winkels
           </p>
         </div>
       </div>
-
-      {latestPoint ? (
-        <p className="mt-4 text-center text-xs text-neutral-500">
-          Laatste datapunt: {formatDayLabel(latestPoint.day)}
-        </p>
-      ) : null}
     </section>
   );
 }

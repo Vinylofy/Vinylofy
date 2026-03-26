@@ -527,7 +527,15 @@ export async function getProductPriceHistory(
     .gte("day", cutoff.toISOString().slice(0, 10))
     .order("day", { ascending: true });
 
-  if (error) throw error;
+  if (error) {
+    console.warn("[vinylofy] product price history unavailable", {
+      productId,
+      code: (error as { code?: string }).code,
+      message: (error as { message?: string }).message,
+      hint: (error as { hint?: string | null }).hint ?? null,
+    });
+    return [];
+  }
 
   return ((data ?? []) as PriceHistoryDailyRow[])
     .map((row) => {
