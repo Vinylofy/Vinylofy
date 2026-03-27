@@ -3,7 +3,7 @@ name: Shop - 3345 Refresh Known
 on:
   workflow_dispatch:
   schedule:
-    - cron: "40 5 * * *"
+    - cron: "15 * * * *"
 
 concurrency:
   group: vinylofy-shop3345
@@ -25,7 +25,7 @@ jobs:
         --links-file data/raw/shop3345/3345_product_links.txt
         --csv-file data/raw/shop3345/3345_products.csv
         --state-file data/raw/shop3345/3345_detail_rotation_state.json
-        --limit-details 2000
+        --limit-details 500
         --workers 10
 
     steps:
