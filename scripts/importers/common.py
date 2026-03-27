@@ -59,6 +59,13 @@ def normalize_ean(value: str | None) -> str | None:
     return digits
 
 
+def normalize_gtin14(value: str | None) -> str | None:
+    digits = normalize_ean(value)
+    if not digits:
+        return None
+    return digits.zfill(14)
+
+
 def slugify(value: str) -> str:
     value = normalize_text(value).lower()
     value = re.sub(r"[^a-z0-9]+", "-", value)
@@ -139,6 +146,7 @@ class CanonicalRecord:
     detail_status: str
     is_secondhand: bool
     raw: dict
+    gtin_normalized: str | None = None
 
 
 @dataclass
@@ -169,6 +177,15 @@ def canonical_product_key(record: CanonicalRecord) -> tuple[str, str]:
     return normalize_text(record.artist).lower(), normalize_text(record.title).lower()
 
 
+def canonical_gtin_key(record: CanonicalRecord) -> str:
+    normalized = record.gtin_normalized or normalize_gtin14(record.ean)
+    if not normalized:
+        raise ValueError(
+            f"Record on line {record.source_row_number} has no usable GTIN/EAN: {record.ean!r}"
+        )
+    return normalized
+
+
 def read_and_filter(
     csv_path: Path,
     row_mapper: Callable[[dict, int], tuple[CanonicalRecord | None, str | None]],
@@ -183,11 +200,19 @@ def read_and_filter(
             if record is None:
                 rejects.append({"line_number": idx, "reason": reason, **row})
                 continue
+
+            if record.gtin_normalized is None:
+                record.gtin_normalized = normalize_gtin14(record.ean)
+
+            if not record.gtin_normalized:
+                rejects.append({"line_number": idx, "reason": "missing_gtin_normalized", **row})
+                continue
+
             accepted.append(record)
 
     grouped: dict[str, list[CanonicalRecord]] = defaultdict(list)
     for record in accepted:
-        grouped[record.ean].append(record)
+        grouped[canonical_gtin_key(record)].append(record)
 
     deduped: list[CanonicalRecord] = []
     for records in grouped.values():
@@ -241,25 +266,40 @@ def ensure_shop(cur, config: ImportConfig) -> str:
 def upsert_product(cur, record: CanonicalRecord) -> tuple[str, bool]:
     artist_norm = normalize_text(record.artist).lower()
     title_norm = normalize_text(record.title).lower()
-    search_text = normalize_whitespace(f"{record.artist} {record.title} {record.ean}").lower()
+    ean_display = normalize_ean(record.ean)
+    gtin_normalized = record.gtin_normalized or normalize_gtin14(record.ean)
+
+    if not ean_display or not gtin_normalized:
+        raise ValueError(f"Cannot upsert product without EAN/GTIN for line {record.source_row_number}")
+
+    search_text = normalize_whitespace(
+        f"{record.artist} {record.title} {ean_display} {gtin_normalized}"
+    ).lower()
     canonical_key = f"{slugify(record.artist)}::{slugify(record.title)}"
 
     cur.execute(
         """
         insert into public.products (
-          ean, artist, title, format_label, cover_url, canonical_key,
+          ean, gtin_normalized, artist, title, format_label, cover_url, canonical_key,
           artist_normalized, title_normalized, search_text, created_at, updated_at
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
-        on conflict on constraint products_ean_unique do update
-          set format_label = coalesce(public.products.format_label, excluded.format_label),
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
+        on conflict (gtin_normalized) do update
+          set ean = case
+                when public.products.ean is null then excluded.ean
+                when char_length(public.products.ean) = 12 and char_length(excluded.ean) = 13 then excluded.ean
+                else public.products.ean
+              end,
+              format_label = coalesce(public.products.format_label, excluded.format_label),
               cover_url = coalesce(public.products.cover_url, excluded.cover_url),
               canonical_key = coalesce(public.products.canonical_key, excluded.canonical_key),
+              search_text = excluded.search_text,
               updated_at = now()
         returning id, (xmax = 0) as inserted
         """,
         (
-            record.ean,
+            ean_display,
+            gtin_normalized,
             record.artist,
             record.title,
             record.format_label,
@@ -272,7 +312,6 @@ def upsert_product(cur, record: CanonicalRecord) -> tuple[str, bool]:
     )
     product_id, inserted = cur.fetchone()
     return product_id, bool(inserted)
-
 
 def get_existing_price_state(cur, product_id: str, shop_id: str) -> tuple[float, str, str, str] | None:
     cur.execute(

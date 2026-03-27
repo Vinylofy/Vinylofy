@@ -3,6 +3,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 type ProductRow = {
   id: string;
   ean: string | null;
+  gtin_normalized: string | null;
   artist: string;
   title: string;
   format_label: string | null;
@@ -131,6 +132,16 @@ function extractDigits(value: string): string {
   return value.replace(/\D/g, "");
 }
 
+function normalizeGtinLookup(value: string): string | null {
+  const digits = extractDigits(value);
+
+  if (![8, 12, 13, 14].includes(digits.length)) {
+    return null;
+  }
+
+  return digits.padStart(14, "0");
+}
+
 const BLACKLISTED_FORMAT_LABELS = new Set([
   "CD",
   "POSTER",
@@ -205,7 +216,7 @@ async function getProductsByIds(ids: string[]): Promise<ProductRow[]> {
   const supabase = createSupabaseServerClient();
   const { data, error } = await supabase
     .from("products")
-    .select("id, ean, artist, title, format_label, cover_url, created_at")
+    .select("id, ean, gtin_normalized, artist, title, format_label, cover_url, created_at")
     .in("id", ids);
 
   if (error) throw error;
@@ -288,7 +299,7 @@ async function getOffersMap(productIds: string[]) {
 function scoreProductMatch(product: ProductRow, query: string, best: BestPriceRow | undefined): number {
   const normalizedQuery = normalizeQuery(query);
   const tokens = tokenize(query);
-  const digits = query.replace(/\D/g, "");
+  const normalizedGtin = normalizeGtinLookup(query);
 
   const artist = normalizeQuery(product.artist);
   const title = normalizeQuery(product.title);
@@ -296,7 +307,7 @@ function scoreProductMatch(product: ProductRow, query: string, best: BestPriceRo
 
   let score = 0;
 
-  if (digits && product.ean === digits) score += 5000;
+  if (normalizedGtin && product.gtin_normalized === normalizedGtin) score += 5000;
   if (combined === normalizedQuery) score += 1200;
   if (title === normalizedQuery) score += 1000;
   if (artist === normalizedQuery) score += 900;
@@ -378,7 +389,7 @@ export async function getHomePageData(): Promise<{
 
   const { data: latestProductsData, error: latestProductsError } = await supabase
     .from("products")
-    .select("id, ean, artist, title, format_label, cover_url, created_at")
+    .select("id, ean, gtin_normalized, artist, title, format_label, cover_url, created_at")
     .order("created_at", { ascending: false })
     .limit(50);
 
@@ -417,12 +428,12 @@ async function resolveProductRowByRouteKey(routeKey: unknown): Promise<ProductRo
   if (!key) return null;
 
   const supabase = createSupabaseServerClient();
-  const digits = extractDigits(key);
+  const normalizedGtin = normalizeGtinLookup(key);
 
   if (isUuidLike(key)) {
     const { data, error } = await supabase
       .from("products")
-      .select("id, ean, artist, title, format_label, cover_url, created_at")
+      .select("id, ean, gtin_normalized, artist, title, format_label, cover_url, created_at")
       .eq("id", key)
       .maybeSingle();
 
@@ -430,11 +441,11 @@ async function resolveProductRowByRouteKey(routeKey: unknown): Promise<ProductRo
     return (data as ProductRow | null) ?? null;
   }
 
-  if ([8, 12, 13, 14].includes(digits.length)) {
+  if (normalizedGtin) {
     const { data, error } = await supabase
       .from("products")
-      .select("id, ean, artist, title, format_label, cover_url, created_at")
-      .eq("ean", digits)
+      .select("id, ean, gtin_normalized, artist, title, format_label, cover_url, created_at")
+      .eq("gtin_normalized", normalizedGtin)
       .maybeSingle();
 
     if (error) throw error;
@@ -479,10 +490,10 @@ export async function searchProducts(query: string): Promise<SearchResultItem[]>
   if (!normalizedQuery) return [];
 
   const supabase = createSupabaseServerClient();
-  const digits = normalizedQuery.replace(/\D/g, "");
+  const normalizedDigits = normalizeGtinLookup(normalizedQuery);
   const candidates = new Map<string, ProductRow>();
 
-  const baseSelect = "id, ean, artist, title, format_label, cover_url, created_at";
+  const baseSelect = "id, ean, gtin_normalized, artist, title, format_label, cover_url, created_at";
 
   async function collect(promise: PromiseLike<{ data: unknown; error: unknown }>) {
     const result = (await promise) as { data: unknown; error: unknown };
@@ -493,8 +504,14 @@ export async function searchProducts(query: string): Promise<SearchResultItem[]>
     }
   }
 
-  if (/^\d+$/.test(digits) && [8, 12, 13, 14].includes(digits.length)) {
-    await collect(supabase.from("products").select(baseSelect).eq("ean", digits).limit(10));
+  if (normalizedDigits) {
+    await collect(
+      supabase
+        .from("products")
+        .select(baseSelect)
+        .eq("gtin_normalized", normalizedDigits)
+        .limit(10),
+    );
   }
 
   await collect(supabase.from("products").select(baseSelect).ilike("artist", `%${normalizedQuery}%`).limit(20));
