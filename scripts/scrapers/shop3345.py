@@ -390,7 +390,7 @@ def rotate_slice(items: Sequence[str], limit: int, cursor: int) -> tuple[list[st
 def card_candidates_for_anchor(anchor: Tag) -> list[Tag]:
     candidates: list[Tag] = []
     node = anchor
-    for _ in range(6):
+    for _ in range(8):
         parent = getattr(node, "parent", None)
         if not isinstance(parent, Tag):
             break
@@ -399,47 +399,116 @@ def card_candidates_for_anchor(anchor: Tag) -> list[Tag]:
     return candidates
 
 
-def pick_card_for_anchor(anchor: Tag) -> Tag:
-    best = anchor
-    best_score = -1
-    title_text = clean_text(anchor.get_text(" ", strip=True))
-
-    for candidate in card_candidates_for_anchor(anchor):
-        text = clean_text(candidate.get_text(" ", strip=True))
-        if not text or len(text) > 1400:
-            continue
-        score = 0
-        if title_text and title_text in text:
-            score += 2
-        if re.search(r"€\s*[\d\.,]+", text):
-            score += 3
-        if any(token in text.lower() for token in ("sold out", "uitverkocht", "price", "prijs", "vendor")):
-            score += 1
-        if len(text) < 80:
-            score -= 1
-        if score > best_score:
-            best_score = score
-            best = candidate
-    return best
+def _candidate_product_links(candidate: Tag) -> list[str]:
+    links: list[str] = []
+    for a in candidate.select("a[href*='/products/']"):
+        href = canonicalize_product_url(clean_text(a.get("href")))
+        if href:
+            links.append(href)
+    return links
 
 
-def extract_listing_price(card: Tag) -> str:
-    selectors = [
+def _candidate_price_nodes(candidate: Tag) -> list[Tag]:
+    selectors = (
         ".price-item--sale",
         ".price__sale .price-item",
         ".price-item--regular",
         ".price__regular .price-item",
         ".price .price-item",
         ".card-information .price",
-        ".price",
-    ]
+    )
+    nodes: list[Tag] = []
+    seen_ids: set[int] = set()
     for selector in selectors:
-        for node in card.select(selector):
+        for node in candidate.select(selector):
+            if not isinstance(node, Tag):
+                continue
+            ident = id(node)
+            if ident in seen_ids:
+                continue
+            text = clean_text(node.get_text(" ", strip=True))
+            if not extract_price_from_text(text):
+                continue
+            seen_ids.add(ident)
+            nodes.append(node)
+    return nodes
+
+
+def pick_card_for_anchor(anchor: Tag) -> Tag:
+    target_url = canonicalize_product_url(clean_text(anchor.get("href")))
+    title_text = clean_text(anchor.get_text(" ", strip=True))
+    best = anchor
+    best_score: tuple[int, int, int, int] | None = None
+
+    for candidate in card_candidates_for_anchor(anchor):
+        text = clean_text(candidate.get_text(" ", strip=True))
+        if not text or len(text) > 900:
+            continue
+
+        product_links = _candidate_product_links(candidate)
+        unique_links = sorted(set(product_links))
+        if not unique_links:
+            continue
+
+        same_target_count = sum(1 for link in product_links if link == target_url)
+        foreign_links = [link for link in unique_links if link != target_url]
+        price_nodes = _candidate_price_nodes(candidate)
+        if not price_nodes:
+            continue
+
+        score = 0
+        # Strongly prefer the smallest ancestor that still isolates exactly this product.
+        if target_url and unique_links == [target_url]:
+            score += 12
+        elif target_url and same_target_count >= 1 and not foreign_links:
+            score += 10
+        elif target_url and same_target_count >= 1:
+            score += 2
+        else:
+            continue
+
+        if title_text and title_text in text:
+            score += 2
+
+        if candidate.select_one(".card__information") or candidate.select_one(".card-information"):
+            score += 2
+
+        if len(price_nodes) == 1:
+            score += 3
+        elif len(price_nodes) <= 2:
+            score += 1
+        else:
+            score -= 3
+
+        # Smaller blocks are better once they contain a valid price and only this product.
+        score_tuple = (score, -len(unique_links), -len(text), same_target_count)
+        if best_score is None or score_tuple > best_score:
+            best_score = score_tuple
+            best = candidate
+
+    return best
+
+
+def extract_listing_price(card: Tag) -> str:
+    price_nodes = _candidate_price_nodes(card)
+    if price_nodes:
+        # Prefer sale, then regular, then any other price node, but only inside this card.
+        for preferred in (".price-item--sale", ".price-item--regular", ".price__sale .price-item", ".price__regular .price-item"):
+            for node in card.select(preferred):
+                if not isinstance(node, Tag):
+                    continue
+                text = clean_text(node.get_text(" ", strip=True))
+                price = extract_price_from_text(text)
+                if price:
+                    return price
+
+        for node in price_nodes:
             text = clean_text(node.get_text(" ", strip=True))
             price = extract_price_from_text(text)
             if price:
                 return price
-    return extract_price_from_text(card.get_text(" ", strip=True))
+
+    return ""
 
 
 def extract_listing_vendor(card: Tag) -> str:
@@ -918,7 +987,11 @@ def scrape_product_details(
 
     def _apply_row(url: str, row: dict[str, str]) -> None:
         current = rows_by_url.get(url) if update_existing else None
-        rows_by_url[url] = merge_row(current, row)
+        incoming = dict(row)
+        # 3345 prices should be driven by listing pages. Detail pages are for enrichment.
+        if current and clean_text(current.get("price")) and clean_text(incoming.get("price")):
+            incoming["price"] = clean_text(current.get("price"))
+        rows_by_url[url] = merge_row(current, incoming)
 
     if max_workers == 1:
         for idx, url in enumerate(unique_urls, start=1):

@@ -77,27 +77,13 @@ def main() -> int:
             csv_path=csv_file,
         )
         rows_by_url = base.load_csv_rows_by_url(csv_file, base.get_fieldnames())
-        listing_urls_seen = [
+        listing_scope = [
             url for url, row in rows_by_url.items() if (row.get("source_collection") in sources or not row.get("source_collection"))
         ]
-        targets = base.pick_detail_targets_from_listing(
-            rows_by_url=rows_by_url,
-            listing_urls_seen=listing_urls_seen,
-            new_links=new_links,
-            limit_details=args.limit_details,
-            state_file=state_file,
+        print(
+            f"[REFRESH-KNOWN] listing-only refresh voltooid | scope={len(listing_scope)} | "
+            f"nieuw_gevonden={len(new_links)} | detail_refresh_overgeslagen=true"
         )
-        written = base.scrape_product_details(
-            session=session,
-            links=targets,
-            csv_path=csv_file,
-            update_existing=True,
-            workers=max(1, args.workers),
-            state_file=state_file,
-            rows_by_url=rows_by_url,
-            status_prefix="DETAIL",
-        )
-        print(f"[DETAILS] verwerkt: {written}")
         print("Klaar.")
         return 0
 
