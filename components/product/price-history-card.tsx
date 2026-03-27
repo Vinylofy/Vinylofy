@@ -3,49 +3,34 @@
 import { useMemo, useState } from "react";
 import {
   formatEuro,
-  type PriceHistoryWindow,
   type ProductPriceHistoryPoint,
 } from "@/lib/vinylofy-data";
 
 type PriceHistoryCardProps = {
   currentPrice: number | null;
   points: ProductPriceHistoryPoint[];
-  defaultWindow?: PriceHistoryWindow;
 };
 
-const WINDOW_LABELS: Record<PriceHistoryWindow, string> = {
-  "30d": "30D",
-  "90d": "90D",
-  "1y": "1Y",
-};
-
-const WINDOW_DAYS: Record<PriceHistoryWindow, number> = {
-  "30d": 30,
-  "90d": 90,
-  "1y": 365,
-};
-
-const MIN_POINTS_FOR_CHART = 7;
+const CHART_DAYS = 10;
+const CHART_LABEL = "10D";
+const MIN_POINTS_FOR_CHART = 2;
 
 function parseIsoDay(value: string): Date {
   return new Date(`${value}T00:00:00Z`);
 }
 
-function filterWindow(
-  points: ProductPriceHistoryPoint[],
-  window: PriceHistoryWindow,
-): ProductPriceHistoryPoint[] {
+function filterLastDays(points: ProductPriceHistoryPoint[], days: number): ProductPriceHistoryPoint[] {
   if (points.length === 0) return [];
 
   const lastPoint = parseIsoDay(points[points.length - 1].day);
   const minDate = new Date(lastPoint);
-  minDate.setUTCDate(minDate.getUTCDate() - (WINDOW_DAYS[window] - 1));
+  minDate.setUTCDate(minDate.getUTCDate() - (days - 1));
 
   return points.filter((point) => parseIsoDay(point.day) >= minDate);
 }
 
 function formatMonthLabel(value: string) {
-  return new Intl.DateTimeFormat("nl-NL", { month: "short" })
+  return new Intl.DateTimeFormat("nl-NL", { day: "numeric", month: "short" })
     .format(parseIsoDay(value))
     .replace(".", "");
 }
@@ -67,19 +52,10 @@ function formatAxisEuro(value: number) {
   }).format(value);
 }
 
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
-
-export function PriceHistoryCard({
-  currentPrice,
-  points,
-  defaultWindow = "90d",
-}: PriceHistoryCardProps) {
-  const [window, setWindow] = useState<PriceHistoryWindow>(defaultWindow);
+export function PriceHistoryCard({ currentPrice, points }: PriceHistoryCardProps) {
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
 
-  const filtered = useMemo(() => filterWindow(points, window), [points, window]);
+  const filtered = useMemo(() => filterLastDays(points, CHART_DAYS), [points]);
 
   const activePoint = activeIndex !== null ? filtered[activeIndex] : filtered[filtered.length - 1] ?? null;
   const latestPoint = filtered[filtered.length - 1] ?? null;
@@ -132,66 +108,39 @@ export function PriceHistoryCard({
       return yMin + (yMax - yMin) * (1 - ratio);
     }).map((value) => Math.round(value));
 
-    const xLabelIndexes = Array.from(
-      new Set([
-        0,
-        Math.floor((filtered.length - 1) / 2),
-        filtered.length - 1,
-      ]),
-    );
+    const xLabelIndexes = Array.from(new Set([0, Math.floor((filtered.length - 1) / 2), filtered.length - 1]));
 
-    return { width, height, padding, x, y, yMin, yMax, linePath, areaPath, tickValues, xLabelIndexes };
+    return { width, height, padding, x, y, linePath, areaPath, tickValues, xLabelIndexes };
   }, [filtered, hasEnoughPoints]);
 
   return (
     <section className="rounded-[28px] border border-[rgba(230,126,34,0.18)] bg-white p-5 shadow-sm md:p-6">
-      <div className="flex flex-col gap-4 border-b border-[rgba(63,38,22,0.08)] pb-4 md:flex-row md:items-center md:justify-between">
+      <div className="flex flex-col gap-3 border-b border-[rgba(63,38,22,0.08)] pb-4 md:flex-row md:items-center md:justify-between">
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-2xl font-semibold tracking-tight text-[#3f2616]">Prijsontwikkeling</h2>
+            <span className="rounded-full border border-[rgba(230,126,34,0.22)] bg-[#fff7f0] px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-[#c46817]">
+              Laatste {CHART_LABEL}
+            </span>
             {isCurrentAtPeriodLow ? (
               <span className="rounded-full border border-[rgba(230,126,34,0.22)] bg-[#fff7f0] px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-[#c46817]">
-                Laagste punt in {WINDOW_LABELS[window]}
+                Laagste punt in {CHART_LABEL}
               </span>
             ) : null}
           </div>
           <p className="mt-1 text-sm text-[#7d6b5d]">
-            Gebaseerd op de laagste waargenomen dagprijs van alle actuele winkels.
+            Tijdelijke validatieversie op basis van de laagste waargenomen dagprijs van de laatste 10 dagen.
           </p>
-        </div>
-
-        <div className="inline-flex w-fit rounded-full border border-[rgba(230,126,34,0.16)] bg-[#fffaf6] p-1">
-          {(Object.keys(WINDOW_LABELS) as PriceHistoryWindow[]).map((key) => {
-            const isActive = key === window;
-            return (
-              <button
-                key={key}
-                type="button"
-                onClick={() => {
-                  setWindow(key);
-                  setActiveIndex(null);
-                }}
-                className={[
-                  "rounded-full px-4 py-2 text-sm font-semibold transition",
-                  isActive
-                    ? "bg-[#e67e22] text-white shadow-sm"
-                    : "text-[#7d6b5d] hover:bg-white hover:text-[#3f2616]",
-                ].join(" ")}
-              >
-                {WINDOW_LABELS[key]}
-              </button>
-            );
-          })}
         </div>
       </div>
 
       {points.length === 0 ? (
         <div className="mt-5 rounded-[24px] border border-dashed border-[rgba(230,126,34,0.28)] bg-[#fffaf6] px-5 py-8 text-sm leading-6 text-[#7d6b5d]">
-          Nog geen prijshistorie beschikbaar voor dit product. Zodra Vinylofy voldoende dagwaarnemingen heeft verzameld, verschijnt hier een rustige prijsgrafiek.
+          Nog geen prijshistorie beschikbaar voor dit product. Zodra Vinylofy voldoende dagwaarnemingen heeft verzameld, verschijnt hier de 10-daagse prijsgrafiek.
         </div>
       ) : !hasEnoughPoints ? (
         <div className="mt-5 rounded-[24px] border border-dashed border-[rgba(230,126,34,0.28)] bg-[#fffaf6] px-5 py-8 text-sm leading-6 text-[#7d6b5d]">
-          Er is al prijshistorie gevonden, maar nog te weinig voor een betrouwbare grafiek in deze periode. Kom later terug voor een vollediger beeld.
+          Er is al prijshistorie gevonden, maar nog te weinig voor een betrouwbare 10-daagse grafiek. Kom later terug voor een vollediger beeld.
         </div>
       ) : chart ? (
         <div className="mt-5 rounded-[24px] border border-[rgba(63,38,22,0.08)] bg-[#fffdfb] p-3 md:p-4">
@@ -297,7 +246,7 @@ export function PriceHistoryCard({
         </div>
 
         <div className="rounded-3xl border border-[rgba(230,126,34,0.28)] bg-[#fffaf6] px-5 py-4 text-center">
-          <p className="text-sm text-[#7d6b5d]">Laagste prijs in {WINDOW_LABELS[window]}</p>
+          <p className="text-sm text-[#7d6b5d]">Laagste prijs in {CHART_LABEL}</p>
           <p className="mt-2 text-3xl font-semibold tracking-tight text-[#3f2616]">
             {formatEuro(lowestInWindow)}
           </p>

@@ -558,11 +558,11 @@ export async function searchProducts(query: string): Promise<SearchResultItem[]>
 
 export async function getProductPriceHistory(
   productId: string,
-  maxDays = 365,
+  maxDays = 10,
 ): Promise<ProductPriceHistoryPoint[]> {
   const supabase = createSupabaseServerClient();
   const cutoff = new Date();
-  cutoff.setUTCDate(cutoff.getUTCDate() - Math.max(maxDays, 30));
+  cutoff.setUTCDate(cutoff.getUTCDate() - Math.max(1, maxDays - 1));
 
   const { data, error } = await supabase
     .from("product_price_history_daily_v1")

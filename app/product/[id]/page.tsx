@@ -28,7 +28,7 @@ export default async function ProductDetailPage({ params }: ProductPageProps) {
   const routeId = typeof resolvedParams?.id === "string" ? resolvedParams.id : "";
 
   const product = await getProductDetail(routeId);
-  const priceHistory = product ? await getProductPriceHistory(product.id) : [];
+  const priceHistory = product ? await getProductPriceHistory(product.id, 10) : [];
 
   if (!product) {
     notFound();
@@ -49,8 +49,8 @@ export default async function ProductDetailPage({ params }: ProductPageProps) {
           <aside className="space-y-6">
             <InsightCard title="Waarom deze grafiek?">
               <p>
-                Vinylofy toont hier bewust alleen de laagste waargenomen dagprijs. Daardoor blijft
-                de pagina rustig en zie je sneller of dit een logisch koopmoment is.
+                Vinylofy toont hier tijdelijk alleen de laagste waargenomen dagprijs van de laatste 10 dagen. Daardoor blijft
+                de pagina rustig en kunnen we de prijsgrafiek eerst stabiel valideren.
               </p>
               <p>
                 De actuele aanbiedingen blijven leidend. De grafiek is ondersteunende context, niet
@@ -60,7 +60,7 @@ export default async function ProductDetailPage({ params }: ProductPageProps) {
 
             <InsightCard title="Hoe verzamelen we dit?">
               <p>
-                De importers schrijven prijswaarnemingen al historisch weg. Voor deze kaart worden
+                De importers schrijven prijswaarnemingen al historisch weg. Voor deze kaart gebruiken we nu bewust alleen de laatste 10 dagen en worden
                 die metingen per kalenderdag samengevat tot één laagste dagprijs per product.
               </p>
               <p>
