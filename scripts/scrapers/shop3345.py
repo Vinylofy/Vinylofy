@@ -653,55 +653,112 @@ def extract_artist_and_title(soup: BeautifulSoup, page_text: str) -> tuple[str, 
 
 
 def extract_detail_availability(soup: BeautifulSoup, page_text: str) -> str:
-    normalized = clean_text(page_text).lower()
-    cta_texts = []
-    for selector in ["button", "input[type='submit']", ".product-form__submit", "[name='add']"]:
-        for node in soup.select(selector):
-            text = clean_text(node.get_text(" ", strip=True) or node.get("value"))
-            if text:
-                cta_texts.append(text.lower())
-    if any("add to cart" in t or "toevoegen" in t for t in cta_texts):
+    price_root = select_price_root(soup)
+    scope = price_root.find_parent(class_="product__price-quantity") if price_root else None
+    if not isinstance(scope, Tag):
+        scope = soup.select_one(".product__price-quantity") or soup.select_one(".product-form") or soup.select_one("main")
+
+    scope_text = clean_text(scope.get_text(" ", strip=True)).lower() if isinstance(scope, Tag) else clean_text(page_text).lower()
+
+    cta_texts: list[str] = []
+    has_cart_form = False
+    for node in soup.select("form[action$='/cart/add'], form[action*='/cart/add']"):
+        has_cart_form = True
+        text = clean_text(node.get_text(" ", strip=True) or node.get("value"))
+        if text:
+            cta_texts.append(text.lower())
+
+    for node in soup.select("button[name='add'], button.product-form__submit, button[type='submit'], input[type='submit']"):
+        text = clean_text(node.get_text(" ", strip=True) or node.get("value"))
+        if text:
+            cta_texts.append(text.lower())
+
+    if any("add to cart" in t or "toevoegen aan winkelwagen" in t or t == "toevoegen" for t in cta_texts):
         return "in_stock"
-    if any(token in normalized for token in ("pre order", "pre-order", "preorder")):
+    if has_cart_form and not any(("sold out" in t) or ("out of stock" in t) or ("uitverkocht" in t) for t in cta_texts):
+        return "in_stock"
+
+    if any(token in scope_text for token in ("pre order", "pre-order", "preorder", "coming soon")):
         return "preorder"
-    if any(token in normalized for token in ("sold out", "uitverkocht", "out of stock", "items no longer available")):
+
+    if any(token in scope_text for token in ("sold out", "uitverkocht", "out of stock")):
         return "out_of_stock"
+
     return "in_stock"
+
+def _extract_first_price(node: Tag | None) -> str:
+    if not isinstance(node, Tag):
+        return ""
+    text = clean_text(node.get_text(" ", strip=True))
+    match = re.search(r"€\s*([\d\.,]+)", text)
+    if not match:
+        return ""
+    return normalize_price(match.group(1))
+
+
+def select_price_root(soup: BeautifulSoup) -> Tag | None:
+    candidates = [node for node in soup.select("div[id^='price-template']") if isinstance(node, Tag)]
+    if not candidates:
+        return None
+
+    def score(node: Tag) -> tuple[int, int]:
+        node_id = clean_text(node.get("id"))
+        score = 0
+        if "__main" in node_id:
+            score += 4
+        if isinstance(node.find_parent(class_="product__price-quantity"), Tag):
+            score += 3
+        if node.select_one(".price-item--sale"):
+            score += 2
+        if node.select_one(".price-item--regular"):
+            score += 1
+        text_len = len(clean_text(node.get_text(" ", strip=True)))
+        return (score, -abs(text_len - 80))
+
+    return max(candidates, key=score)
 
 
 def extract_price(soup: BeautifulSoup, page_text: str) -> str:
-    selectors = [
-        ".price-item--sale",
-        ".price__sale .price-item",
-        ".price-item--regular",
-        ".price__regular .price-item",
-        ".price .price-item",
-    ]
-    for selector in selectors:
-        for node in soup.select(selector):
-            txt = clean_text(node.get_text(" ", strip=True))
-            if "€" in txt:
-                m = re.search(r"€\s*([\d\.,]+)", txt)
-                if m:
-                    return normalize_price(m.group(0))
+    price_root = select_price_root(soup)
+    if isinstance(price_root, Tag):
+        for selector in (
+            ".price-item--sale",
+            ".price__sale .price-item",
+            ".price-item--regular",
+            ".price__regular .price-item",
+        ):
+            for node in price_root.select(selector):
+                price = _extract_first_price(node)
+                if price:
+                    return price
 
-    patterns = [
-        r"Default Title\s*(?:-|–)?\s*(?:Sold out|Uitverkocht)?\s*(?:-|–)?\s*€\s*([\d\.,]+)",
-        r"Sale price\s*€\s*([\d\.,]+)",
-        r"Regular price\s*€\s*([\d\.,]+)",
-        r"Aanbiedingsprijs\s*€\s*([\d\.,]+)",
-        r"Normale prijs\s*€\s*([\d\.,]+)",
-    ]
-    for pattern in patterns:
-        m = re.search(pattern, page_text, flags=re.IGNORECASE)
-        if m:
-            return normalize_price(m.group(1))
+        root_text = clean_text(price_root.get_text(" ", strip=True))
+        for pattern in (
+            r"Default\s+Title\s*-\s*€\s*([\d\.,]+)",
+            r"Sale\s+price\s*€\s*([\d\.,]+)",
+            r"Regular\s+price\s*€\s*([\d\.,]+)",
+            r"Aanbiedingsprijs\s*€\s*([\d\.,]+)",
+            r"Normale\s+prijs\s*€\s*([\d\.,]+)",
+        ):
+            match = re.search(pattern, root_text, flags=re.IGNORECASE)
+            if match:
+                return normalize_price(match.group(1))
 
-    m = re.search(r"€\s*([\d\.,]+)", page_text)
-    if m:
-        return normalize_price(m.group(1))
+        parent = price_root.find_parent(class_="product__price-quantity")
+        if isinstance(parent, Tag):
+            parent_text = clean_text(parent.get_text(" ", strip=True))
+            for pattern in (
+                r"Default\s+Title\s*-\s*€\s*([\d\.,]+)",
+                r"Sale\s+price\s*€\s*([\d\.,]+)",
+                r"Regular\s+price\s*€\s*([\d\.,]+)",
+                r"Aanbiedingsprijs\s*€\s*([\d\.,]+)",
+                r"Normale\s+prijs\s*€\s*([\d\.,]+)",
+            ):
+                match = re.search(pattern, parent_text, flags=re.IGNORECASE)
+                if match:
+                    return normalize_price(match.group(1))
+
     return ""
-
 
 def extract_detail_fields(html: str, url: str) -> dict[str, str]:
     soup = BeautifulSoup(html, "html.parser")
