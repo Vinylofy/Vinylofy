@@ -28,7 +28,6 @@ jobs:
         --max-pages 15
         --source browse-all-music
         --source all
-        --source used-records
 
     steps:
       - name: Checkout

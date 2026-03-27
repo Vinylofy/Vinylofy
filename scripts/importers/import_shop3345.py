@@ -63,6 +63,19 @@ def parse_secondhand(value: str | None, artist: str, title: str, detail_status: 
     return combined.startswith("used") or "secondhand" in combined or "second_hand" in combined
 
 
+
+
+def enrich_detail_status(base_status: str | None, *, artist: str, title: str) -> str:
+    status = normalize_text(base_status) or "ok"
+    if artist and title:
+        return status
+
+    parts = [segment for segment in status.split("|") if segment]
+    if "metadata_incomplete" not in parts:
+        parts.append("metadata_incomplete")
+    return "|".join(parts)
+
+
 def map_shop3345_row(row: dict, line_number: int) -> tuple[CanonicalRecord | None, str | None]:
     global _CAPTURED_AT
 
@@ -73,7 +86,11 @@ def map_shop3345_row(row: dict, line_number: int) -> tuple[CanonicalRecord | Non
     format_label = normalize_text(row.get("format")) or "Vinyl"
     availability = normalize_availability(row.get("availability"))
     captured_at = _CAPTURED_AT or datetime.now(timezone.utc)
-    detail_status = normalize_text(row.get("detail_status")) or "ok"
+    detail_status = enrich_detail_status(
+        row.get("detail_status"),
+        artist=artist,
+        title=title,
+    )
     is_secondhand = parse_secondhand(row.get("is_secondhand"), artist, title, detail_status)
 
     if not ean:
@@ -82,10 +99,6 @@ def map_shop3345_row(row: dict, line_number: int) -> tuple[CanonicalRecord | Non
         return None, "missing_url"
     if price is None:
         return None, "invalid_price"
-    if not title:
-        return None, "missing_title"
-    if not artist:
-        return None, "missing_artist_after_inference"
 
     return CanonicalRecord(
         source_row_number=line_number,
@@ -122,8 +135,9 @@ SHOP_DEFINITION = ShopImporterDefinition(
     ),
     row_mapper=map_shop3345_row,
     description="Import 3345 detail CSV into Supabase/Postgres",
-    required_columns=("title", "price", "url", "ean"),
+    required_columns=("price", "url", "ean"),
     optional_columns=(
+        "title",
         "artist",
         "release_date",
         "genre",

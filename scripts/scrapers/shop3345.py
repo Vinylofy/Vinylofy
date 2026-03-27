@@ -39,7 +39,6 @@ DEFAULT_CSV_FILE = "3345_products.csv"
 DISCOVERY_SOURCES: dict[str, str] = {
     "browse-all-music": BASE_URL + "/collections/browse-all-music?page={page}",
     "all": BASE_URL + "/collections/all?page={page}",
-    "used-records": BASE_URL + "/collections/used-records?page={page}",
 }
 
 FIELDNAMES = [
@@ -820,7 +819,7 @@ def _backfill_retry_allowed(meta: dict, row: dict[str, str]) -> bool:
     if looks_like_non_music_row(meta.get("url") or "", row):
         return attempts < 1
     if looks_like_secondhand(meta.get("url") or "", row):
-        return attempts < 1
+        return False
     return attempts < 3
 
 
@@ -1148,7 +1147,7 @@ def parse_args() -> argparse.Namespace:
         action="append",
         dest="sources",
         default=None,
-        help="Discovery source(s), repeatable. Defaults to browse-all-music, all, used-records.",
+        help="Discovery source(s), repeatable. Defaults to browse-all-music and all.",
     )
     return parser.parse_args()
 
@@ -1184,7 +1183,7 @@ def main() -> int:
             session=session,
             links_file=links_file,
             state_file=state_file,
-            source_names=args.sources or ["browse-all-music", "all", "used-records"],
+            source_names=args.sources or ["browse-all-music", "all"],
             max_pages_per_source=max(1, args.max_pages),
         )
         print("Klaar.")
@@ -1235,7 +1234,7 @@ def main() -> int:
         session=session,
         links_file=links_file,
         state_file=state_file,
-        source_names=args.sources or ["browse-all-music", "all", "used-records"],
+        source_names=args.sources or ["browse-all-music", "all"],
         max_pages_per_source=max(1, args.max_pages),
     )
     links = select_links_for_detail_refresh(

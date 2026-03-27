@@ -58,7 +58,7 @@ def main() -> int:
             session=session,
             links_file=links_file,
             state_file=state_file,
-            source_names=args.sources or ["browse-all-music", "all", "used-records"],
+            source_names=args.sources or ["browse-all-music", "all"],
             max_pages_per_source=max(1, args.max_pages),
         )
         print(f"[DISCOVERY] nieuw opgeslagen links: {len(new_links)}")
