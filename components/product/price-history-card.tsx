@@ -1,10 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import {
-  formatEuro,
-  type ProductPriceHistoryPoint,
-} from "@/lib/vinylofy-data";
+import { formatEuro, type ProductPriceHistoryPoint } from "@/lib/vinylofy-data";
 
 type PriceHistoryCardProps = {
   currentPrice: number | null;
@@ -29,8 +26,11 @@ function filterLastDays(points: ProductPriceHistoryPoint[], days: number): Produ
   return points.filter((point) => parseIsoDay(point.day) >= minDate);
 }
 
-function formatMonthLabel(value: string) {
-  return new Intl.DateTimeFormat("nl-NL", { day: "numeric", month: "short" })
+function formatShortDayLabel(value: string) {
+  return new Intl.DateTimeFormat("nl-NL", {
+    day: "numeric",
+    month: "short",
+  })
     .format(parseIsoDay(value))
     .replace(".", "");
 }
@@ -56,7 +56,6 @@ export function PriceHistoryCard({ currentPrice, points }: PriceHistoryCardProps
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
 
   const filtered = useMemo(() => filterLastDays(points, CHART_DAYS), [points]);
-
   const activePoint = activeIndex !== null ? filtered[activeIndex] : filtered[filtered.length - 1] ?? null;
   const latestPoint = filtered[filtered.length - 1] ?? null;
 
@@ -73,8 +72,8 @@ export function PriceHistoryCard({ currentPrice, points }: PriceHistoryCardProps
     if (!hasEnoughPoints) return null;
 
     const width = 920;
-    const height = 330;
-    const padding = { top: 22, right: 22, bottom: 36, left: 74 };
+    const height = 232;
+    const padding = { top: 16, right: 18, bottom: 28, left: 58 };
 
     const min = Math.min(...filtered.map((point) => point.price));
     const max = Math.max(...filtered.map((point) => point.price));
@@ -114,36 +113,34 @@ export function PriceHistoryCard({ currentPrice, points }: PriceHistoryCardProps
   }, [filtered, hasEnoughPoints]);
 
   return (
-    <section className="rounded-[28px] border border-[rgba(230,126,34,0.18)] bg-white p-5 shadow-sm md:p-6">
-      <div className="flex flex-col gap-3 border-b border-[rgba(63,38,22,0.08)] pb-4 md:flex-row md:items-center md:justify-between">
-        <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-2xl font-semibold tracking-tight text-[#3f2616]">Prijsontwikkeling</h2>
-            <span className="rounded-full border border-[rgba(230,126,34,0.22)] bg-[#fff7f0] px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-[#c46817]">
-              Laatste {CHART_LABEL}
+    <section className="rounded-xl border border-[rgba(230,126,34,0.16)] bg-white p-4 shadow-sm md:p-5">
+      <div className="flex flex-col gap-2.5 border-b border-[rgba(63,38,22,0.08)] pb-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-lg font-semibold tracking-tight text-[#3f2616]">Prijsontwikkeling</h2>
+          <span className="rounded-full border border-[rgba(230,126,34,0.22)] bg-[#fff7f0] px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#c46817]">
+            Laatste {CHART_LABEL}
+          </span>
+          {isCurrentAtPeriodLow ? (
+            <span className="rounded-full border border-[rgba(230,126,34,0.22)] bg-[#fff7f0] px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#c46817]">
+              Periode-laag
             </span>
-            {isCurrentAtPeriodLow ? (
-              <span className="rounded-full border border-[rgba(230,126,34,0.22)] bg-[#fff7f0] px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-[#c46817]">
-                Laagste punt in {CHART_LABEL}
-              </span>
-            ) : null}
-          </div>
-          <p className="mt-1 text-sm text-[#7d6b5d]">
-            Tijdelijke validatieversie op basis van de laagste waargenomen dagprijs van de laatste 10 dagen.
-          </p>
+          ) : null}
         </div>
+        <p className="text-sm text-[#7d6b5d]">
+          Tijdelijke validatieversie op basis van de laagste waargenomen dagprijs van de laatste 10 dagen.
+        </p>
       </div>
 
       {points.length === 0 ? (
-        <div className="mt-5 rounded-[24px] border border-dashed border-[rgba(230,126,34,0.28)] bg-[#fffaf6] px-5 py-8 text-sm leading-6 text-[#7d6b5d]">
+        <div className="mt-4 rounded-xl border border-dashed border-[rgba(230,126,34,0.28)] bg-[#fffaf6] px-4 py-6 text-sm leading-6 text-[#7d6b5d]">
           Nog geen prijshistorie beschikbaar voor dit product. Zodra Vinylofy voldoende dagwaarnemingen heeft verzameld, verschijnt hier de 10-daagse prijsgrafiek.
         </div>
       ) : !hasEnoughPoints ? (
-        <div className="mt-5 rounded-[24px] border border-dashed border-[rgba(230,126,34,0.28)] bg-[#fffaf6] px-5 py-8 text-sm leading-6 text-[#7d6b5d]">
+        <div className="mt-4 rounded-xl border border-dashed border-[rgba(230,126,34,0.28)] bg-[#fffaf6] px-4 py-6 text-sm leading-6 text-[#7d6b5d]">
           Er is al prijshistorie gevonden, maar nog te weinig voor een betrouwbare 10-daagse grafiek. Kom later terug voor een vollediger beeld.
         </div>
       ) : chart ? (
-        <div className="mt-5 rounded-[24px] border border-[rgba(63,38,22,0.08)] bg-[#fffdfb] p-3 md:p-4">
+        <div className="mt-4 rounded-xl border border-[rgba(63,38,22,0.08)] bg-[#fffdfb] p-2.5 md:p-3">
           <svg viewBox={`0 0 ${chart.width} ${chart.height}`} className="h-auto w-full overflow-visible">
             {chart.tickValues.map((tick) => {
               const yPosition = chart.y(tick);
@@ -157,7 +154,7 @@ export function PriceHistoryCard({ currentPrice, points }: PriceHistoryCardProps
                     stroke="rgba(63,38,22,0.10)"
                     strokeDasharray="4 6"
                   />
-                  <text x={14} y={yPosition + 5} fontSize="14" fill="rgba(63,38,22,0.72)">
+                  <text x={8} y={yPosition + 4} fontSize="11" fill="rgba(63,38,22,0.68)">
                     {formatAxisEuro(tick)}
                   </text>
                 </g>
@@ -169,7 +166,7 @@ export function PriceHistoryCard({ currentPrice, points }: PriceHistoryCardProps
               d={chart.linePath}
               fill="none"
               stroke="#e67e22"
-              strokeWidth="4"
+              strokeWidth="3"
               strokeLinecap="round"
               strokeLinejoin="round"
             />
@@ -181,18 +178,11 @@ export function PriceHistoryCard({ currentPrice, points }: PriceHistoryCardProps
 
               return (
                 <g key={`${point.day}-${point.price}-${index}`}>
+                  <circle cx={x} cy={y} r={isActive ? 4.5 : 0} fill="#ffffff" stroke="#e67e22" strokeWidth="2.5" />
                   <circle
                     cx={x}
                     cy={y}
-                    r={isActive ? 7 : 0}
-                    fill="#ffffff"
-                    stroke="#e67e22"
-                    strokeWidth="3"
-                  />
-                  <circle
-                    cx={x}
-                    cy={y}
-                    r={14}
+                    r={12}
                     fill="transparent"
                     onMouseEnter={() => setActiveIndex(index)}
                     onFocus={() => setActiveIndex(index)}
@@ -213,22 +203,22 @@ export function PriceHistoryCard({ currentPrice, points }: PriceHistoryCardProps
                 <text
                   key={`${point.day}-${index}`}
                   x={chart.x(index)}
-                  y={chart.height - 8}
+                  y={chart.height - 7}
                   textAnchor={index === 0 ? "start" : index === filtered.length - 1 ? "end" : "middle"}
-                  fontSize="14"
-                  fill="rgba(63,38,22,0.70)"
+                  fontSize="11"
+                  fill="rgba(63,38,22,0.68)"
                 >
-                  {formatMonthLabel(point.day)}
+                  {formatShortDayLabel(point.day)}
                 </text>
               );
             })}
           </svg>
 
           {activePoint ? (
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[rgba(230,126,34,0.18)] bg-[#fffaf6] px-4 py-3 text-sm text-[#7d6b5d]">
+            <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[rgba(230,126,34,0.18)] bg-[#fffaf6] px-3 py-2 text-xs text-[#7d6b5d] md:text-sm">
               <div>
                 <span className="font-semibold text-[#3f2616]">{formatDayLabel(activePoint.day)}</span>
-                <span className="mx-2 text-[#c7b6aa]">•</span>
+                <span className="mx-1.5 text-[#c7b6aa]">•</span>
                 <span>Laagste dagprijs {formatEuro(activePoint.price)}</span>
               </div>
               <div className="font-medium">Gezien bij {activePoint.shopCount} winkels</div>
@@ -237,24 +227,24 @@ export function PriceHistoryCard({ currentPrice, points }: PriceHistoryCardProps
         </div>
       ) : null}
 
-      <div className="mt-6 grid gap-3 md:grid-cols-3">
-        <div className="rounded-3xl border border-[rgba(230,126,34,0.28)] bg-[#fffaf6] px-5 py-4 text-center">
-          <p className="text-sm text-[#7d6b5d]">Nu</p>
-          <p className="mt-2 text-3xl font-semibold tracking-tight text-[#3f2616]">
+      <div className="mt-4 grid gap-2 md:grid-cols-3">
+        <div className="rounded-xl border border-[rgba(230,126,34,0.24)] bg-[#fffaf6] px-3 py-3 text-center">
+          <p className="text-[11px] uppercase tracking-[0.08em] text-[#8a7769]">Nu</p>
+          <p className="mt-1.5 text-lg font-semibold tracking-tight text-[#3f2616] md:text-xl">
             {formatEuro(currentPrice ?? latestPoint?.price ?? null)}
           </p>
         </div>
 
-        <div className="rounded-3xl border border-[rgba(230,126,34,0.28)] bg-[#fffaf6] px-5 py-4 text-center">
-          <p className="text-sm text-[#7d6b5d]">Laagste prijs in {CHART_LABEL}</p>
-          <p className="mt-2 text-3xl font-semibold tracking-tight text-[#3f2616]">
+        <div className="rounded-xl border border-[rgba(230,126,34,0.24)] bg-[#fffaf6] px-3 py-3 text-center">
+          <p className="text-[11px] uppercase tracking-[0.08em] text-[#8a7769]">Laagste prijs in {CHART_LABEL}</p>
+          <p className="mt-1.5 text-lg font-semibold tracking-tight text-[#3f2616] md:text-xl">
             {formatEuro(lowestInWindow)}
           </p>
         </div>
 
-        <div className="rounded-3xl border border-[rgba(230,126,34,0.28)] bg-[#fffaf6] px-5 py-4 text-center">
-          <p className="text-sm text-[#7d6b5d]">Gezien bij</p>
-          <p className="mt-2 text-3xl font-semibold tracking-tight text-[#3f2616]">
+        <div className="rounded-xl border border-[rgba(230,126,34,0.24)] bg-[#fffaf6] px-3 py-3 text-center">
+          <p className="text-[11px] uppercase tracking-[0.08em] text-[#8a7769]">Gezien bij</p>
+          <p className="mt-1.5 text-lg font-semibold tracking-tight text-[#3f2616] md:text-xl">
             {maxShopCount} winkels
           </p>
         </div>

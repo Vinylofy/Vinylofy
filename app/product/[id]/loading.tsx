@@ -2,7 +2,7 @@ import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 
 function SkeletonBlock({ className = "" }: { className?: string }) {
-  return <div className={`animate-pulse rounded-2xl bg-[rgba(63,38,22,0.06)] ${className}`} />;
+  return <div className={`animate-pulse rounded-xl bg-[rgba(63,38,22,0.06)] ${className}`} />;
 }
 
 export default function ProductLoadingPage() {
@@ -10,53 +10,53 @@ export default function ProductLoadingPage() {
     <div className="min-h-screen bg-[#f8f7f4] text-neutral-900">
       <SiteHeader />
 
-      <main className="mx-auto max-w-7xl px-6 py-8 md:py-10">
-        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
-          <section className="space-y-6">
-            <div className="rounded-[28px] border border-[rgba(230,126,34,0.16)] bg-white p-5 shadow-sm md:p-7">
-              <div className="grid gap-6 md:grid-cols-[188px_minmax(0,1fr)]">
-                <SkeletonBlock className="h-[188px] w-[188px]" />
-                <div className="space-y-4">
-                  <SkeletonBlock className="h-4 w-32" />
-                  <SkeletonBlock className="h-10 w-3/4" />
-                  <SkeletonBlock className="h-5 w-1/2" />
-                  <div className="grid gap-3 md:grid-cols-3">
-                    <SkeletonBlock className="h-28 w-full" />
-                    <SkeletonBlock className="h-28 w-full" />
-                    <SkeletonBlock className="h-28 w-full" />
+      <main className="mx-auto max-w-6xl px-4 py-6 md:px-6 md:py-8">
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_300px] xl:gap-5">
+          <section className="space-y-4 md:space-y-5">
+            <div className="rounded-xl border border-[rgba(230,126,34,0.16)] bg-white p-4 shadow-sm md:p-5">
+              <div className="grid gap-4 md:grid-cols-[132px_minmax(0,1fr)]">
+                <SkeletonBlock className="h-[132px] w-[132px]" />
+                <div className="space-y-3">
+                  <SkeletonBlock className="h-3.5 w-24" />
+                  <SkeletonBlock className="h-8 w-3/4" />
+                  <SkeletonBlock className="h-4 w-1/2" />
+                  <div className="grid gap-2 md:grid-cols-3">
+                    <SkeletonBlock className="h-20 w-full" />
+                    <SkeletonBlock className="h-20 w-full" />
+                    <SkeletonBlock className="h-20 w-full" />
                   </div>
                 </div>
               </div>
             </div>
 
-            <div className="rounded-[28px] border border-[rgba(230,126,34,0.16)] bg-white p-5 shadow-sm md:p-6">
-              <SkeletonBlock className="h-7 w-48" />
-              <SkeletonBlock className="mt-2 h-4 w-72" />
-              <div className="mt-5 space-y-3">
-                <SkeletonBlock className="h-24 w-full" />
-                <SkeletonBlock className="h-24 w-full" />
-                <SkeletonBlock className="h-24 w-full" />
+            <div className="rounded-xl border border-[rgba(230,126,34,0.16)] bg-white p-4 shadow-sm md:p-5">
+              <SkeletonBlock className="h-6 w-36" />
+              <SkeletonBlock className="mt-2 h-3.5 w-56" />
+              <div className="mt-4 space-y-2.5">
+                <SkeletonBlock className="h-16 w-full" />
+                <SkeletonBlock className="h-16 w-full" />
+                <SkeletonBlock className="h-16 w-full" />
               </div>
             </div>
 
-            <div className="rounded-[28px] border border-[rgba(230,126,34,0.16)] bg-white p-5 shadow-sm md:p-6">
-              <SkeletonBlock className="h-7 w-52" />
-              <SkeletonBlock className="mt-2 h-4 w-80" />
-              <SkeletonBlock className="mt-5 h-[320px] w-full" />
-              <div className="mt-6 grid gap-3 md:grid-cols-3">
-                <SkeletonBlock className="h-28 w-full" />
-                <SkeletonBlock className="h-28 w-full" />
-                <SkeletonBlock className="h-28 w-full" />
+            <div className="rounded-xl border border-[rgba(230,126,34,0.16)] bg-white p-4 shadow-sm md:p-5">
+              <SkeletonBlock className="h-6 w-40" />
+              <SkeletonBlock className="mt-2 h-3.5 w-72" />
+              <SkeletonBlock className="mt-4 h-[210px] w-full" />
+              <div className="mt-4 grid gap-2 md:grid-cols-3">
+                <SkeletonBlock className="h-16 w-full" />
+                <SkeletonBlock className="h-16 w-full" />
+                <SkeletonBlock className="h-16 w-full" />
               </div>
             </div>
           </section>
 
-          <aside className="space-y-6">
-            <div className="rounded-[28px] border border-[rgba(230,126,34,0.16)] bg-white p-5 shadow-sm md:p-6">
-              <SkeletonBlock className="h-7 w-40" />
-              <SkeletonBlock className="mt-4 h-4 w-full" />
-              <SkeletonBlock className="mt-2 h-4 w-5/6" />
-              <SkeletonBlock className="mt-2 h-4 w-4/5" />
+          <aside className="space-y-4">
+            <div className="rounded-xl border border-[rgba(230,126,34,0.16)] bg-white p-4 shadow-sm md:p-5">
+              <SkeletonBlock className="h-6 w-32" />
+              <SkeletonBlock className="mt-3 h-3.5 w-full" />
+              <SkeletonBlock className="mt-2 h-3.5 w-5/6" />
+              <SkeletonBlock className="mt-2 h-3.5 w-4/5" />
             </div>
           </aside>
         </div>
