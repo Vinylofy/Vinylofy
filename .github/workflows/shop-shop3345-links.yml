@@ -25,7 +25,7 @@ jobs:
         --links-file data/raw/shop3345/3345_product_links.txt
         --csv-file data/raw/shop3345/3345_products.csv
         --state-file data/raw/shop3345/3345_detail_rotation_state.json
-        --max-pages 15
+        --max-pages 200
         --source browse-all-music
         --source all
 

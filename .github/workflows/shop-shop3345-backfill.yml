@@ -48,8 +48,8 @@ jobs:
         --links-file data/raw/shop3345/3345_product_links.txt
         --csv-file data/raw/shop3345/3345_products.csv
         --state-file data/raw/shop3345/3345_detail_rotation_state.json
-        --limit-details 50
-        --workers 8
+        --limit-details 2000
+        --workers 10
 
     steps:
       - name: Checkout
