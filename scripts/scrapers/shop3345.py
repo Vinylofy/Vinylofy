@@ -104,6 +104,30 @@ MUSIC_FORMAT_TOKENS = {
     "dvd",
 }
 
+NON_MUSIC_URL_TOKENS = {
+    "giftcard",
+    "tote",
+    "slipmat",
+    "cleaner",
+    "cleaning",
+    "stylus-brush",
+    "stylus-cleaner",
+    "cartridge",
+    "needle",
+    "hoodie",
+    "t-shirt",
+    "tshirt",
+    "mug",
+    "poster",
+    "loyalty-program",
+    "sell-your-vinyl",
+}
+
+
+def looks_like_non_music_url(url: str) -> bool:
+    haystack = clean_text(url).lower()
+    return any(token in haystack for token in NON_MUSIC_URL_TOKENS)
+
 
 # ---------------------------------------------------------------------------
 # Generic helpers
@@ -318,6 +342,8 @@ def extract_product_links(html: str) -> list[str]:
             full_url = urljoin(BASE_URL, href)
             if "/products/" not in full_url:
                 continue
+            if looks_like_non_music_url(full_url):
+                continue
             if full_url in seen:
                 continue
 
@@ -328,7 +354,6 @@ def extract_product_links(html: str) -> list[str]:
             break
 
     return found
-
 
 def read_links_file(path: Path) -> list[str]:
     if not path.exists():
@@ -478,6 +503,74 @@ def extract_json_ld_product(soup: BeautifulSoup) -> dict:
     return {}
 
 
+def product_page_text(page_text: str) -> str:
+    text = page_text or ""
+    stop_markers = [
+        "## Tracklist",
+        "## More from artist",
+        "## Recommended",
+        "## Webshop",
+        "## 3345",
+        "## Contact",
+        "Items no longer available",
+    ]
+    cut_positions = [text.find(marker) for marker in stop_markers if marker in text]
+    if cut_positions:
+        text = text[: min(cut_positions)]
+    return clean_text(text)
+
+
+def _extract_offer_price_candidates_from_text(text: str) -> list[str]:
+    haystack = clean_text(text)
+    if not haystack:
+        return []
+
+    patterns = [
+        r"Default\s+Title\s*-\s*€\s*([\d\.,]+)",
+        r"Sale\s+price\s*€\s*([\d\.,]+)",
+        r"Regular\s+price\s*€\s*([\d\.,]+)",
+        r"Normale\s+prijs\s*€\s*([\d\.,]+)",
+        r"Aanbiedingsprijs\s*€\s*([\d\.,]+)",
+        r"Product\s+variants\s+.*?€\s*([\d\.,]+)",
+    ]
+
+    found: list[str] = []
+    seen: set[str] = set()
+    for pattern in patterns:
+        for match in re.finditer(pattern, haystack, flags=re.IGNORECASE | re.DOTALL):
+            normalized = normalize_price(match.group(1))
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                found.append(normalized)
+    return found
+
+
+def _extract_price_from_json_offer(product_json: dict) -> str:
+    offers = product_json.get("offers")
+    offer_dicts: list[dict] = []
+    if isinstance(offers, dict):
+        offer_dicts = [offers]
+    elif isinstance(offers, list):
+        offer_dicts = [x for x in offers if isinstance(x, dict)]
+
+    candidates: list[str] = []
+    for offer in offer_dicts:
+        for key in ("price", "lowPrice", "highPrice"):
+            value = offer.get(key)
+            if value is None:
+                continue
+            normalized = normalize_price(str(value))
+            if normalized:
+                candidates.append(normalized)
+
+    if not candidates:
+        return ""
+
+    def _numeric(value: str) -> float:
+        return float(value.replace("€", "").replace(",", "."))
+
+    return min(candidates, key=_numeric)
+
 def extract_artist_and_title(soup: BeautifulSoup, page_text: str) -> tuple[str, str]:
     artist = ""
     title = ""
@@ -507,13 +600,15 @@ def extract_artist_and_title(soup: BeautifulSoup, page_text: str) -> tuple[str, 
     return artist, title
 
 
-def extract_price(soup: BeautifulSoup) -> str:
+def extract_price(soup: BeautifulSoup, page_text: str, product_json: dict) -> str:
     selectors = [
         "main .price__sale .price-item",
         "main .price__regular .price-item",
         "main .price .price-item",
         "main [data-product-block] .price-item",
         "main .product__info-container .price-item",
+        "main [class*='price']",
+        "form [class*='price']",
     ]
     bad_tokens = {
         "unit price",
@@ -524,6 +619,8 @@ def extract_price(soup: BeautifulSoup) -> str:
         "save",
         "free shipping",
         "shipping",
+        "per item",
+        "/ per",
     }
 
     numeric_candidates: list[tuple[float, str]] = []
@@ -540,19 +637,33 @@ def extract_price(soup: BeautifulSoup) -> str:
             if any(cls in (node.get("class") or []) for cls in ["visually-hidden", "sr-only"]):
                 continue
 
-            match = re.search(r"€\s*([\d\.,]+)", txt)
-            if not match:
-                continue
+            for match in re.finditer(r"€\s*([\d\.,]+)", txt):
+                normalized = normalize_price(match.group(1))
+                if not normalized or normalized in seen:
+                    continue
+                seen.add(normalized)
+                try:
+                    numeric_value = float(normalized.replace("€", "").replace(",", "."))
+                except Exception:
+                    continue
+                numeric_candidates.append((numeric_value, normalized))
 
-            normalized = normalize_price(match.group(1))
-            if not normalized or normalized in seen:
-                continue
-            seen.add(normalized)
-            try:
-                numeric_value = float(normalized.replace("€", "").replace(",", "."))
-            except Exception:
-                continue
-            numeric_candidates.append((numeric_value, normalized))
+    core_text = product_page_text(page_text)
+    for candidate in _extract_offer_price_candidates_from_text(core_text):
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            numeric_candidates.append((float(candidate.replace("€", "").replace(",", ".")), candidate))
+        except Exception:
+            pass
+
+    json_price = _extract_price_from_json_offer(product_json)
+    if json_price and json_price not in seen:
+        try:
+            numeric_candidates.append((float(json_price.replace("€", "").replace(",", ".")), json_price))
+        except Exception:
+            pass
 
     if numeric_candidates:
         numeric_candidates.sort(key=lambda x: x[0])
@@ -560,27 +671,60 @@ def extract_price(soup: BeautifulSoup) -> str:
 
     return ""
 
-
 def extract_availability(soup: BeautifulSoup, page_text: str, product_json: dict) -> str:
-    lower_text = page_text.lower()
+    core_text = product_page_text(page_text).lower()
 
-    if "out of stock" in lower_text or "sold out" in lower_text or "items no longer available" in lower_text:
-        return "out_of_stock"
-    if "pre order" in lower_text or "pre-order" in lower_text or "coming soon" in lower_text:
-        return "preorder"
-
-    offers = product_json.get("offers")
-    if isinstance(offers, dict):
-        availability = normalize_availability(offers.get("availability"))
-        if availability != "in_stock":
-            return availability
-
-    add_to_cart = soup.find(string=re.compile(r"add to cart", re.IGNORECASE))
-    if add_to_cart:
+    add_to_cart_patterns = [
+        r"\badd\s+to\s+cart\b",
+        r"\bin\s+store\s+pickup\b",
+    ]
+    if any(re.search(pattern, core_text, flags=re.IGNORECASE) for pattern in add_to_cart_patterns):
         return "in_stock"
 
-    return "in_stock"
+    preorder_patterns = [
+        r"\bpre[ -]?order\b",
+        r"\bcoming\s+soon\b",
+    ]
+    if any(re.search(pattern, core_text, flags=re.IGNORECASE) for pattern in preorder_patterns):
+        return "preorder"
 
+    sold_out_patterns = [
+        r"\bout\s+of\s+stock\b",
+        r"\bsold\s+out\b",
+        r"\bitems?\s+no\s+longer\s+available\b",
+    ]
+    if any(re.search(pattern, core_text, flags=re.IGNORECASE) for pattern in sold_out_patterns):
+        return "out_of_stock"
+
+    offers = product_json.get("offers")
+    offer_dicts: list[dict] = []
+    if isinstance(offers, dict):
+        offer_dicts = [offers]
+    elif isinstance(offers, list):
+        offer_dicts = [x for x in offers if isinstance(x, dict)]
+
+    for offer in offer_dicts:
+        availability = normalize_availability(offer.get("availability"))
+        if availability in {"out_of_stock", "preorder", "in_stock"}:
+            return availability
+
+    cta_selectors = [
+        "button[name='add']",
+        "button.product-form__submit",
+        "button[type='submit']",
+        "form[action*='/cart/add'] button",
+    ]
+    for selector in cta_selectors:
+        for node in soup.select(selector):
+            txt = clean_text(node.get_text(" ", strip=True)).lower()
+            if "add to cart" in txt:
+                return "in_stock"
+            if "pre-order" in txt or "pre order" in txt:
+                return "preorder"
+            if "sold out" in txt or "out of stock" in txt:
+                return "out_of_stock"
+
+    return "in_stock"
 
 def derive_detail_status(*, ean: str, secondhand: bool, non_music: bool) -> str:
     if non_music:
@@ -600,7 +744,7 @@ def extract_detail_fields(html: str, url: str) -> dict[str, str]:
     product_json = extract_json_ld_product(soup)
     artist, title = extract_artist_and_title(soup, page_text)
 
-    ean = first_match(r"Barcode:\s*([0-9A-Za-z\-]+)", page_text)
+    ean = first_match(r"Barcode:\s*([0-9]{8,14})\b", page_text)
     if not ean:
         ean = first_match(r"gtin13\s*[:=]\s*\"?([0-9]{8,14})\"?", html, flags=re.IGNORECASE)
 
@@ -681,6 +825,8 @@ def extract_detail_fields(html: str, url: str) -> dict[str, str]:
 
     if not ean:
         ean = clean_text(product_json.get("gtin13") or product_json.get("gtin"))
+        if ean and not re.fullmatch(r"[0-9]{8,14}", ean):
+            ean = ""
 
     if not format_value:
         name = clean_text(product_json.get("name"))
@@ -688,14 +834,7 @@ def extract_detail_fields(html: str, url: str) -> dict[str, str]:
         if match:
             format_value = clean_text(match.group(1))
 
-    price = extract_price(soup)
-    if not price:
-        offers = product_json.get("offers")
-        if isinstance(offers, dict):
-            offer_price = offers.get("price")
-            if offer_price:
-                price = normalize_price(str(offer_price))
-
+    price = extract_price(soup, page_text, product_json)
     availability = extract_availability(soup, page_text, product_json)
 
     secondhand = (
