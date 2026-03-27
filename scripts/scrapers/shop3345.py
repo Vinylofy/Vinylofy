@@ -1,13 +1,4 @@
 #!/usr/bin/env python3
-"""
-3345.nl scraper tuned for three separate automation flows:
-1. discovery       -> build and rotate the frontier of product URLs
-2. refresh-known   -> refresh URLs that already produced a valid EAN
-3. backfill        -> try new / unmatched URLs with strict retry rules
-
-This keeps the daily detail budget focused on URLs that can actually improve
-Vinylofy output, while still expanding coverage over time.
-"""
 from __future__ import annotations
 
 import argparse
@@ -15,268 +6,61 @@ import csv
 import json
 import re
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Sequence
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 BASE_URL = "https://3345.nl"
 REQUEST_TIMEOUT = 30
-SLEEP_BETWEEN_REQUESTS = 0.35
+LISTING_SLEEP_SECONDS = 0.15
 SAVE_EVERY_REFRESHED_PRODUCTS = 25
-DEFAULT_REFRESH_WORKERS = 10
-DEFAULT_STATE_FILE = "3345_detail_rotation_state.json"
+DEFAULT_DETAIL_WORKERS = 8
+THREAD_LOCAL = threading.local()
+
 DEFAULT_LINKS_FILE = "3345_product_links.txt"
 DEFAULT_CSV_FILE = "3345_products.csv"
+DEFAULT_STATE_FILE = "3345_detail_rotation_state.json"
 
 DISCOVERY_SOURCES: dict[str, str] = {
     "browse-all-music": BASE_URL + "/collections/browse-all-music?page={page}",
     "all": BASE_URL + "/collections/all?page={page}",
 }
 
-FIELDNAMES = [
-    "artist",
-    "title",
-    "ean",
-    "release_date",
-    "genre",
-    "style",
-    "format",
-    "price",
-    "availability",
-    "url",
-    "source_collection",
-    "detail_status",
-    "is_secondhand",
-]
-
+DETAIL_FIELDS = ("ean", "release_date", "genre", "style")
 NON_MUSIC_TOKENS = {
     "giftcard",
-    "gift-card",
     "gift card",
     "tote",
+    "bag",
     "slipmat",
     "brush",
     "cleaner",
     "cleaning",
-    "stylus",
-    "cartridge",
-    "needle",
-    "hoodie",
-    "t-shirt",
-    "tshirt",
-    "shirt",
+    "inner sleeve",
+    "outer sleeve",
+    "sleeve",
+    "plastic bag",
     "cap",
-    "mug",
-    "poster",
-    "turntable",
-    "headphones",
-    "adapter",
-    "merch",
-    "loyalty-program",
-    "loyalty program",
-    "shop-visit",
-    "sell-your-vinyl",
-}
-
-MUSIC_FORMAT_TOKENS = {
-    "lp",
-    "2lp",
-    "3lp",
-    "4lp",
-    "5lp",
-    '7"',
-    '10"',
-    '12"',
-    "vinyl",
-    "ep",
-    "single",
-    "cd",
-    "cassette",
-    "blu-ray",
-    "dvd",
-}
-
-NON_MUSIC_URL_TOKENS = {
-    "giftcard",
-    "tote",
-    "slipmat",
-    "cleaner",
-    "cleaning",
-    "stylus-brush",
-    "stylus-cleaner",
-    "cartridge",
-    "needle",
     "hoodie",
-    "t-shirt",
-    "tshirt",
-    "mug",
+    "shirt",
     "poster",
-    "loyalty-program",
-    "sell-your-vinyl",
+    "book",
+    "magazine",
+    "voucher",
 }
 
 
-def looks_like_non_music_url(url: str) -> bool:
-    haystack = clean_text(url).lower()
-    return any(token in haystack for token in NON_MUSIC_URL_TOKENS)
-
-
-# ---------------------------------------------------------------------------
-# Generic helpers
-# ---------------------------------------------------------------------------
 def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
-def clean_text(value: str | None) -> str:
-    if not value:
-        return ""
-    value = value.replace("\xa0", " ")
-    value = re.sub(r"\s+", " ", value)
-    return value.strip()
-
-
-def normalize_price(value: str | None) -> str:
-    value = clean_text(value)
-    if not value:
-        return ""
-
-    value = value.replace("EUR", "").replace("€", "")
-    value = clean_text(value).replace(" ", "")
-
-    if "," in value and "." in value:
-        value = value.replace(".", "").replace(",", ".")
-    elif "," in value:
-        value = value.replace(",", ".")
-
-    try:
-        numeric = float(value)
-    except Exception:
-        return ""
-
-    return f"€{numeric:.2f}".replace(".", ",")
-
-
-def first_match(pattern: str, text: str, flags: int = 0) -> str:
-    match = re.search(pattern, text, flags)
-    return clean_text(match.group(1)) if match else ""
-
-
-def extract_between_labels(text: str, label_variants: Iterable[str], next_labels: Iterable[str]) -> str:
-    for label in label_variants:
-        label_re = re.escape(label)
-        next_re = "|".join(re.escape(x) for x in next_labels)
-        pattern = rf"{label_re}\s*(.*?)\s*(?=(?:{next_re})|$)"
-        match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
-        if match:
-            return clean_text(match.group(1))
-    return ""
-
-
-def normalize_availability(value: str | None) -> str:
-    raw = clean_text(value).lower().replace("-", "_").replace(" ", "_")
-    if raw in {"out_of_stock", "sold_out", "items_no_longer_available"}:
-        return "out_of_stock"
-    if raw in {"pre_order", "preorder", "coming_soon"}:
-        return "preorder"
-    if raw in {"in_stock", "available"}:
-        return "in_stock"
-    return "in_stock"
-
-
-def looks_like_music_format(value: str | None) -> bool:
-    haystack = clean_text(value).lower()
-    return any(token in haystack for token in MUSIC_FORMAT_TOKENS)
-
-
-def looks_like_secondhand(url: str, row: dict[str, str] | None = None) -> bool:
-    row = row or {}
-    haystack = " ".join(
-        [
-            clean_text(url),
-            clean_text(row.get("artist")),
-            clean_text(row.get("title")),
-            clean_text(row.get("genre")),
-            clean_text(row.get("source_collection")),
-        ]
-    ).lower()
-    return "used" in haystack or "second hand" in haystack or "second-hand" in haystack
-
-
-def looks_like_non_music_row(url: str, row: dict[str, str] | None = None) -> bool:
-    row = row or {}
-    haystack = " ".join(
-        [
-            clean_text(url),
-            clean_text(row.get("artist")),
-            clean_text(row.get("title")),
-            clean_text(row.get("format")),
-            clean_text(row.get("source_collection")),
-        ]
-    ).lower()
-    has_non_music_token = any(token in haystack for token in NON_MUSIC_TOKENS)
-    looks_music_like = bool(clean_text(row.get("genre"))) or looks_like_music_format(row.get("format"))
-    return has_non_music_token and not looks_music_like
-
-
-def bool_to_str(value: bool) -> str:
-    return "true" if value else "false"
-
-
-def str_to_bool(value: str | None) -> bool:
-    return clean_text(value).lower() in {"1", "true", "yes", "y"}
-
-
-# ---------------------------------------------------------------------------
-# State helpers
-# ---------------------------------------------------------------------------
-def load_state(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
-def save_state(path: Path, state: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-
-
-def ensure_state_sections(state: dict) -> None:
-    state.setdefault("links", {})
-    state.setdefault("cursors", {})
-    state.setdefault("runs", {})
-
-
-def link_meta(state: dict, url: str) -> dict:
-    ensure_state_sections(state)
-    links = state["links"]
-    value = links.get(url)
-    if not isinstance(value, dict):
-        value = {}
-        links[url] = value
-    return value
-
-
-def increment_run_counter(state: dict, key: str) -> int:
-    ensure_state_sections(state)
-    runs = state["runs"]
-    runs[key] = int(runs.get(key, 0) or 0) + 1
-    return runs[key]
-
-
-def iso_or_blank(value: str | None) -> str:
-    return clean_text(value)
+    return datetime.now(timezone.utc).isoformat()
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +97,14 @@ def build_session() -> requests.Session:
     return session
 
 
+def get_thread_session() -> requests.Session:
+    session = getattr(THREAD_LOCAL, "session", None)
+    if session is None:
+        session = build_session()
+        THREAD_LOCAL.session = session
+    return session
+
+
 def fetch_html(session: requests.Session, url: str) -> str:
     response = session.get(url, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
@@ -320,71 +112,424 @@ def fetch_html(session: requests.Session, url: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Listing pages / frontier building
+# Generic text helpers
 # ---------------------------------------------------------------------------
-def extract_product_links(html: str) -> list[str]:
-    soup = BeautifulSoup(html, "html.parser")
+def clean_text(value: str | None) -> str:
+    if value is None:
+        return ""
+    value = str(value).replace("\xa0", " ")
+    value = re.sub(r"\s+", " ", value)
+    return value.strip()
 
-    found: list[str] = []
-    seen: set[str] = set()
-    selectors = [
-        "a.full-unstyled-link.notranslate[href^='/products/']",
-        "a.full-unstyled-link[href^='/products/']",
-        "a[href^='/products/']",
+
+def normalize_price(value: str) -> str:
+    value = clean_text(value)
+    if not value:
+        return ""
+    value = value.replace("EUR", "€").replace("EURO", "€")
+    m = re.search(r"€\s*([\d\.,]+)", value)
+    if m:
+        return f"€{clean_text(m.group(1))}"
+    if re.fullmatch(r"[\d\.,]+", value):
+        return f"€{value}"
+    return value.replace("€ ", "€")
+
+
+def first_match(pattern: str, text: str, flags: int = 0) -> str:
+    match = re.search(pattern, text, flags)
+    return clean_text(match.group(1)) if match else ""
+
+
+def extract_between_labels(text: str, label_variants: Iterable[str], next_labels: Iterable[str]) -> str:
+    for label in label_variants:
+        label_re = re.escape(label)
+        next_re = "|".join(re.escape(x) for x in next_labels)
+        pattern = rf"{label_re}\s*(.*?)\s*(?=(?:{next_re})|$)"
+        match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return clean_text(match.group(1))
+    return ""
+
+
+def canonicalize_product_url(url: str) -> str:
+    if not url:
+        return ""
+    joined = urljoin(BASE_URL, url)
+    parts = urlsplit(joined)
+    path = parts.path or ""
+    if path.startswith("/nl/products/"):
+        path = path.replace("/nl/products/", "/products/", 1)
+    path = re.sub(r"/+", "/", path)
+    return urlunsplit(("https", "3345.nl", path.rstrip("/"), "", ""))
+
+
+def parse_artist_title_from_string(value: str) -> tuple[str, str]:
+    value = clean_text(value)
+    if not value:
+        return "", ""
+    if " - " in value:
+        artist, title = value.split(" - ", 1)
+        return clean_text(artist), clean_text(title)
+    return "", value
+
+
+def looks_like_format_text(value: str) -> bool:
+    value = clean_text(value).lower()
+    return bool(
+        value
+        and (
+            "lp" in value
+            or "vinyl" in value
+            or '7"' in value
+            or '10"' in value
+            or '12"' in value
+            or value in {"ep", "cd"}
+        )
+    )
+
+
+def strip_format_suffix_from_title(value: str) -> tuple[str, str]:
+    value = clean_text(value)
+    if not value:
+        return "", ""
+
+    match = re.search(r"\(([^\)]+)\)\s*$", value)
+    if match:
+        candidate = clean_text(match.group(1))
+        if looks_like_format_text(candidate):
+            title = clean_text(value[: match.start()])
+            return title, candidate
+    return value, ""
+
+
+def extract_price_from_text(text: str) -> str:
+    matches = re.findall(r"€\s*([\d\.,]+)", text, flags=re.IGNORECASE)
+    if not matches:
+        return ""
+    return normalize_price(matches[-1])
+
+
+def looks_like_non_music_row(url: str, row: dict[str, str] | None = None) -> bool:
+    row = row or {}
+    haystack = " ".join(
+        [
+            clean_text(url),
+            clean_text(row.get("artist")),
+            clean_text(row.get("title")),
+            clean_text(row.get("format")),
+            clean_text(row.get("source_collection")),
+        ]
+    ).lower()
+    return any(token in haystack for token in NON_MUSIC_TOKENS)
+
+
+# ---------------------------------------------------------------------------
+# CSV helpers
+# ---------------------------------------------------------------------------
+def get_fieldnames() -> list[str]:
+    return [
+        "artist",
+        "title",
+        "ean",
+        "release_date",
+        "genre",
+        "style",
+        "format",
+        "price",
+        "url",
+        "availability",
+        "detail_status",
+        "is_secondhand",
+        "source_collection",
     ]
 
-    for selector in selectors:
-        for anchor in soup.select(selector):
-            href = clean_text(anchor.get("href"))
-            if not href:
-                continue
 
-            full_url = urljoin(BASE_URL, href)
-            if "/products/" not in full_url:
-                continue
-            if looks_like_non_music_url(full_url):
-                continue
-            if full_url in seen:
-                continue
+def empty_row(url: str) -> dict[str, str]:
+    row = {field: "" for field in get_fieldnames()}
+    row["url"] = canonicalize_product_url(url)
+    row["detail_status"] = "listing_only"
+    row["availability"] = "in_stock"
+    row["is_secondhand"] = "false"
+    return row
 
-            seen.add(full_url)
-            found.append(full_url)
-
-        if found:
-            break
-
-    return found
 
 def read_links_file(path: Path) -> list[str]:
     if not path.exists():
         return []
-    lines = [clean_text(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    lines = [canonicalize_product_url(line) for line in path.read_text(encoding="utf-8").splitlines()]
     return [line for line in lines if line]
 
 
-def write_links_file(path: Path, links: Sequence[str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(links) + ("\n" if links else ""), encoding="utf-8")
-
-
 def append_links(path: Path, links: Iterable[str]) -> list[str]:
-    existing = read_links_file(path)
-    seen = set(existing)
-    new_links: list[str] = []
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = set(read_links_file(path))
+    new_links = []
     for link in links:
-        if link in seen:
+        normalized = canonicalize_product_url(link)
+        if not normalized or normalized in existing:
             continue
-        seen.add(link)
-        existing.append(link)
-        new_links.append(link)
-    if new_links:
-        write_links_file(path, existing)
+        existing.add(normalized)
+        new_links.append(normalized)
+
+    if not new_links:
+        return []
+
+    with path.open("a", encoding="utf-8") as f:
+        for link in new_links:
+            f.write(link + "\n")
     return new_links
 
 
-def build_collection_url(source_name: str, page: int) -> str:
-    template = DISCOVERY_SOURCES[source_name]
-    return template.format(page=max(1, page))
+def load_csv_rows_by_url(csv_path: Path, fieldnames: Sequence[str]) -> dict[str, dict[str, str]]:
+    rows_by_url: dict[str, dict[str, str]] = {}
+    if not csv_path.exists():
+        return rows_by_url
+
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            url = canonicalize_product_url(clean_text(row.get("url")))
+            if not url:
+                continue
+            normalized = {field: clean_text(row.get(field)) for field in fieldnames}
+            normalized["url"] = url
+            if not normalized.get("detail_status"):
+                normalized["detail_status"] = "listing_only"
+            if not normalized.get("availability"):
+                normalized["availability"] = "in_stock"
+            if not normalized.get("is_secondhand"):
+                normalized["is_secondhand"] = "false"
+            rows_by_url[url] = normalized
+    return rows_by_url
+
+
+def write_all_rows_to_csv(csv_path: Path, rows_by_url: dict[str, dict], fieldnames: Sequence[str]) -> None:
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(fieldnames))
+        writer.writeheader()
+        for url in sorted(rows_by_url.keys()):
+            row = {field: clean_text(rows_by_url[url].get(field)) for field in fieldnames}
+            row["url"] = url
+            writer.writerow(row)
+
+
+def merge_row(existing: dict[str, str] | None, incoming: dict[str, str]) -> dict[str, str]:
+    merged = empty_row(incoming.get("url") or (existing or {}).get("url") or "")
+    if existing:
+        merged.update({k: clean_text(v) for k, v in existing.items()})
+
+    for key, value in incoming.items():
+        value = clean_text(value)
+        if not value:
+            continue
+        merged[key] = value
+
+    merged["url"] = canonicalize_product_url(merged.get("url"))
+    return merged
+
+
+def row_is_missing_details(row: dict[str, str] | None) -> bool:
+    if not row:
+        return True
+    return any(not clean_text(row.get(field)) for field in DETAIL_FIELDS)
+
+
+# ---------------------------------------------------------------------------
+# State helpers
+# ---------------------------------------------------------------------------
+def load_state(path: Path) -> dict:
+    if not path.exists():
+        return {
+            "discovery": {"next_page_by_source": {}},
+            "detail": {"refresh_cursor": 0, "backfill_cursor": 0},
+            "meta": {"updated_at": utc_now_iso()},
+        }
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("state must be an object")
+    except Exception:
+        return {
+            "discovery": {"next_page_by_source": {}},
+            "detail": {"refresh_cursor": 0, "backfill_cursor": 0},
+            "meta": {"updated_at": utc_now_iso()},
+        }
+    data.setdefault("discovery", {}).setdefault("next_page_by_source", {})
+    data.setdefault("detail", {}).setdefault("refresh_cursor", 0)
+    data.setdefault("detail", {}).setdefault("backfill_cursor", 0)
+    data.setdefault("meta", {})
+    return data
+
+
+def save_state(path: Path, state: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    state.setdefault("meta", {})["updated_at"] = utc_now_iso()
+    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def rotate_slice(items: Sequence[str], limit: int, cursor: int) -> tuple[list[str], int]:
+    items = [clean_text(x) for x in items if clean_text(x)]
+    if not items or limit <= 0:
+        return [], cursor
+    if cursor < 0:
+        cursor = 0
+    cursor = cursor % len(items)
+    if limit >= len(items):
+        return list(items), 0
+    result = list(items[cursor : cursor + limit])
+    if len(result) < limit:
+        result.extend(items[: limit - len(result)])
+    next_cursor = (cursor + limit) % len(items)
+    return result, next_cursor
+
+
+# ---------------------------------------------------------------------------
+# Listing pages
+# ---------------------------------------------------------------------------
+def card_candidates_for_anchor(anchor: Tag) -> list[Tag]:
+    candidates: list[Tag] = []
+    node = anchor
+    for _ in range(6):
+        parent = getattr(node, "parent", None)
+        if not isinstance(parent, Tag):
+            break
+        candidates.append(parent)
+        node = parent
+    return candidates
+
+
+def pick_card_for_anchor(anchor: Tag) -> Tag:
+    best = anchor
+    best_score = -1
+    title_text = clean_text(anchor.get_text(" ", strip=True))
+
+    for candidate in card_candidates_for_anchor(anchor):
+        text = clean_text(candidate.get_text(" ", strip=True))
+        if not text or len(text) > 1400:
+            continue
+        score = 0
+        if title_text and title_text in text:
+            score += 2
+        if re.search(r"€\s*[\d\.,]+", text):
+            score += 3
+        if any(token in text.lower() for token in ("sold out", "uitverkocht", "price", "prijs", "vendor")):
+            score += 1
+        if len(text) < 80:
+            score -= 1
+        if score > best_score:
+            best_score = score
+            best = candidate
+    return best
+
+
+def extract_listing_price(card: Tag) -> str:
+    selectors = [
+        ".price-item--sale",
+        ".price__sale .price-item",
+        ".price-item--regular",
+        ".price__regular .price-item",
+        ".price .price-item",
+        ".card-information .price",
+        ".price",
+    ]
+    for selector in selectors:
+        for node in card.select(selector):
+            text = clean_text(node.get_text(" ", strip=True))
+            price = extract_price_from_text(text)
+            if price:
+                return price
+    return extract_price_from_text(card.get_text(" ", strip=True))
+
+
+def extract_listing_vendor(card: Tag) -> str:
+    selectors = [
+        ".card__vendor",
+        ".product-card__vendor",
+        ".vendor",
+        ".card-information__text .caption-with-letter-spacing",
+    ]
+    for selector in selectors:
+        node = card.select_one(selector)
+        if node:
+            text = clean_text(node.get_text(" ", strip=True))
+            if text and not re.search(r"€\s*[\d\.,]+", text):
+                return text
+    return ""
+
+
+def extract_listing_availability(card: Tag) -> str:
+    text = clean_text(card.get_text(" ", strip=True)).lower()
+    if any(token in text for token in ("pre order", "pre-order", "preorder")):
+        return "preorder"
+    if any(token in text for token in ("sold out", "uitverkocht", "out of stock")):
+        return "out_of_stock"
+    return "in_stock"
+
+
+def extract_listing_row_from_anchor(anchor: Tag, source_name: str = "") -> dict[str, str] | None:
+    href = clean_text(anchor.get("href"))
+    url = canonicalize_product_url(href)
+    if not url or "/products/" not in url:
+        return None
+
+    full_title = clean_text(anchor.get_text(" ", strip=True))
+    if not full_title:
+        return None
+
+    card = pick_card_for_anchor(anchor)
+    vendor = extract_listing_vendor(card)
+    price = extract_listing_price(card)
+    availability = extract_listing_availability(card)
+
+    artist, title = parse_artist_title_from_string(full_title)
+    title_no_format, format_from_title = strip_format_suffix_from_title(title)
+    if title_no_format:
+        title = title_no_format
+    if not artist and vendor:
+        artist = vendor
+
+    row = empty_row(url)
+    row.update(
+        {
+            "artist": artist,
+            "title": title or full_title,
+            "format": format_from_title,
+            "price": price,
+            "url": url,
+            "availability": availability,
+            "source_collection": source_name,
+            "is_secondhand": "false",
+        }
+    )
+    return row
+
+
+def extract_listing_rows(html: str, source_name: str = "") -> list[dict[str, str]]:
+    soup = BeautifulSoup(html, "html.parser")
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    selectors = [
+        "a.full-unstyled-link.notranslate[href*='/products/']",
+        "a.full-unstyled-link[href*='/products/']",
+        "a[href*='/products/']",
+    ]
+    anchors: list[Tag] = []
+    for selector in selectors:
+        anchors = [a for a in soup.select(selector) if isinstance(a, Tag)]
+        if anchors:
+            break
+
+    for anchor in anchors:
+        row = extract_listing_row_from_anchor(anchor, source_name=source_name)
+        if not row:
+            continue
+        url = row["url"]
+        if url in seen or looks_like_non_music_row(url, row):
+            continue
+        seen.add(url)
+        rows.append(row)
+    return rows
 
 
 def scrape_listing_pages(
@@ -393,347 +538,169 @@ def scrape_listing_pages(
     state_file: Path,
     source_names: Sequence[str] | None = None,
     max_pages_per_source: int = 15,
+    csv_path: Path | None = None,
 ) -> list[str]:
+    source_names = list(source_names or ["browse-all-music", "all"])
+    fieldnames = get_fieldnames()
+    rows_by_url = load_csv_rows_by_url(csv_path, fieldnames) if csv_path else {}
     state = load_state(state_file)
-    ensure_state_sections(state)
-    run_number = increment_run_counter(state, "discovery")
-    source_names = list(source_names or DISCOVERY_SOURCES.keys())
+    page_state: dict[str, int] = state.setdefault("discovery", {}).setdefault("next_page_by_source", {})
 
-    discovered_new_links: list[str] = []
-    total_pages = 0
+    total_new_links = 0
+    collected_new_links: list[str] = []
 
     for source_name in source_names:
-        if source_name not in DISCOVERY_SOURCES:
+        template = DISCOVERY_SOURCES.get(source_name)
+        if not template:
             print(f"[DISCOVERY] onbekende source overgeslagen: {source_name}")
             continue
+        start_page = int(page_state.get(source_name, 1) or 1)
+        source_new = 0
+        source_seen = 0
+        page = start_page
 
-        cursor_key = f"discovery::{source_name}"
-        cursor = int(state["cursors"].get(cursor_key, 1) or 1)
-        start_page = max(1, cursor)
-        pages_visited = 0
-        seen_signatures: set[tuple[str, ...]] = set()
-        source_new_links = 0
-
-        print(
-            f"[DISCOVERY] source={source_name} | run={run_number} | start_page={start_page} | pages={max_pages_per_source}"
-        )
-
-        for offset in range(max_pages_per_source):
-            page = start_page + offset
-            url = build_collection_url(source_name, page)
-            total_pages += 1
-            pages_visited += 1
-
+        for _ in range(max(1, int(max_pages_per_source or 1))):
+            url = template.format(page=page)
             try:
                 html = fetch_html(session, url)
-                links = extract_product_links(html)
+                page_rows = extract_listing_rows(html, source_name=source_name)
             except Exception as exc:
-                print(f"[DISCOVERY {source_name} p{page}] FOUT: {exc}")
-                if offset == 0:
-                    state["cursors"][cursor_key] = 1
+                print(f"[DISCOVERY {source_name} p{page}] FOUT bij ophalen: {exc}")
                 break
 
-            if not links:
-                print(f"[DISCOVERY {source_name} p{page}] gevonden=0 | stop")
-                state["cursors"][cursor_key] = 1
+            if not page_rows:
+                print(f"[DISCOVERY {source_name} p{page}] geen productlinks; reset naar pagina 1")
+                page = 1
                 break
 
-            signature = tuple(links)
-            if signature in seen_signatures:
-                print(f"[DISCOVERY {source_name} p{page}] herhaalde productset | reset naar pagina 1")
-                state["cursors"][cursor_key] = 1
-                break
-            seen_signatures.add(signature)
-
+            links = [row["url"] for row in page_rows]
             new_links = append_links(links_file, links)
-            source_new_links += len(new_links)
-            discovered_new_links.extend(new_links)
+            source_new += len(new_links)
+            total_new_links += len(new_links)
+            collected_new_links.extend(new_links)
 
-            now = utc_now_iso()
-            for link in links:
-                meta = link_meta(state, link)
-                meta.setdefault("first_seen_at", now)
-                meta["last_seen_in_listing_at"] = now
-                meta["discovery_source"] = source_name
-                meta.setdefault("blank_ean_attempts", 0)
+            missing_price = 0
+            for row in page_rows:
+                source_seen += 1
+                if csv_path:
+                    current = rows_by_url.get(row["url"])
+                    merged = merge_row(current, row)
+                    if not merged.get("price"):
+                        missing_price += 1
+                    rows_by_url[row["url"]] = merged
+            if csv_path and page_rows:
+                write_all_rows_to_csv(csv_path, rows_by_url, fieldnames)
+
             print(
-                f"[DISCOVERY {source_name} p{page}] gevonden={len(links)} | nieuw={len(new_links)} | source_totaal={source_new_links}"
+                f"[DISCOVERY {source_name} p{page}] producten={len(page_rows)} | nieuw={len(new_links)} | "
+                f"zonder_prijs={missing_price} | source_totaal_nieuw={source_new}"
             )
-            time.sleep(SLEEP_BETWEEN_REQUESTS)
 
-        else:
-            state["cursors"][cursor_key] = start_page + max_pages_per_source
+            page += 1
+            time.sleep(LISTING_SLEEP_SECONDS)
 
-        if pages_visited and cursor_key not in state["cursors"]:
-            state["cursors"][cursor_key] = start_page + pages_visited
+        page_state[source_name] = max(1, page)
+        print(f"[DISCOVERY {source_name}] gezien={source_seen} | nieuw={source_new} | volgende_pagina={page_state[source_name]}")
 
     save_state(state_file, state)
-    print(
-        f"[DISCOVERY] sources={','.join(source_names)} | pages={total_pages} | nieuwe_links={len(discovered_new_links)} | state={state_file}"
-    )
-    return discovered_new_links
+    return collected_new_links
 
 
 # ---------------------------------------------------------------------------
-# Detail extraction
+# Detail pages
 # ---------------------------------------------------------------------------
 def extract_json_ld_product(soup: BeautifulSoup) -> dict:
     for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
         raw = script.string or script.get_text(" ", strip=True)
         if not raw:
             continue
-
         try:
             data = json.loads(raw)
         except Exception:
             continue
-
         candidates = data if isinstance(data, list) else [data]
-        expanded: list[dict] = []
         for item in candidates:
-            if isinstance(item, dict) and isinstance(item.get("@graph"), list):
-                expanded.extend(x for x in item["@graph"] if isinstance(x, dict))
-            elif isinstance(item, dict):
-                expanded.append(item)
-
-        for item in expanded:
+            if not isinstance(item, dict):
+                continue
             if item.get("@type") == "Product":
                 return item
-
     return {}
 
-
-def product_page_text(page_text: str) -> str:
-    text = page_text or ""
-    stop_markers = [
-        "## Tracklist",
-        "## More from artist",
-        "## Recommended",
-        "## Webshop",
-        "## 3345",
-        "## Contact",
-        "Items no longer available",
-    ]
-    cut_positions = [text.find(marker) for marker in stop_markers if marker in text]
-    if cut_positions:
-        text = text[: min(cut_positions)]
-    return clean_text(text)
-
-
-def _extract_offer_price_candidates_from_text(text: str) -> list[str]:
-    haystack = clean_text(text)
-    if not haystack:
-        return []
-
-    patterns = [
-        r"Default\s+Title\s*-\s*€\s*([\d\.,]+)",
-        r"Sale\s+price\s*€\s*([\d\.,]+)",
-        r"Regular\s+price\s*€\s*([\d\.,]+)",
-        r"Normale\s+prijs\s*€\s*([\d\.,]+)",
-        r"Aanbiedingsprijs\s*€\s*([\d\.,]+)",
-        r"Product\s+variants\s+.*?€\s*([\d\.,]+)",
-    ]
-
-    found: list[str] = []
-    seen: set[str] = set()
-    for pattern in patterns:
-        for match in re.finditer(pattern, haystack, flags=re.IGNORECASE | re.DOTALL):
-            normalized = normalize_price(match.group(1))
-            if normalized and normalized not in seen:
-                seen.add(normalized)
-                found.append(normalized)
-    return found
-
-
-def _extract_price_from_json_offer(product_json: dict) -> str:
-    offers = product_json.get("offers")
-    offer_dicts: list[dict] = []
-    if isinstance(offers, dict):
-        offer_dicts = [offers]
-    elif isinstance(offers, list):
-        offer_dicts = [x for x in offers if isinstance(x, dict)]
-
-    candidates: list[str] = []
-    for offer in offer_dicts:
-        for key in ("price", "lowPrice", "highPrice"):
-            value = offer.get(key)
-            if value is None:
-                continue
-            normalized = normalize_price(str(value))
-            if normalized:
-                candidates.append(normalized)
-
-    if not candidates:
-        return ""
-
-    def _numeric(value: str) -> float:
-        return float(value.replace("€", "").replace(",", "."))
-
-    return min(candidates, key=_numeric)
 
 def extract_artist_and_title(soup: BeautifulSoup, page_text: str) -> tuple[str, str]:
     artist = ""
     title = ""
-
     h1 = soup.find("h1")
     if h1:
         full_h1 = clean_text(h1.get_text(" ", strip=True))
         artist_link = h1.find("a")
         if artist_link:
             artist = clean_text(artist_link.get_text(" ", strip=True))
-            if artist and full_h1.lower().startswith(artist.lower()):
-                remainder = full_h1[len(artist):].strip()
-                remainder = remainder.lstrip("-–—: ").strip()
-                title = remainder
+        if artist and full_h1.lower().startswith(artist.lower()):
+            remainder = full_h1[len(artist):].strip().lstrip("-–—: ").strip()
+            title = remainder
         elif " - " in full_h1:
             left, right = full_h1.split(" - ", 1)
-            artist = clean_text(left)
+            artist = artist or clean_text(left)
             title = clean_text(right)
         else:
             title = full_h1
-
     if not artist:
         h1_text = first_match(r"#\s*(.+?)\n", page_text)
         if " - " in h1_text:
             artist, title = [clean_text(x) for x in h1_text.split(" - ", 1)]
-
     return artist, title
 
 
-def extract_price(soup: BeautifulSoup, page_text: str, product_json: dict) -> str:
+def extract_detail_availability(soup: BeautifulSoup, page_text: str) -> str:
+    normalized = clean_text(page_text).lower()
+    cta_texts = []
+    for selector in ["button", "input[type='submit']", ".product-form__submit", "[name='add']"]:
+        for node in soup.select(selector):
+            text = clean_text(node.get_text(" ", strip=True) or node.get("value"))
+            if text:
+                cta_texts.append(text.lower())
+    if any("add to cart" in t or "toevoegen" in t for t in cta_texts):
+        return "in_stock"
+    if any(token in normalized for token in ("pre order", "pre-order", "preorder")):
+        return "preorder"
+    if any(token in normalized for token in ("sold out", "uitverkocht", "out of stock", "items no longer available")):
+        return "out_of_stock"
+    return "in_stock"
+
+
+def extract_price(soup: BeautifulSoup, page_text: str) -> str:
     selectors = [
-        "main .price__sale .price-item",
-        "main .price__regular .price-item",
-        "main .price .price-item",
-        "main [data-product-block] .price-item",
-        "main .product__info-container .price-item",
-        "main [class*='price']",
-        "form [class*='price']",
+        ".price-item--sale",
+        ".price__sale .price-item",
+        ".price-item--regular",
+        ".price__regular .price-item",
+        ".price .price-item",
     ]
-    bad_tokens = {
-        "unit price",
-        "vanaf",
-        "from",
-        "compare at",
-        "bespaar",
-        "save",
-        "free shipping",
-        "shipping",
-        "per item",
-        "/ per",
-    }
-
-    numeric_candidates: list[tuple[float, str]] = []
-    seen: set[str] = set()
-
     for selector in selectors:
         for node in soup.select(selector):
             txt = clean_text(node.get_text(" ", strip=True))
-            if not txt or "€" not in txt:
-                continue
-            lower = txt.lower()
-            if any(token in lower for token in bad_tokens):
-                continue
-            if any(cls in (node.get("class") or []) for cls in ["visually-hidden", "sr-only"]):
-                continue
+            if "€" in txt:
+                m = re.search(r"€\s*([\d\.,]+)", txt)
+                if m:
+                    return normalize_price(m.group(0))
 
-            for match in re.finditer(r"€\s*([\d\.,]+)", txt):
-                normalized = normalize_price(match.group(1))
-                if not normalized or normalized in seen:
-                    continue
-                seen.add(normalized)
-                try:
-                    numeric_value = float(normalized.replace("€", "").replace(",", "."))
-                except Exception:
-                    continue
-                numeric_candidates.append((numeric_value, normalized))
+    patterns = [
+        r"Default Title\s*(?:-|–)?\s*(?:Sold out|Uitverkocht)?\s*(?:-|–)?\s*€\s*([\d\.,]+)",
+        r"Sale price\s*€\s*([\d\.,]+)",
+        r"Regular price\s*€\s*([\d\.,]+)",
+        r"Aanbiedingsprijs\s*€\s*([\d\.,]+)",
+        r"Normale prijs\s*€\s*([\d\.,]+)",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, page_text, flags=re.IGNORECASE)
+        if m:
+            return normalize_price(m.group(1))
 
-    core_text = product_page_text(page_text)
-    for candidate in _extract_offer_price_candidates_from_text(core_text):
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        try:
-            numeric_candidates.append((float(candidate.replace("€", "").replace(",", ".")), candidate))
-        except Exception:
-            pass
-
-    json_price = _extract_price_from_json_offer(product_json)
-    if json_price and json_price not in seen:
-        try:
-            numeric_candidates.append((float(json_price.replace("€", "").replace(",", ".")), json_price))
-        except Exception:
-            pass
-
-    if numeric_candidates:
-        numeric_candidates.sort(key=lambda x: x[0])
-        return numeric_candidates[0][1]
-
+    m = re.search(r"€\s*([\d\.,]+)", page_text)
+    if m:
+        return normalize_price(m.group(1))
     return ""
-
-def extract_availability(soup: BeautifulSoup, page_text: str, product_json: dict) -> str:
-    core_text = product_page_text(page_text).lower()
-
-    add_to_cart_patterns = [
-        r"\badd\s+to\s+cart\b",
-        r"\bin\s+store\s+pickup\b",
-    ]
-    if any(re.search(pattern, core_text, flags=re.IGNORECASE) for pattern in add_to_cart_patterns):
-        return "in_stock"
-
-    preorder_patterns = [
-        r"\bpre[ -]?order\b",
-        r"\bcoming\s+soon\b",
-    ]
-    if any(re.search(pattern, core_text, flags=re.IGNORECASE) for pattern in preorder_patterns):
-        return "preorder"
-
-    sold_out_patterns = [
-        r"\bout\s+of\s+stock\b",
-        r"\bsold\s+out\b",
-        r"\bitems?\s+no\s+longer\s+available\b",
-    ]
-    if any(re.search(pattern, core_text, flags=re.IGNORECASE) for pattern in sold_out_patterns):
-        return "out_of_stock"
-
-    offers = product_json.get("offers")
-    offer_dicts: list[dict] = []
-    if isinstance(offers, dict):
-        offer_dicts = [offers]
-    elif isinstance(offers, list):
-        offer_dicts = [x for x in offers if isinstance(x, dict)]
-
-    for offer in offer_dicts:
-        availability = normalize_availability(offer.get("availability"))
-        if availability in {"out_of_stock", "preorder", "in_stock"}:
-            return availability
-
-    cta_selectors = [
-        "button[name='add']",
-        "button.product-form__submit",
-        "button[type='submit']",
-        "form[action*='/cart/add'] button",
-    ]
-    for selector in cta_selectors:
-        for node in soup.select(selector):
-            txt = clean_text(node.get_text(" ", strip=True)).lower()
-            if "add to cart" in txt:
-                return "in_stock"
-            if "pre-order" in txt or "pre order" in txt:
-                return "preorder"
-            if "sold out" in txt or "out of stock" in txt:
-                return "out_of_stock"
-
-    return "in_stock"
-
-def derive_detail_status(*, ean: str, secondhand: bool, non_music: bool) -> str:
-    if non_music:
-        return "non_music"
-    if secondhand and not ean:
-        return "secondhand_without_ean"
-    if not ean:
-        return "missing_ean"
-    return "ok"
 
 
 def extract_detail_fields(html: str, url: str) -> dict[str, str]:
@@ -744,9 +711,11 @@ def extract_detail_fields(html: str, url: str) -> dict[str, str]:
     product_json = extract_json_ld_product(soup)
     artist, title = extract_artist_and_title(soup, page_text)
 
-    ean = first_match(r"Barcode:\s*([0-9]{8,14})\b", page_text)
+    ean = first_match(r"Barcode:\s*([0-9A-Za-z\-]+)", page_text)
     if not ean:
         ean = first_match(r"gtin13\s*[:=]\s*\"?([0-9]{8,14})\"?", html, flags=re.IGNORECASE)
+    if not ean:
+        ean = clean_text(product_json.get("gtin13") or product_json.get("gtin"))
 
     release_date = extract_between_labels(
         page_text,
@@ -802,7 +771,6 @@ def extract_detail_fields(html: str, url: str) -> dict[str, str]:
             "Aanbiedingsprijs",
             "Unit price",
             "Pre Order",
-            "Coming Soon",
             "Out Of Stock",
             "Tracklist",
             "Related Products:",
@@ -815,33 +783,26 @@ def extract_detail_fields(html: str, url: str) -> dict[str, str]:
             artist = clean_text(brand.get("name"))
         elif isinstance(brand, str):
             artist = clean_text(brand)
-
     if not title:
         name = clean_text(product_json.get("name"))
         if name and artist and name.lower().startswith(artist.lower()):
             title = clean_text(name[len(artist):].lstrip("-–—: "))
         else:
             title = name
-
-    if not ean:
-        ean = clean_text(product_json.get("gtin13") or product_json.get("gtin"))
-        if ean and not re.fullmatch(r"[0-9]{8,14}", ean):
-            ean = ""
-
     if not format_value:
         name = clean_text(product_json.get("name"))
-        match = re.search(r"\(([^\)]+)\)\s*$", name)
-        if match:
-            format_value = clean_text(match.group(1))
+        m = re.search(r"\(([^\)]+)\)\s*$", name)
+        if m:
+            format_value = clean_text(m.group(1))
 
-    price = extract_price(soup, page_text, product_json)
-    availability = extract_availability(soup, page_text, product_json)
+    price = extract_price(soup, page_text)
+    if not price:
+        offers = product_json.get("offers")
+        if isinstance(offers, dict) and offers.get("price"):
+            price = normalize_price(str(offers["price"]).replace(".", ","))
 
-    secondhand = (
-        "** note: this is a second-hand product!" in page_text.lower()
-        or clean_text(title).lower().startswith("used")
-        or clean_text(artist).lower().startswith("used")
-    )
+    availability = extract_detail_availability(soup, page_text)
+    detail_status = "ok" if ean else "missing_ean"
 
     row = {
         "artist": artist,
@@ -852,442 +813,210 @@ def extract_detail_fields(html: str, url: str) -> dict[str, str]:
         "style": style,
         "format": format_value,
         "price": price,
+        "url": canonicalize_product_url(url),
         "availability": availability,
-        "url": url,
-        "source_collection": "",
-        "is_secondhand": bool_to_str(secondhand),
-        "detail_status": "",
+        "detail_status": detail_status,
+        "is_secondhand": "false",
     }
-    row["detail_status"] = derive_detail_status(
-        ean=row["ean"],
-        secondhand=secondhand,
-        non_music=looks_like_non_music_row(url, row),
-    )
     return row
 
 
-# ---------------------------------------------------------------------------
-# CSV helpers
-# ---------------------------------------------------------------------------
-def read_existing_csv_rows(csv_path: Path) -> dict[str, dict[str, str]]:
-    rows_by_url: dict[str, dict[str, str]] = {}
-    if not csv_path.exists():
-        return rows_by_url
-
-    with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
-        reader = csv.DictReader(handle)
-        for row in reader:
-            url = clean_text((row or {}).get("url"))
-            if not url:
-                continue
-            normalized = {field: clean_text((row or {}).get(field, "")) for field in FIELDNAMES}
-            rows_by_url[url] = normalized
-
-    return rows_by_url
-
-
-def write_all_rows_to_csv(csv_path: Path, rows_by_url: dict[str, dict[str, str]]) -> None:
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    with csv_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=FIELDNAMES)
-        writer.writeheader()
-        for url in sorted(rows_by_url.keys()):
-            writer.writerow({field: rows_by_url[url].get(field, "") for field in FIELDNAMES})
-
-
-def append_row_to_csv(csv_path: Path, row: dict[str, str]) -> None:
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    file_exists = csv_path.exists()
-    with csv_path.open("a", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=FIELDNAMES)
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow({field: row.get(field, "") for field in FIELDNAMES})
-
-
-# ---------------------------------------------------------------------------
-# Selection strategies
-# ---------------------------------------------------------------------------
-def _rotation_select(items: Sequence[str], limit: int, state: dict, rotation_key: str) -> list[str]:
-    if not items or limit <= 0:
-        return []
-    ensure_state_sections(state)
-    start_index = int(state["cursors"].get(rotation_key, 0) or 0) % len(items)
-    ordered = list(items[start_index:]) + list(items[:start_index])
-    selected = ordered[:limit]
-    state["cursors"][rotation_key] = (start_index + len(selected)) % len(items)
-    return selected
-
-
-def _select_refresh_known(
-    *,
-    links_file: Path,
-    csv_file: Path,
-    limit_details: int,
-    state_file: Path,
-) -> list[str]:
-    all_links = set(read_links_file(links_file))
-    rows_by_url = read_existing_csv_rows(csv_file)
-    state = load_state(state_file)
-    ensure_state_sections(state)
-
-    known_ean_links = [
-        url
-        for url, row in rows_by_url.items()
-        if url in all_links and clean_text(row.get("ean"))
-    ]
-    selected = _rotation_select(known_ean_links, limit_details, state, "refresh_known_cursor")
-    now = utc_now_iso()
-    for url in selected:
-        meta = link_meta(state, url)
-        meta["last_selected_for"] = "refresh-known"
-        meta["last_selected_at"] = now
-    save_state(state_file, state)
-    print(
-        f"[SELECT refresh-known] met_ean={len(known_ean_links)} | geselecteerd={len(selected)} | limit={limit_details}"
-    )
-    return selected
-
-
-def _backfill_retry_allowed(meta: dict, row: dict[str, str]) -> bool:
-    retry_after = clean_text(meta.get("retry_after"))
-    if retry_after and retry_after > utc_now_iso():
-        return False
-
-    attempts = int(meta.get("blank_ean_attempts", 0) or 0)
-    if looks_like_non_music_row(meta.get("url") or "", row):
-        return attempts < 1
-    if looks_like_secondhand(meta.get("url") or "", row):
-        return False
-    return attempts < 3
-
-
-def _set_next_retry(meta: dict, row: dict[str, str]) -> None:
-    attempts = int(meta.get("blank_ean_attempts", 0) or 0)
-    now_epoch = int(time.time())
-    if looks_like_non_music_row(meta.get("url") or "", row):
-        delay_days = 120
-    elif looks_like_secondhand(meta.get("url") or "", row):
-        delay_days = 60
-    elif attempts <= 1:
-        delay_days = 7
-    elif attempts == 2:
-        delay_days = 30
-    else:
-        delay_days = 90
-    retry_epoch = now_epoch + (delay_days * 86400)
-    meta["retry_after"] = datetime.fromtimestamp(retry_epoch, tz=timezone.utc).replace(microsecond=0).isoformat()
-
-
-def _select_backfill(
-    *,
-    links_file: Path,
-    csv_file: Path,
-    limit_details: int,
-    state_file: Path,
-) -> list[str]:
-    all_links = read_links_file(links_file)
-    rows_by_url = read_existing_csv_rows(csv_file)
-    state = load_state(state_file)
-    ensure_state_sections(state)
-
-    never_scraped = [url for url in all_links if url not in rows_by_url]
-
-    retryable_blank_ean: list[str] = []
-    for url, row in rows_by_url.items():
-        if url not in all_links:
-            continue
-        if clean_text(row.get("ean")):
-            continue
-        meta = link_meta(state, url)
-        meta["url"] = url
-        if _backfill_retry_allowed(meta, row):
-            retryable_blank_ean.append(url)
-
-    selected: list[str] = []
-    new_budget = min(limit_details, len(never_scraped))
-    if new_budget:
-        selected.extend(never_scraped[:new_budget])
-
-    remaining = limit_details - len(selected)
-    if remaining > 0 and retryable_blank_ean:
-        selected.extend(_rotation_select(retryable_blank_ean, remaining, state, "backfill_retry_cursor"))
-
-    now = utc_now_iso()
-    for url in selected:
-        meta = link_meta(state, url)
-        meta["url"] = url
-        meta["last_selected_for"] = "backfill"
-        meta["last_selected_at"] = now
-    save_state(state_file, state)
-    print(
-        f"[SELECT backfill] nooit_gescraped={len(never_scraped)} | retry_blank={len(retryable_blank_ean)} | geselecteerd={len(selected)} | limit={limit_details}"
-    )
-    return selected
-
-
-def _select_mixed(
-    *,
-    links_file: Path,
-    csv_file: Path,
-    limit_details: int,
-    state_file: Path,
-) -> list[str]:
-    refresh_budget = max(1, int(limit_details * 0.8))
-    backfill_budget = max(0, limit_details - refresh_budget)
-    selected = _select_refresh_known(
-        links_file=links_file,
-        csv_file=csv_file,
-        limit_details=refresh_budget,
-        state_file=state_file,
-    )
-    if backfill_budget > 0:
-        selected.extend(
-            _select_backfill(
-                links_file=links_file,
-                csv_file=csv_file,
-                limit_details=backfill_budget,
-                state_file=state_file,
-            )
-        )
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for url in selected:
-        if url in seen:
-            continue
-        seen.add(url)
-        deduped.append(url)
-    return deduped[:limit_details]
-
-
-def select_links_for_detail_refresh(
-    *,
-    links_file: Path,
-    csv_file: Path,
-    limit_details: int | None = None,
-    state_file: Path | None = None,
-    strategy: str = "mixed",
-) -> list[str]:
-    all_links = read_links_file(links_file)
-    if not all_links:
-        return []
-
-    limit = int(limit_details or 0)
-    if limit <= 0:
-        limit = len(all_links)
-
-    state_path = state_file or (csv_file.parent / DEFAULT_STATE_FILE)
-    if strategy == "refresh-known":
-        return _select_refresh_known(
-            links_file=links_file,
-            csv_file=csv_file,
-            limit_details=limit,
-            state_file=state_path,
-        )
-    if strategy == "backfill":
-        return _select_backfill(
-            links_file=links_file,
-            csv_file=csv_file,
-            limit_details=limit,
-            state_file=state_path,
-        )
-    return _select_mixed(
-        links_file=links_file,
-        csv_file=csv_file,
-        limit_details=limit,
-        state_file=state_path,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Detail scraping and state updates
-# ---------------------------------------------------------------------------
-def _apply_state_after_row(state: dict, url: str, row: dict[str, str]) -> None:
-    meta = link_meta(state, url)
-    now = utc_now_iso()
-    meta["url"] = url
-    meta["last_detail_scraped_at"] = now
-    meta["last_price"] = clean_text(row.get("price"))
-    meta["last_availability"] = clean_text(row.get("availability"))
-    meta["last_detail_status"] = clean_text(row.get("detail_status"))
-    meta["last_ean"] = clean_text(row.get("ean"))
-    meta["is_secondhand"] = str_to_bool(row.get("is_secondhand"))
-    if clean_text(row.get("ean")):
-        meta["blank_ean_attempts"] = 0
-        meta["retry_after"] = ""
-        meta["known_ean"] = True
-    else:
-        meta["blank_ean_attempts"] = int(meta.get("blank_ean_attempts", 0) or 0) + 1
-        meta["known_ean"] = False
-        _set_next_retry(meta, row)
+def fetch_detail_row(url: str) -> dict[str, str]:
+    session = get_thread_session()
+    html = fetch_html(session, url)
+    return extract_detail_fields(html, url)
 
 
 def scrape_product_details(
-    session: requests.Session,
+    session: requests.Session | None,
     links: Sequence[str],
     csv_path: Path,
-    update_existing: bool,
-    workers: int = 1,
+    update_existing: bool = True,
+    workers: int = DEFAULT_DETAIL_WORKERS,
     state_file: Path | None = None,
+    rows_by_url: dict[str, dict[str, str]] | None = None,
+    status_prefix: str = "DETAIL",
 ) -> int:
+    _ = session  # compatibility with current automation wrapper
     if not links:
-        print("[DETAILS] Geen links om te verwerken.")
+        print(f"[{status_prefix}] Geen links om te scrapen.")
         return 0
 
-    state_path = state_file or (csv_path.parent / DEFAULT_STATE_FILE)
-    state = load_state(state_path)
-    ensure_state_sections(state)
+    fieldnames = get_fieldnames()
+    if rows_by_url is None:
+        rows_by_url = load_csv_rows_by_url(csv_path, fieldnames)
 
+    unique_urls = []
+    seen = set()
+    for url in links:
+        normalized = canonicalize_product_url(url)
+        if normalized and normalized not in seen and not looks_like_non_music_row(normalized, rows_by_url.get(normalized)):
+            seen.add(normalized)
+            unique_urls.append(normalized)
+
+    total = len(unique_urls)
     written = 0
-    total = len(links)
-    rows_by_url = read_existing_csv_rows(csv_path) if update_existing else read_existing_csv_rows(csv_path)
-    worker_count = max(1, int(workers or 1))
-    print(f"[DETAILS] workers={worker_count} | update_existing={update_existing}")
+    completed = 0
+    max_workers = max(1, int(workers or 1))
 
-    def _fetch_one(url: str) -> tuple[str, dict[str, str]]:
-        local_session = build_session() if worker_count > 1 else session
-        try:
-            html = fetch_html(local_session, url)
-            row = extract_detail_fields(html, url)
-            existing = rows_by_url.get(url, {})
-            row["source_collection"] = clean_text(existing.get("source_collection"))
-            if not row["source_collection"]:
-                meta = link_meta(state, url)
-                row["source_collection"] = clean_text(meta.get("discovery_source"))
-            if worker_count <= 1:
-                time.sleep(SLEEP_BETWEEN_REQUESTS)
-            return url, row
-        finally:
-            if worker_count > 1:
-                local_session.close()
+    def _apply_row(url: str, row: dict[str, str]) -> None:
+        current = rows_by_url.get(url) if update_existing else None
+        rows_by_url[url] = merge_row(current, row)
 
-    if worker_count == 1:
-        iterable = enumerate(links, start=1)
-        for idx, url in iterable:
+    if max_workers == 1:
+        for idx, url in enumerate(unique_urls, start=1):
             try:
-                _, row = _fetch_one(url)
-                rows_by_url[url] = {field: clean_text(row.get(field, "")) for field in FIELDNAMES}
-                _apply_state_after_row(state, url, row)
+                row = fetch_detail_row(url)
+                _apply_row(url, row)
                 written += 1
+                completed += 1
+                merged = rows_by_url[url]
                 print(
-                    f"[PRODUCT {idx}/{total}] verwerkt | ean={row['ean'] or '-'} | price={row['price'] or '-'} | avail={row['availability'] or '-'} | status={row['detail_status'] or '-'}"
+                    f"[{status_prefix} {idx}/{total}] verwerkt | ean={merged.get('ean') or '-'} | "
+                    f"price={merged.get('price') or '-'} | avail={merged.get('availability') or '-'} | "
+                    f"status={merged.get('detail_status') or '-'}"
                 )
-                if written % SAVE_EVERY_REFRESHED_PRODUCTS == 0:
-                    write_all_rows_to_csv(csv_path, rows_by_url)
-                    save_state(state_path, state)
-                    print(f"[DETAILS] tussentijds opgeslagen na {written} producten")
+                if completed % SAVE_EVERY_REFRESHED_PRODUCTS == 0:
+                    write_all_rows_to_csv(csv_path, rows_by_url, fieldnames)
+                    print(f"[{status_prefix}] tussentijds opgeslagen na {completed} producten")
             except Exception as exc:
-                print(f"[PRODUCT {idx}/{total}] FOUT bij {url}: {exc}")
-        write_all_rows_to_csv(csv_path, rows_by_url)
-        save_state(state_path, state)
+                completed += 1
+                print(f"[{status_prefix} {idx}/{total}] FOUT bij {url}: {exc}")
+        write_all_rows_to_csv(csv_path, rows_by_url, fieldnames)
         return written
 
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        future_to_meta = {executor.submit(_fetch_one, url): (idx, url) for idx, url in enumerate(links, start=1)}
-        for completed, future in enumerate(as_completed(future_to_meta), start=1):
-            original_idx, url = future_to_meta[future]
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_url = {executor.submit(fetch_detail_row, url): url for url in unique_urls}
+        for idx, future in enumerate(as_completed(future_to_url), start=1):
+            url = future_to_url[future]
             try:
-                _, row = future.result()
-                rows_by_url[url] = {field: clean_text(row.get(field, "")) for field in FIELDNAMES}
-                _apply_state_after_row(state, url, row)
+                row = future.result()
+                _apply_row(url, row)
                 written += 1
+                merged = rows_by_url[url]
                 print(
-                    f"[PRODUCT {completed}/{total}] verwerkt | src_idx={original_idx} | ean={row['ean'] or '-'} | price={row['price'] or '-'} | avail={row['availability'] or '-'} | status={row['detail_status'] or '-'}"
+                    f"[{status_prefix} {idx}/{total}] verwerkt | ean={merged.get('ean') or '-'} | "
+                    f"price={merged.get('price') or '-'} | avail={merged.get('availability') or '-'} | "
+                    f"status={merged.get('detail_status') or '-'}"
                 )
-                if written % SAVE_EVERY_REFRESHED_PRODUCTS == 0:
-                    write_all_rows_to_csv(csv_path, rows_by_url)
-                    save_state(state_path, state)
-                    print(f"[DETAILS] tussentijds opgeslagen na {written} producten")
             except Exception as exc:
-                print(f"[PRODUCT {completed}/{total}] FOUT bij {url}: {exc}")
+                print(f"[{status_prefix} {idx}/{total}] FOUT bij {url}: {exc}")
+            finally:
+                completed += 1
+                if completed % SAVE_EVERY_REFRESHED_PRODUCTS == 0:
+                    write_all_rows_to_csv(csv_path, rows_by_url, fieldnames)
+                    print(f"[{status_prefix}] tussentijds opgeslagen na {completed} producten")
 
-    write_all_rows_to_csv(csv_path, rows_by_url)
-    save_state(state_path, state)
+    write_all_rows_to_csv(csv_path, rows_by_url, fieldnames)
+    if state_file:
+        state = load_state(state_file)
+        save_state(state_file, state)
     return written
 
 
 # ---------------------------------------------------------------------------
-# CLI / legacy compatibility helpers
+# Target selection
 # ---------------------------------------------------------------------------
-def run_new_default(*, links_file: Path, csv_file: Path, start_page: int = 1, max_pages: int | None = None) -> dict[str, int | str]:
-    session = build_session()
-    state_file = csv_file.parent / DEFAULT_STATE_FILE
-    pages = max_pages if max_pages is not None else 15
-    new_links = scrape_listing_pages(
-        session=session,
-        links_file=links_file,
-        state_file=state_file,
-        source_names=["browse-all-music", "all"],
-        max_pages_per_source=pages,
+def pick_detail_targets_from_listing(
+    rows_by_url: dict[str, dict[str, str]],
+    listing_urls_seen: Sequence[str],
+    new_links: Sequence[str],
+    limit_details: int,
+    state_file: Path,
+) -> list[str]:
+    limit = max(0, int(limit_details or 0))
+    if limit == 0:
+        return []
+    state = load_state(state_file)
+    cursor = int(state.setdefault("detail", {}).get("refresh_cursor", 0) or 0)
+
+    priority: list[str] = []
+    seen = set()
+    for url in list(new_links) + list(listing_urls_seen):
+        nurl = canonicalize_product_url(url)
+        if not nurl or nurl in seen:
+            continue
+        row = rows_by_url.get(nurl)
+        if looks_like_non_music_row(nurl, row):
+            continue
+        if nurl in new_links or row_is_missing_details(row):
+            seen.add(nurl)
+            priority.append(nurl)
+
+    selected, next_cursor = rotate_slice(priority, limit, cursor)
+    state["detail"]["refresh_cursor"] = next_cursor
+    save_state(state_file, state)
+    print(
+        f"[SELECT refresh-known] kandidaten={len(priority)} | gekozen={len(selected)} | cursor={cursor}->{next_cursor}"
     )
-    written = scrape_product_details(
-        session=session,
-        links=new_links,
-        csv_path=csv_file,
-        update_existing=False,
-        workers=1,
-        state_file=state_file,
-    )
-    return {"new_links": len(new_links), "written": written, "mode": "new"}
+    return selected
 
 
-def run_refresh_default(
-    *,
+def select_backfill_targets(
     links_file: Path,
     csv_file: Path,
-    limit_details: int | None = None,
-    state_file: Path | None = None,
-) -> dict[str, int | str]:
-    session = build_session()
-    chosen_state = state_file or (csv_file.parent / DEFAULT_STATE_FILE)
-    links = select_links_for_detail_refresh(
-        links_file=links_file,
-        csv_file=csv_file,
-        limit_details=limit_details,
-        state_file=chosen_state,
-        strategy="refresh-known",
+    limit_details: int,
+    state_file: Path,
+) -> list[str]:
+    links = read_links_file(links_file)
+    rows_by_url = load_csv_rows_by_url(csv_file, get_fieldnames())
+    candidates: list[str] = []
+    seen = set()
+    for url in links:
+        row = rows_by_url.get(url)
+        if not row or looks_like_non_music_row(url, row):
+            continue
+        if row.get("ean") and not row_is_missing_details(row):
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        candidates.append(url)
+
+    state = load_state(state_file)
+    cursor = int(state.setdefault("detail", {}).get("backfill_cursor", 0) or 0)
+    selected, next_cursor = rotate_slice(candidates, max(0, int(limit_details or 0)), cursor)
+    state["detail"]["backfill_cursor"] = next_cursor
+    save_state(state_file, state)
+    print(
+        f"[SELECT backfill] kandidaten={len(candidates)} | gekozen={len(selected)} | cursor={cursor}->{next_cursor}"
     )
-    written = scrape_product_details(
-        session=session,
-        links=links,
-        csv_path=csv_file,
-        update_existing=True,
-        workers=DEFAULT_REFRESH_WORKERS,
-        state_file=chosen_state,
-    )
-    return {"links": len(links), "written": written, "mode": "refresh"}
+    return selected
 
 
+def select_links_for_detail_refresh(
+    links_file: Path,
+    csv_file: Path,
+    limit_details: int,
+    state_file: Path,
+    strategy: str = "refresh-known",
+) -> list[str]:
+    rows_by_url = load_csv_rows_by_url(csv_file, get_fieldnames())
+    links = read_links_file(links_file)
+    if strategy == "backfill":
+        return select_backfill_targets(links_file, csv_file, limit_details, state_file)
+    listing_like = [url for url in links if rows_by_url.get(url)]
+    return pick_detail_targets_from_listing(rows_by_url, listing_like, [], limit_details, state_file)
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="3345.nl scraper")
+    parser = argparse.ArgumentParser(description="3345.nl listing-first scraper")
     parser.add_argument(
         "--mode",
-        choices=[
-            "new",
-            "refresh",
-            "both",
-            "links",
-            "details",
-            "discovery",
-            "refresh-known",
-            "backfill",
-        ],
-        default="both",
+        choices=["new", "refresh", "both", "menu", "links", "details", "refresh-details", "discovery"],
+        default="menu",
     )
     parser.add_argument("--start-page", type=int, default=1)
     parser.add_argument("--max-pages", type=int, default=15)
-    parser.add_argument("--limit-details", type=int, default=250)
-    parser.add_argument("--workers", type=int, default=DEFAULT_REFRESH_WORKERS)
     parser.add_argument("--links-file", default=DEFAULT_LINKS_FILE)
     parser.add_argument("--csv-file", default=DEFAULT_CSV_FILE)
-    parser.add_argument("--state-file", default=None)
-    parser.add_argument(
-        "--source",
-        action="append",
-        dest="sources",
-        default=None,
-        help="Discovery source(s), repeatable. Defaults to browse-all-music and all.",
-    )
+    parser.add_argument("--state-file", default=DEFAULT_STATE_FILE)
+    parser.add_argument("--detail-workers", type=int, default=DEFAULT_DETAIL_WORKERS)
+    parser.add_argument("--limit-details", type=int, default=250)
+    parser.add_argument("--source", action="append", dest="sources", default=None)
     return parser.parse_args()
 
 
@@ -1295,103 +1024,67 @@ def main() -> int:
     args = parse_args()
     mode = args.mode
     if mode == "links":
-        mode = "discovery"
+        mode = "new"
     elif mode == "details":
-        mode = "refresh-known"
-    elif mode == "new":
-        mode = "discovery"
-    elif mode == "refresh":
-        mode = "refresh-known"
+        mode = "refresh-details"
+    elif mode == "discovery":
+        mode = "new"
 
     links_file = Path(args.links_file)
     csv_file = Path(args.csv_file)
-    state_file = Path(args.state_file) if args.state_file else (csv_file.parent / DEFAULT_STATE_FILE)
-
-    print("=" * 72)
-    print("3345.nl scraper gestart")
-    print(f"mode       : {mode}")
-    print(f"links_file : {links_file}")
-    print(f"csv_file   : {csv_file}")
-    print(f"state_file : {state_file}")
-    print("=" * 72)
-
+    state_file = Path(args.state_file)
     session = build_session()
 
-    if mode == "discovery":
-        scrape_listing_pages(
+    if mode in {"new", "refresh", "both"}:
+        new_links = scrape_listing_pages(
             session=session,
             links_file=links_file,
             state_file=state_file,
             source_names=args.sources or ["browse-all-music", "all"],
             max_pages_per_source=max(1, args.max_pages),
+            csv_path=csv_file,
         )
-        print("Klaar.")
-        return 0
-
-    if mode == "refresh-known":
-        links = select_links_for_detail_refresh(
-            links_file=links_file,
-            csv_file=csv_file,
-            limit_details=max(1, args.limit_details),
-            state_file=state_file,
-            strategy="refresh-known",
-        )
+        rows_by_url = load_csv_rows_by_url(csv_file, get_fieldnames())
+        listing_urls_seen = list(rows_by_url.keys())
+        print(f"[LINKS] klaar. Nieuw opgeslagen links: {len(new_links)}")
+        if mode == "refresh":
+            print("[REFRESH] klaar. Prijzen/listing-data zijn via collectiepagina's bijgewerkt.")
+        else:
+            targets = pick_detail_targets_from_listing(
+                rows_by_url=rows_by_url,
+                listing_urls_seen=listing_urls_seen,
+                new_links=new_links,
+                limit_details=args.limit_details,
+                state_file=state_file,
+            )
+            written = scrape_product_details(
+                session=session,
+                links=targets,
+                csv_path=csv_file,
+                update_existing=True,
+                workers=args.detail_workers,
+                state_file=state_file,
+                rows_by_url=rows_by_url,
+            )
+            print(f"[DETAIL] klaar. Bijgewerkte productregels: {written}")
+    elif mode == "refresh-details":
+        rows_by_url = load_csv_rows_by_url(csv_file, get_fieldnames())
+        targets = read_links_file(links_file)
         written = scrape_product_details(
             session=session,
-            links=links,
+            links=targets,
             csv_path=csv_file,
             update_existing=True,
-            workers=max(1, args.workers),
+            workers=args.detail_workers,
             state_file=state_file,
+            rows_by_url=rows_by_url,
+            status_prefix="REFRESH-DETAILS",
         )
-        print(f"[DETAILS] klaar. Verwerkte regels: {written}")
-        print("Klaar.")
-        return 0
+        print(f"[REFRESH-DETAILS] klaar. Bijgewerkte productregels: {written}")
+    else:
+        print("Menu mode is not implemented in this repo build; use CLI arguments.")
+        return 2
 
-    if mode == "backfill":
-        links = select_links_for_detail_refresh(
-            links_file=links_file,
-            csv_file=csv_file,
-            limit_details=max(1, args.limit_details),
-            state_file=state_file,
-            strategy="backfill",
-        )
-        written = scrape_product_details(
-            session=session,
-            links=links,
-            csv_path=csv_file,
-            update_existing=True,
-            workers=max(1, args.workers),
-            state_file=state_file,
-        )
-        print(f"[DETAILS] klaar. Verwerkte regels: {written}")
-        print("Klaar.")
-        return 0
-
-    # Legacy both = run discovery first, then 80/20 mixed detail refresh.
-    scrape_listing_pages(
-        session=session,
-        links_file=links_file,
-        state_file=state_file,
-        source_names=args.sources or ["browse-all-music", "all"],
-        max_pages_per_source=max(1, args.max_pages),
-    )
-    links = select_links_for_detail_refresh(
-        links_file=links_file,
-        csv_file=csv_file,
-        limit_details=max(1, args.limit_details),
-        state_file=state_file,
-        strategy="mixed",
-    )
-    written = scrape_product_details(
-        session=session,
-        links=links,
-        csv_path=csv_file,
-        update_existing=True,
-        workers=max(1, args.workers),
-        state_file=state_file,
-    )
-    print(f"[DETAILS] klaar. Verwerkte regels: {written}")
     print("Klaar.")
     return 0
 

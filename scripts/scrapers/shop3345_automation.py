@@ -52,46 +52,105 @@ def main() -> int:
     ensure_parent(state_file)
 
     session = base.build_session()
+    sources = args.sources or ["browse-all-music", "all"]
 
-    if args.mode in {"links", "discovery", "both"}:
+    if args.mode in {"links", "discovery"}:
         new_links = base.scrape_listing_pages(
             session=session,
             links_file=links_file,
             state_file=state_file,
-            source_names=args.sources or ["browse-all-music", "all"],
+            source_names=sources,
             max_pages_per_source=max(1, args.max_pages),
+            csv_path=csv_file,
         )
         print(f"[DISCOVERY] nieuw opgeslagen links: {len(new_links)}")
-    else:
-        new_links = []
-
-    if args.mode in {"links", "discovery"}:
         print("Klaar.")
         return 0
 
-    strategy = {
-        "refresh-known": "refresh-known",
-        "backfill": "backfill",
-        "both": "mixed",
-    }[args.mode]
+    if args.mode == "refresh-known":
+        new_links = base.scrape_listing_pages(
+            session=session,
+            links_file=links_file,
+            state_file=state_file,
+            source_names=sources,
+            max_pages_per_source=max(1, args.max_pages),
+            csv_path=csv_file,
+        )
+        rows_by_url = base.load_csv_rows_by_url(csv_file, base.get_fieldnames())
+        listing_urls_seen = [
+            url for url, row in rows_by_url.items() if (row.get("source_collection") in sources or not row.get("source_collection"))
+        ]
+        targets = base.pick_detail_targets_from_listing(
+            rows_by_url=rows_by_url,
+            listing_urls_seen=listing_urls_seen,
+            new_links=new_links,
+            limit_details=args.limit_details,
+            state_file=state_file,
+        )
+        written = base.scrape_product_details(
+            session=session,
+            links=targets,
+            csv_path=csv_file,
+            update_existing=True,
+            workers=max(1, args.workers),
+            state_file=state_file,
+            rows_by_url=rows_by_url,
+            status_prefix="DETAIL",
+        )
+        print(f"[DETAILS] verwerkt: {written}")
+        print("Klaar.")
+        return 0
 
-    selected_links = base.select_links_for_detail_refresh(
+    if args.mode == "backfill":
+        targets = base.select_backfill_targets(
+            links_file=links_file,
+            csv_file=csv_file,
+            limit_details=args.limit_details,
+            state_file=state_file,
+        )
+        rows_by_url = base.load_csv_rows_by_url(csv_file, base.get_fieldnames())
+        written = base.scrape_product_details(
+            session=session,
+            links=targets,
+            csv_path=csv_file,
+            update_existing=True,
+            workers=max(1, args.workers),
+            state_file=state_file,
+            rows_by_url=rows_by_url,
+            status_prefix="BACKFILL",
+        )
+        print(f"[DETAILS] verwerkt: {written}")
+        print("Klaar.")
+        return 0
+
+    # mixed mode: discovery/listing refresh + detail targets
+    new_links = base.scrape_listing_pages(
+        session=session,
         links_file=links_file,
-        csv_file=csv_file,
+        state_file=state_file,
+        source_names=sources,
+        max_pages_per_source=max(1, args.max_pages),
+        csv_path=csv_file,
+    )
+    rows_by_url = base.load_csv_rows_by_url(csv_file, base.get_fieldnames())
+    listing_urls_seen = list(rows_by_url.keys())
+    targets = base.pick_detail_targets_from_listing(
+        rows_by_url=rows_by_url,
+        listing_urls_seen=listing_urls_seen,
+        new_links=new_links,
         limit_details=args.limit_details,
         state_file=state_file,
-        strategy=strategy,
     )
-
     written = base.scrape_product_details(
         session=session,
-        links=selected_links,
+        links=targets,
         csv_path=csv_file,
         update_existing=True,
         workers=max(1, args.workers),
         state_file=state_file,
+        rows_by_url=rows_by_url,
+        status_prefix="DETAIL",
     )
-
     print(f"[DETAILS] verwerkt: {written}")
     print("Klaar.")
     return 0
