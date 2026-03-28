@@ -58,6 +58,17 @@ NON_MUSIC_TOKENS = {
     "voucher",
 }
 
+PRICE_EXCLUSION_CONTEXTS = (
+    "free shipping",
+    "orders over",
+    "order over",
+    "shipping over",
+    "verzending",
+    "gratis verzending",
+    "bestellingen boven",
+    "free delivery",
+)
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -202,11 +213,25 @@ def strip_format_suffix_from_title(value: str) -> tuple[str, str]:
     return value, ""
 
 
+def _price_match_has_excluded_context(text: str, start: int, end: int) -> bool:
+    context = clean_text(text[max(0, start - 80) : min(len(text), end + 80)]).lower()
+    return any(token in context for token in PRICE_EXCLUSION_CONTEXTS)
+
+
 def extract_price_from_text(text: str) -> str:
-    matches = re.findall(r"€\s*([\d\.,]+)", text, flags=re.IGNORECASE)
+    text = clean_text(text)
+    if not text:
+        return ""
+
+    matches = list(re.finditer(r"€\s*([\d\.,]+)", text, flags=re.IGNORECASE))
     if not matches:
         return ""
-    return normalize_price(matches[-1])
+
+    for match in reversed(matches):
+        if _price_match_has_excluded_context(text, match.start(), match.end()):
+            continue
+        return normalize_price(match.group(1))
+    return ""
 
 
 def looks_like_non_music_row(url: str, row: dict[str, str] | None = None) -> bool:
@@ -549,7 +574,9 @@ def extract_listing_row_from_anchor(anchor: Tag, source_name: str = "") -> dict[
 
     card = pick_card_for_anchor(anchor)
     vendor = extract_listing_vendor(card)
-    price = extract_listing_price(card)
+    # 3345 listing pages can leak site-wide prices such as the free-shipping threshold.
+    # Detail pages are authoritative for product price, so keep listing discovery price empty.
+    price = ""
     availability = extract_listing_availability(card)
 
     artist, title = parse_artist_title_from_string(full_title)
@@ -810,9 +837,11 @@ def extract_price(soup: BeautifulSoup, page_text: str) -> str:
             match = re.search(pattern, text, flags=re.IGNORECASE)
             if match:
                 return normalize_price(match.group(1))
-        generic = re.findall(r"€\s*([\d\.,]+)", text, flags=re.IGNORECASE)
-        if generic:
-            return normalize_price(generic[-1])
+        generic_matches = list(re.finditer(r"€\s*([\d\.,]+)", text, flags=re.IGNORECASE))
+        for match in reversed(generic_matches):
+            if _price_match_has_excluded_context(text, match.start(), match.end()):
+                continue
+            return normalize_price(match.group(1))
         return ""
 
     if isinstance(price_root, Tag):
@@ -1006,9 +1035,19 @@ def scrape_product_details(
     def _apply_row(url: str, row: dict[str, str]) -> None:
         current = rows_by_url.get(url) if update_existing else None
         incoming = dict(row)
-        # 3345 detail pages are authoritative for price. Preserve listing price only as fallback.
-        if current and clean_text(current.get("price")) and not clean_text(incoming.get("price")):
-            incoming["price"] = clean_text(current.get("price"))
+
+        incoming_status = clean_text(incoming.get("detail_status"))
+        incoming_price = clean_text(incoming.get("price"))
+        current_price = clean_text((current or {}).get("price"))
+
+        # 3345 detail pages are authoritative for price.
+        # Listing/discovery rows should never overwrite an existing detail price,
+        # and a detail row should be allowed to correct a stale listing price.
+        if incoming_status == "listing_only":
+            incoming["price"] = ""
+        elif not incoming_price and current_price:
+            incoming["price"] = current_price
+
         rows_by_url[url] = merge_row(current, incoming)
 
     if max_workers == 1:
