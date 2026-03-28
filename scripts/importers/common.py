@@ -250,12 +250,33 @@ def read_and_filter(
 def ensure_shop(cur, config: ImportConfig) -> str:
     cur.execute(
         """
+        select id, name, country
+        from public.shops
+        where domain = %s
+        limit 1
+        """,
+        (config.shop_domain,),
+    )
+    row = cur.fetchone()
+    if row is not None:
+        shop_id, current_name, current_country = row
+        if current_name != config.shop_name or current_country != config.shop_country:
+            cur.execute(
+                """
+                update public.shops
+                set name = %s,
+                    country = %s,
+                    updated_at = now()
+                where id = %s
+                """,
+                (config.shop_name, config.shop_country, shop_id),
+            )
+        return shop_id
+
+    cur.execute(
+        """
         insert into public.shops (name, domain, country, is_active)
         values (%s, %s, %s, true)
-        on conflict (domain) do update
-          set name = excluded.name,
-              country = excluded.country,
-              updated_at = now()
         returning id
         """,
         (config.shop_name, config.shop_domain, config.shop_country),
@@ -500,7 +521,7 @@ def run_import(
 
     log("[STEP 2] Verbinden met database...")
 
-    with psycopg.connect(db_url) as conn:
+    with psycopg.connect(db_url, options="-c statement_timeout=0") as conn:
         log("[DB] Verbonden")
 
         with conn.cursor() as cur:
