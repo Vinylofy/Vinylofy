@@ -332,7 +332,8 @@ def merge_row(existing: dict[str, str] | None, incoming: dict[str, str]) -> dict
 def row_is_missing_details(row: dict[str, str] | None) -> bool:
     if not row:
         return True
-    return any(not clean_text(row.get(field)) for field in DETAIL_FIELDS)
+    required_fields = set(DETAIL_FIELDS) | {"price", "availability"}
+    return any(not clean_text(row.get(field)) for field in required_fields)
 
 
 # ---------------------------------------------------------------------------
@@ -726,32 +727,36 @@ def extract_detail_availability(soup: BeautifulSoup, page_text: str) -> str:
     scope = price_root.find_parent(class_="product__price-quantity") if price_root else None
     if not isinstance(scope, Tag):
         scope = soup.select_one(".product__price-quantity") or soup.select_one(".product-form") or soup.select_one("main")
-
     scope_text = clean_text(scope.get_text(" ", strip=True)).lower() if isinstance(scope, Tag) else clean_text(page_text).lower()
 
+    if any(token in scope_text for token in ("sold out", "uitverkocht", "out of stock")):
+        return "out_of_stock"
+    if any(token in scope_text for token in ("pre order", "pre-order", "preorder", "coming soon")):
+        return "preorder"
+
     cta_texts: list[str] = []
-    has_cart_form = False
+    has_enabled_cart_form = False
     for node in soup.select("form[action$='/cart/add'], form[action*='/cart/add']"):
-        has_cart_form = True
         text = clean_text(node.get_text(" ", strip=True) or node.get("value"))
         if text:
             cta_texts.append(text.lower())
+        disabled_descendant = node.select_one("button[disabled], input[disabled], button[aria-disabled='true'], input[aria-disabled='true']")
+        if disabled_descendant is None:
+            has_enabled_cart_form = True
 
     for node in soup.select("button[name='add'], button.product-form__submit, button[type='submit'], input[type='submit']"):
         text = clean_text(node.get_text(" ", strip=True) or node.get("value"))
         if text:
             cta_texts.append(text.lower())
 
+    if any(("sold out" in t) or ("out of stock" in t) or ("uitverkocht" in t) for t in cta_texts):
+        return "out_of_stock"
+    if any(token in t for t in cta_texts for token in ("pre order", "pre-order", "preorder", "coming soon")):
+        return "preorder"
     if any("add to cart" in t or "toevoegen aan winkelwagen" in t or t == "toevoegen" for t in cta_texts):
         return "in_stock"
-    if has_cart_form and not any(("sold out" in t) or ("out of stock" in t) or ("uitverkocht" in t) for t in cta_texts):
+    if has_enabled_cart_form:
         return "in_stock"
-
-    if any(token in scope_text for token in ("pre order", "pre-order", "preorder", "coming soon")):
-        return "preorder"
-
-    if any(token in scope_text for token in ("sold out", "uitverkocht", "out of stock")):
-        return "out_of_stock"
 
     return "in_stock"
 
@@ -789,6 +794,27 @@ def select_price_root(soup: BeautifulSoup) -> Tag | None:
 
 def extract_price(soup: BeautifulSoup, page_text: str) -> str:
     price_root = select_price_root(soup)
+
+    def _scan_text_for_price(text: str) -> str:
+        text = clean_text(text)
+        if not text:
+            return ""
+        for pattern in (
+            r"Default\s+Title(?:\s*-\s*(?:sold\s*out|out\s+of\s+stock|uitverkocht))?\s*-\s*€\s*([\d\.,]+)",
+            r"Sale\s+price\s*€\s*([\d\.,]+)",
+            r"Regular\s+price\s*€\s*([\d\.,]+)",
+            r"Aanbiedingsprijs\s*€\s*([\d\.,]+)",
+            r"Normale\s+prijs\s*€\s*([\d\.,]+)",
+            r"(?:sold\s*out|out\s+of\s+stock|uitverkocht)\s*-\s*€\s*([\d\.,]+)",
+        ):
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return normalize_price(match.group(1))
+        generic = re.findall(r"€\s*([\d\.,]+)", text, flags=re.IGNORECASE)
+        if generic:
+            return normalize_price(generic[-1])
+        return ""
+
     if isinstance(price_root, Tag):
         for selector in (
             ".price-item--sale",
@@ -801,31 +827,19 @@ def extract_price(soup: BeautifulSoup, page_text: str) -> str:
                 if price:
                     return price
 
-        root_text = clean_text(price_root.get_text(" ", strip=True))
-        for pattern in (
-            r"Default\s+Title\s*-\s*€\s*([\d\.,]+)",
-            r"Sale\s+price\s*€\s*([\d\.,]+)",
-            r"Regular\s+price\s*€\s*([\d\.,]+)",
-            r"Aanbiedingsprijs\s*€\s*([\d\.,]+)",
-            r"Normale\s+prijs\s*€\s*([\d\.,]+)",
-        ):
-            match = re.search(pattern, root_text, flags=re.IGNORECASE)
-            if match:
-                return normalize_price(match.group(1))
+        price = _scan_text_for_price(price_root.get_text(" ", strip=True))
+        if price:
+            return price
 
         parent = price_root.find_parent(class_="product__price-quantity")
         if isinstance(parent, Tag):
-            parent_text = clean_text(parent.get_text(" ", strip=True))
-            for pattern in (
-                r"Default\s+Title\s*-\s*€\s*([\d\.,]+)",
-                r"Sale\s+price\s*€\s*([\d\.,]+)",
-                r"Regular\s+price\s*€\s*([\d\.,]+)",
-                r"Aanbiedingsprijs\s*€\s*([\d\.,]+)",
-                r"Normale\s+prijs\s*€\s*([\d\.,]+)",
-            ):
-                match = re.search(pattern, parent_text, flags=re.IGNORECASE)
-                if match:
-                    return normalize_price(match.group(1))
+            price = _scan_text_for_price(parent.get_text(" ", strip=True))
+            if price:
+                return price
+
+    price = _scan_text_for_price(page_text)
+    if price:
+        return price
 
     return ""
 
@@ -920,12 +934,16 @@ def extract_detail_fields(html: str, url: str) -> dict[str, str]:
         m = re.search(r"\(([^\)]+)\)\s*$", name)
         if m:
             format_value = clean_text(m.group(1))
-
     price = extract_price(soup, page_text)
     if not price:
         offers = product_json.get("offers")
         if isinstance(offers, dict) and offers.get("price"):
             price = normalize_price(str(offers["price"]).replace(".", ","))
+        elif isinstance(offers, list):
+            for offer in offers:
+                if isinstance(offer, dict) and offer.get("price"):
+                    price = normalize_price(str(offer["price"]).replace(".", ","))
+                    break
 
     availability = extract_detail_availability(soup, page_text)
     detail_status = "ok" if ean else "missing_ean"
