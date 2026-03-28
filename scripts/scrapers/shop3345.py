@@ -354,11 +354,21 @@ def merge_row(existing: dict[str, str] | None, incoming: dict[str, str]) -> dict
     return merged
 
 
+def is_suspicious_placeholder_price(value: str | None) -> bool:
+    normalized = clean_text(value)
+    if not normalized:
+        return False
+    normalized = normalize_price(normalized)
+    return normalized in {"80", "80,00", "€80", "€80,00"}
+
+
 def row_is_missing_details(row: dict[str, str] | None) -> bool:
     if not row:
         return True
     required_fields = set(DETAIL_FIELDS) | {"price", "availability"}
-    return any(not clean_text(row.get(field)) for field in required_fields)
+    if any(not clean_text(row.get(field)) for field in required_fields):
+        return True
+    return is_suspicious_placeholder_price(row.get("price"))
 
 
 # ---------------------------------------------------------------------------
@@ -1130,7 +1140,9 @@ def pick_detail_targets_from_listing(
         if looks_like_non_music_row(nurl, row):
             continue
         seen.add(nurl)
-        if nurl in new_links_set or row_is_missing_details(row):
+        if is_suspicious_placeholder_price((row or {}).get("price")):
+            priority.append(nurl)
+        elif nurl in new_links_set or row_is_missing_details(row):
             priority.append(nurl)
         else:
             fallback.append(nurl)
@@ -1162,7 +1174,7 @@ def select_backfill_targets(
         row = rows_by_url.get(url)
         if not row or looks_like_non_music_row(url, row):
             continue
-        if row.get("ean") and not row_is_missing_details(row):
+        if row.get("ean") and not row_is_missing_details(row) and not is_suspicious_placeholder_price(row.get("price")):
             continue
         if url in seen:
             continue
