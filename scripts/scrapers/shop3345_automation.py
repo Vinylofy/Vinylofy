@@ -80,9 +80,26 @@ def main() -> int:
         listing_scope = [
             url for url, row in rows_by_url.items() if (row.get("source_collection") in sources or not row.get("source_collection"))
         ]
+        targets = base.pick_detail_targets_from_listing(
+            rows_by_url=rows_by_url,
+            listing_urls_seen=listing_scope,
+            new_links=new_links,
+            limit_details=args.limit_details,
+            state_file=state_file,
+        )
+        written = base.scrape_product_details(
+            session=session,
+            links=targets,
+            csv_path=csv_file,
+            update_existing=True,
+            workers=max(1, args.workers),
+            state_file=state_file,
+            rows_by_url=rows_by_url,
+            status_prefix="REFRESH-KNOWN",
+        )
         print(
-            f"[REFRESH-KNOWN] listing-only refresh voltooid | scope={len(listing_scope)} | "
-            f"nieuw_gevonden={len(new_links)} | detail_refresh_overgeslagen=true"
+            f"[REFRESH-KNOWN] listing refresh + detail refresh voltooid | scope={len(listing_scope)} | "
+            f"nieuw_gevonden={len(new_links)} | detail_targets={len(targets)} | verwerkt={written}"
         )
         print("Klaar.")
         return 0

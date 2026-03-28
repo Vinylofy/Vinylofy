@@ -35,7 +35,7 @@ DISCOVERY_SOURCES: dict[str, str] = {
     "all": BASE_URL + "/collections/all?page={page}",
 }
 
-DETAIL_FIELDS = ("ean", "release_date", "genre", "style")
+DETAIL_FIELDS = ("ean", "release_date", "genre", "style", "price", "availability")
 NON_MUSIC_TOKENS = {
     "giftcard",
     "gift card",
@@ -988,8 +988,8 @@ def scrape_product_details(
     def _apply_row(url: str, row: dict[str, str]) -> None:
         current = rows_by_url.get(url) if update_existing else None
         incoming = dict(row)
-        # 3345 prices should be driven by listing pages. Detail pages are for enrichment.
-        if current and clean_text(current.get("price")) and clean_text(incoming.get("price")):
+        # 3345 detail pages are authoritative for price. Preserve listing price only as fallback.
+        if current and clean_text(current.get("price")) and not clean_text(incoming.get("price")):
             incoming["price"] = clean_text(current.get("price"))
         rows_by_url[url] = merge_row(current, incoming)
 
@@ -1061,7 +1061,10 @@ def pick_detail_targets_from_listing(
     cursor = int(state.setdefault("detail", {}).get("refresh_cursor", 0) or 0)
 
     priority: list[str] = []
+    fallback: list[str] = []
     seen = set()
+    new_links_set = {canonicalize_product_url(url) for url in new_links if canonicalize_product_url(url)}
+
     for url in list(new_links) + list(listing_urls_seen):
         nurl = canonicalize_product_url(url)
         if not nurl or nurl in seen:
@@ -1069,15 +1072,21 @@ def pick_detail_targets_from_listing(
         row = rows_by_url.get(nurl)
         if looks_like_non_music_row(nurl, row):
             continue
-        if nurl in new_links or row_is_missing_details(row):
-            seen.add(nurl)
+        seen.add(nurl)
+        if nurl in new_links_set or row_is_missing_details(row):
             priority.append(nurl)
+        else:
+            fallback.append(nurl)
 
-    selected, next_cursor = rotate_slice(priority, limit, cursor)
+    selected_priority = priority[:limit]
+    remaining = max(0, limit - len(selected_priority))
+    selected_fallback, next_cursor = rotate_slice(fallback, remaining, cursor)
+    selected = selected_priority + [url for url in selected_fallback if url not in set(selected_priority)]
+
     state["detail"]["refresh_cursor"] = next_cursor
     save_state(state_file, state)
     print(
-        f"[SELECT refresh-known] kandidaten={len(priority)} | gekozen={len(selected)} | cursor={cursor}->{next_cursor}"
+        f"[SELECT refresh-known] priority={len(priority)} | fallback={len(fallback)} | gekozen={len(selected)} | cursor={cursor}->{next_cursor}"
     )
     return selected
 
