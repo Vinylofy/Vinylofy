@@ -74,12 +74,7 @@ jobs:
           echo "Zoek laatste succesvolle Bob-run..."
           RUN_JSON="$(gh run list --repo "$REPO" --workflow "$WORKFLOW_NAME" --status completed --json databaseId,conclusion -L 20 || echo '[]')"
           export RUN_JSON
-          RUN_ID="$(python - <<'PY'
-import json, os
-runs = json.loads(os.environ.get('RUN_JSON', '[]') or '[]')
-print(next((str(r['databaseId']) for r in runs if r.get('conclusion') == 'success'), ''))
-PY
-)"
+          RUN_ID="$(python -c "import json, os; runs = json.loads(os.environ.get('RUN_JSON', '[]') or '[]'); print(next((str(r['databaseId']) for r in runs if r.get('conclusion') == 'success'), ''))")"
 
           if [ -z "$RUN_ID" ]; then
             echo "Geen eerdere succesvolle Bob-run gevonden; ga door met lege state."
@@ -89,13 +84,7 @@ PY
           echo "Gebruik run id: $RUN_ID"
           ARTIFACTS_JSON="$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" || echo '{}')"
           export ARTIFACTS_JSON ARTIFACT_PREFIX
-          ARTIFACT_NAME="$(python - <<'PY'
-import json, os
-artifacts = json.loads(os.environ.get('ARTIFACTS_JSON', '{}') or '{}').get('artifacts', [])
-prefix = os.environ.get('ARTIFACT_PREFIX', '')
-print(next((a['name'] for a in artifacts if a.get('name', '').startswith(prefix)), ''))
-PY
-)"
+          ARTIFACT_NAME="$(python -c "import json, os; artifacts = json.loads(os.environ.get('ARTIFACTS_JSON', '{}') or '{}').get('artifacts', []); prefix = os.environ.get('ARTIFACT_PREFIX', ''); print(next((a['name'] for a in artifacts if a.get('name', '').startswith(prefix)), ''))")"
 
           if [ -z "$ARTIFACT_NAME" ]; then
             echo "Geen Bob-artifact gevonden; ga door zonder restore."
