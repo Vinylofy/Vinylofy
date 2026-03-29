@@ -2,6 +2,15 @@ name: Shop - Bobsvinyl Step 2
 
 on:
   workflow_dispatch:
+    inputs:
+      workers:
+        description: "Aantal parallelle detail workers"
+        required: false
+        default: "5"
+      limit_detail:
+        description: "Max aantal detailpagina's (0 = alles)"
+        required: false
+        default: "250"
   schedule:
     - cron: "40 3 * * *"
 
@@ -14,30 +23,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-
-  gate:
-    runs-on: ubuntu-latest
-    outputs:
-      should_run: ${{ steps.decide.outputs.should_run }}
-    steps:
-      - id: decide
-        name: Decide whether enrich should run
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" != "schedule" ]; then
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          DAY_INDEX=$(( $(date -u +%s) / 86400 ))
-          if [ $(( DAY_INDEX % 2 )) -eq 0 ]; then
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-          fi
-
   run:
-    needs: gate
-    if: needs.gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -46,7 +32,6 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
-      VINYLOFY_SCRAPER_CMD_BOBSVINYL: "python -u scripts/scrapers/bobsvinyl.py --mode step2 --workers 5 --limit-detail 250 --output-dir data/raw/bobsvinyl"
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -107,7 +92,18 @@ jobs:
       - name: Run pipeline
         shell: bash
         run: |
-          python -u scripts/automation/run_vinylofy_pipeline.py             --shop bobsvinyl
+          set -euo pipefail
+          WORKERS="${{ github.event.inputs.workers }}"
+          LIMIT_DETAIL="${{ github.event.inputs.limit_detail }}"
+          [ -n "$WORKERS" ] || WORKERS="5"
+          [ -n "$LIMIT_DETAIL" ] || LIMIT_DETAIL="250"
+          CMD="python -u scripts/scrapers/bobsvinyl.py --mode step2 --workers ${WORKERS} --output-dir data/raw/bobsvinyl"
+          if [ "$LIMIT_DETAIL" != "0" ]; then
+            CMD="$CMD --limit-detail ${LIMIT_DETAIL}"
+          fi
+          export VINYLOFY_SCRAPER_CMD_BOBSVINYL="$CMD"
+          echo "VINYLOFY_SCRAPER_CMD_BOBSVINYL=$VINYLOFY_SCRAPER_CMD_BOBSVINYL"
+          python -u scripts/automation/run_vinylofy_pipeline.py --shop bobsvinyl
 
       - name: Upload workflow artifacts
         if: always()

@@ -10,15 +10,18 @@ if str(CURRENT) not in sys.path:
     sys.path.insert(0, str(CURRENT))
 
 from _runner import ensure_dir, run_legacy
+from bobsvinyl_refresh_known import run_refresh_known
 
 DEFAULT_OUTPUT_DIR = "data/raw/bobsvinyl"
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Automation wrapper voor Bob's Vinyl scraper")
-    p.add_argument("--mode", choices=["step1", "step2", "both"], default="both")
+    p.add_argument("--mode", choices=["step1", "step2", "both", "refresh-known"], default="both")
     p.add_argument("--workers", type=int, default=5)
     p.add_argument("--limit-detail", type=int, default=None, help="Max aantal detailpagina's in step2")
+    p.add_argument("--stale-hours", type=float, default=20.0, help="Alleen known URLs verversen ouder dan dit aantal uur")
+    p.add_argument("--limit-urls", type=int, default=None, help="Max aantal known URLs in refresh-known")
     p.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     p.add_argument("--interactive", action="store_true")
     return p
@@ -33,6 +36,15 @@ def main() -> int:
         return run_legacy("bobsvinyl_legacy.py")
 
     out_dir = ensure_dir(args.output_dir)
+
+    if args.mode == "refresh-known":
+        return run_refresh_known(
+            output_dir=out_dir,
+            workers=max(1, args.workers),
+            stale_hours=args.stale_hours,
+            limit_urls=args.limit_urls,
+        )
+
     choice = {"step1": "1", "step2": "2", "both": "3"}[args.mode]
 
     if args.mode == "step1":

@@ -1,0 +1,90 @@
+name: Shop - Bobsvinyl Refresh Known
+
+on:
+  workflow_dispatch:
+    inputs:
+      workers:
+        description: "Aantal parallelle refresh workers"
+        required: false
+        default: "6"
+      stale_hours:
+        description: "Alleen Bob URLs verversen ouder dan dit aantal uur (0 = alles)"
+        required: false
+        default: "20"
+      limit_urls:
+        description: "Max aantal URLs (0 = alles)"
+        required: false
+        default: "0"
+  schedule:
+    - cron: "40 1 * * *"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: vinylofy-bobsvinyl
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
+          pip install beautifulsoup4 requests pandas "psycopg[binary]" python-dotenv supabase
+
+      - name: Create runtime folders
+        shell: bash
+        run: |
+          mkdir -p data/raw/bobsvinyl
+          mkdir -p output
+
+      - name: Run pipeline
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORKERS="${{ github.event.inputs.workers }}"
+          STALE_HOURS="${{ github.event.inputs.stale_hours }}"
+          LIMIT_URLS="${{ github.event.inputs.limit_urls }}"
+          [ -n "$WORKERS" ] || WORKERS="6"
+          [ -n "$STALE_HOURS" ] || STALE_HOURS="20"
+          [ -n "$LIMIT_URLS" ] || LIMIT_URLS="0"
+          CMD="python -u scripts/scrapers/bobsvinyl.py --mode refresh-known --workers ${WORKERS} --stale-hours ${STALE_HOURS} --output-dir data/raw/bobsvinyl"
+          if [ "$LIMIT_URLS" != "0" ]; then
+            CMD="$CMD --limit-urls ${LIMIT_URLS}"
+          fi
+          export VINYLOFY_SCRAPER_CMD_BOBSVINYL="$CMD"
+          echo "VINYLOFY_SCRAPER_CMD_BOBSVINYL=$VINYLOFY_SCRAPER_CMD_BOBSVINYL"
+          python -u scripts/automation/run_vinylofy_pipeline.py --shop bobsvinyl
+
+      - name: Upload workflow artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: bobsvinyl-refresh-${{ github.run_id }}
+          path: |
+            data/raw/bobsvinyl/**/*.csv
+            data/raw/bobsvinyl/*.csv
+            output/**/*.json
+            output/**/*.csv
+          if-no-files-found: warn
