@@ -43,11 +43,13 @@ from urllib3.util.retry import Retry
 
 BASE_URL = "https://www.variaworld.nl"
 LISTING_URL_TEMPLATES = [
-    "https://www.variaworld.nl/vinyl/lp-nieuw/m_ge=[j;m]&m_so=2&m_sr=art&m_gr=nieuw&aantalperpagina=100&m_su=1&startpagina={page}",
+    "https://www.variaworld.nl/vinyl/lp-nieuw/~alles~m_ge%3D%5Bm%3Bj%5D%26m_so%3D2%26at%3D0036049700%26m_mt%3D128%26m_su%3D1%26startpagina%3D{page}",
+    "https://www.variaworld.nl/vinyl/lp-nieuw/~alles~m_ge%3D%5Bm%3Bj%5D%26m_so%3D2%26m_su%3D1%26startpagina%3D{page}",
+    "https://www.variaworld.nl/vinyl/lp-nieuw/~alles~m_ge%3D%5Bm%3Bj%5D%26m_so%3D2%26m_sr%3Dart%26m_gr%3Dnieuw%26aantalperpagina%3D100%26m_su%3D1%26startpagina%3D{page}",
+    "https://www.variaworld.nl/vinyl/lp-nieuw/m_ge=%5Bm%3Bj%5D&m_so=2&m_su=1&startpagina={page}",
+    "https://www.variaworld.nl/vinyl/lp-nieuw/m_ge=[m;j]&m_so=2&m_sr=art&m_gr=nieuw&aantalperpagina=100&m_su=1&startpagina={page}",
     "https://www.variaworld.nl/vinyl/lp-nieuw/m_ge=j&m_so=2&m_su=1&startpagina={page}",
-    "https://www.variaworld.nl/vinyl/lp-nieuw/m_ge=%5Bj%3Bm%5D&m_so=2&m_su=1&startpagina={page}",
-    "https://www.variaworld.nl/vinyl/lp-nieuw/~alles~m_ge%3D%5Bj%3Bm%5D%26m_so%3D2%26m_su%3D1%26startpagina%3D{page}",
-    "https://www.variaworld.nl/vinyl/lp-nieuw/~vinyl~m_ge%3Dj%26m_so%3D2%26m_su%3D1%26startpagina%3D{page}",
+    "https://www.variaworld.nl/vinyl/lp-nieuw/~vinyl~m_ge%3Dj%26m_so%3D2%26m_su%3D1%26at%3D9048776400%26startpagina%3D{page}",
 ]
 
 REQUEST_TIMEOUT = 30
@@ -97,6 +99,10 @@ DETAIL_HREF_RE = re.compile(r"detail\.php", re.IGNORECASE)
 GENERIC_LINE_RE = re.compile(
     r"^(bestel|bestellen|meer info|lees meer|wishlist|winkelwagen|toevoegen|voorzijde|achterzijde|"
     r"nieuw binnen|pre-order|stocksale|platenbeurs|aanmelden|menu)$",
+    re.IGNORECASE,
+)
+GEOBLOCK_RE = re.compile(
+    r"(site is not reachable from|not reachable from .*united states of america|please mail to info@variaworld\.nl|not reachable from \$country_visitor)",
     re.IGNORECASE,
 )
 
@@ -151,7 +157,14 @@ def fetch_html(session: requests.Session, url: str, *, params: Optional[dict] = 
     response = session.get(url, params=params, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     response.encoding = response.encoding or "utf-8"
-    return response.text
+    html = response.text
+
+    if GEOBLOCK_RE.search(html or ""):
+        raise RuntimeError(
+            "Geo-blocked by Variaworld for this runner IP/country; use a self-hosted NL/EU runner"
+        )
+
+    return html
 
 
 def clean_text(value: Optional[str]) -> str:
@@ -737,6 +750,8 @@ def run_listing_phase() -> None:
 
             if page == 1:
                 append_errors(errors)
+                if any("geo-blocked" in (err.error or "").lower() or "not reachable" in (err.error or "").lower() for err in errors):
+                    raise RuntimeError("Variaworld blokkeert deze runner op IP/geolocatie; zet deze workflow op self-hosted NL/EU")
                 raise RuntimeError("Variaworld listing gaf op pagina 1 geen producten terug")
 
             if consecutive_empty_pages >= STOP_AFTER_CONSECUTIVE_EMPTY_PAGES:
