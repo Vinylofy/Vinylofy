@@ -29,17 +29,6 @@ CONFIG = ImportConfig(
 )
 
 
-VALID_AVAILABILITIES = {"in_stock", "out_of_stock", "preorder", "unknown"}
-
-
-def normalize_availability(value: str | None) -> str:
-    availability = normalize_text(value).lower().replace("-", "_")
-    if availability in VALID_AVAILABILITIES:
-        return availability
-    return "in_stock"
-
-
-
 def map_bobsvinyl_row(row: dict, line_number: int) -> tuple[CanonicalRecord | None, str | None]:
     ean = normalize_ean(row.get("ean"))
     price = parse_price(row.get("prijs"))
@@ -47,11 +36,10 @@ def map_bobsvinyl_row(row: dict, line_number: int) -> tuple[CanonicalRecord | No
     detail_status = normalize_text(row.get("detail_status")).lower()
     secondhand_raw = normalize_text(row.get("mogelijk_2e_hands")).upper()
     is_secondhand = secondhand_raw not in {"NEE", "NO", "FALSE", "0", ""}
-    captured_at = parse_timestamp(row.get("detail_checked_at"))
+    captured_at = parse_timestamp(row.get("price_checked_at")) or parse_timestamp(row.get("detail_checked_at"))
     artist, title = infer_artist_title(row.get("artist"), row.get("title"))
     format_label = normalize_text(row.get("drager")) or None
     cover_url = None
-    availability = normalize_availability(row.get("availability"))
 
     if detail_status != "ok":
         return None, "detail_status_not_ok"
@@ -81,7 +69,7 @@ def map_bobsvinyl_row(row: dict, line_number: int) -> tuple[CanonicalRecord | No
         product_url=product_url,
         price=price,
         currency=CONFIG.currency,
-        availability=availability,
+        availability="in_stock",
         captured_at=captured_at,
         product_handle=normalize_text(row.get("product_handle")) or None,
         detail_status=detail_status,
@@ -116,11 +104,10 @@ SHOP_DEFINITION = ShopImporterDefinition(
         "artist",
         "drager",
         "product_handle",
-        "availability",
+        "price_checked_at",
     ),
     tags=("vinyl", "enriched", "detail-check"),
 )
-
 
 
 def main() -> None:
