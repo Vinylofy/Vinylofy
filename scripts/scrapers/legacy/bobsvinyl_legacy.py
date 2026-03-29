@@ -27,8 +27,8 @@ if str(PARENT_DIR) not in sys.path:
 from _rotation import load_rotation_state, save_rotation_state, select_round_robin_batch
 
 BASE_DOMAIN = "https://bobsvinyl.nl"
-BASE_COLLECTION_URL = "https://bobsvinyl.nl/collections/nieuwe-lps"
-COLLECTION_NAME = "nieuwe-lps"
+BASE_COLLECTION_URL = "https://bobsvinyl.nl/collections/all"
+COLLECTION_NAME = "alle LPs"
 DEFAULT_DELAY_SECONDS = 0.20
 DEFAULT_WORKERS = 5
 TIMEOUT = 30
