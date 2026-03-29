@@ -301,7 +301,7 @@ export async function GET(request: Request) {
 
     const suggestions = [...artistSuggestions, ...albumSuggestions]
       .sort(sortSuggestions)
-      .slice(0, 8)
+      .slice(0, 3)
       .map(({ bucket, score, ...suggestion }) => suggestion);
 
     return NextResponse.json({ suggestions });

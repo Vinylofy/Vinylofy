@@ -262,7 +262,7 @@ export function SearchAutocompleteForm({
           <div
             id="vinylofy-search-suggestions"
             role="listbox"
-            className="absolute left-0 right-0 top-[calc(100%+10px)] z-50 overflow-hidden rounded-3xl border border-neutral-200 bg-white shadow-xl"
+            className="absolute left-0 right-0 top-[calc(100%+8px)] z-50 max-h-[156px] overflow-y-auto rounded-2xl border border-neutral-200 bg-white p-1 shadow-lg"
           >
             {suggestions.map((suggestion, index) => {
               const active = index === activeIndex;
@@ -277,7 +277,7 @@ export function SearchAutocompleteForm({
                   onClick={() => chooseSuggestion(suggestion)}
                   onMouseEnter={() => setActiveIndex(index)}
                   className={[
-                    "flex w-full items-start justify-between gap-3 px-4 py-3 text-left transition",
+                    "flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2 text-left transition",
                     active ? "bg-orange-50" : "bg-white hover:bg-neutral-50",
                   ].join(" ")}
                 >
@@ -286,13 +286,13 @@ export function SearchAutocompleteForm({
                       {suggestion.label}
                     </span>
                     {suggestion.sublabel ? (
-                      <span className="mt-0.5 block truncate text-xs text-neutral-500">
+                      <span className="mt-0.5 block truncate text-[11px] text-neutral-500">
                         {suggestion.sublabel}
                       </span>
                     ) : null}
                   </span>
 
-                  <span className="shrink-0 rounded-full border border-neutral-200 px-2 py-1 text-[11px] font-medium uppercase tracking-[0.08em] text-neutral-500">
+                  <span className="shrink-0 rounded-full border border-neutral-200 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-500">
                     {suggestion.kind === "artist" ? "Artiest" : "Album"}
                   </span>
                 </button>
