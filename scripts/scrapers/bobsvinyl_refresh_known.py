@@ -41,6 +41,7 @@ from legacy.bobsvinyl_legacy import (  # noqa: E402
 DEFAULT_OUTPUT_DIR = "data/raw/bobsvinyl"
 OUTPUT_FILE = "bobsvinyl_step2_enriched.csv"
 SUMMARY_FILE = "output/bobsvinyl_refresh_known_summary.json"
+STATE_FILE_NAME = "bobsvinyl_refresh_state.json"
 REFRESH_COLUMNS = list(LEGACY_STEP2_COLUMNS) + ["availability"]
 PRICE_PATTERN = re.compile(r"€\s*([0-9]+(?:[\.,][0-9]{2})?)")
 BASE_COLLECTION_URL = "https://bobsvinyl.nl/en/collections/all"
@@ -85,6 +86,28 @@ def parse_dt(value: str | None) -> datetime | None:
 def ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
+
+def load_state(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_state(path: Path, state: dict[str, object]) -> None:
+    ensure_parent(path)
+    path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def coerce_positive_int(value: object, default: int = 1) -> int:
+    try:
+        parsed = int(str(value).strip())
+    except Exception:
+        return default
+    return parsed if parsed > 0 else default
 
 
 def with_page_param(base_url: str, page: int) -> str:
@@ -345,40 +368,47 @@ def refresh_rows_via_collection(
     workers: int,
     max_pages: int | None,
     delay_seconds: float,
+    start_page: int,
 ) -> tuple[OrderedDict[str, dict[str, str]], dict[str, object]]:
     del workers
     known_urls = set(targets.keys())
     refreshed: OrderedDict[str, dict[str, str]] = OrderedDict()
     session = make_session()
     pages_crawled = 0
-    matched_total = 0
     total_pages_detected: int | None = None
     empty_pages_in_row = 0
-    page = 1
+    page = max(1, start_page)
+    pages_visited: list[int] = []
     max_pages_effective = max_pages if (max_pages is not None and max_pages > 0) else None
 
     while True:
-        if max_pages_effective is not None and page > max_pages_effective:
+        if max_pages_effective is not None and pages_crawled >= max_pages_effective:
             break
         if len(refreshed) >= len(known_urls):
+            break
+        if total_pages_detected is not None and page > total_pages_detected:
+            page = 1
+        if total_pages_detected is not None and pages_crawled >= total_pages_detected:
             break
 
         page_url = with_page_param(BASE_COLLECTION_URL, page)
         soup = fetch_soup(session, page_url)
         pages_crawled += 1
+        pages_visited.append(page)
 
-        if page == 1:
+        if total_pages_detected is None:
             total_pages_detected = detect_total_pages(soup)
-            if max_pages_effective is None and total_pages_detected:
-                max_pages_effective = total_pages_detected
 
         listings = extract_listing_rows_from_page(soup, page_url)
         if not listings:
             empty_pages_in_row += 1
             print(f"[REFRESH all p{page}] geen listings gevonden")
-            if empty_pages_in_row >= 2:
+            if total_pages_detected is None and empty_pages_in_row >= 2:
                 break
-            page += 1
+            next_page = page + 1
+            if total_pages_detected is not None and next_page > total_pages_detected:
+                next_page = 1
+            page = next_page
             if delay_seconds > 0:
                 time.sleep(delay_seconds)
             continue
@@ -419,15 +449,15 @@ def refresh_rows_via_collection(
                 row["detail_status"] = "ok"
             refreshed[listing.url] = row
             page_matches += 1
-            matched_total += 1
 
         print(
             f"[REFRESH all p{page}] listings={len(listings)} | matched_known={page_matches} | refreshed_total={len(refreshed)}/{len(known_urls)}"
         )
 
-        if max_pages_effective is not None and page >= max_pages_effective:
-            break
-        page += 1
+        next_page = page + 1
+        if total_pages_detected is not None and next_page > total_pages_detected:
+            next_page = 1
+        page = next_page
         if delay_seconds > 0:
             time.sleep(delay_seconds)
 
@@ -436,9 +466,19 @@ def refresh_rows_via_collection(
     except Exception:
         pass
 
+    if pages_visited:
+        next_page = pages_visited[-1] + 1
+    else:
+        next_page = max(1, start_page)
+    if total_pages_detected is not None and next_page > total_pages_detected:
+        next_page = 1
+
     summary = {
         "collection_url": BASE_COLLECTION_URL,
+        "start_page": start_page,
+        "next_page": next_page,
         "pages_crawled": pages_crawled,
+        "pages_visited": pages_visited,
         "total_pages_detected": total_pages_detected,
         "selected_known_urls": len(known_urls),
         "matched_known_urls": len(refreshed),
@@ -457,10 +497,13 @@ def run_refresh_known(
     limit_urls: int | None = None,
     max_pages: int | None = None,
     delay_seconds: float = 0.25,
+    state_file: str | None = None,
 ) -> int:
     output_dir_path = Path(output_dir)
+    state_path = Path(state_file) if state_file else output_dir_path / STATE_FILE_NAME
     ensure_parent(output_dir_path / OUTPUT_FILE)
     ensure_parent(Path(SUMMARY_FILE))
+    ensure_parent(state_path)
 
     csv_seed_paths = [
         output_dir_path / "bobsvinyl_step2_enriched.csv",
@@ -472,6 +515,8 @@ def run_refresh_known(
     db_rows = load_seed_rows_from_db()
     combined = combine_seed_rows(csv_rows, db_rows)
     targets = select_target_rows(combined, stale_hours=stale_hours, limit_urls=limit_urls)
+    state = load_state(state_path)
+    start_page = coerce_positive_int(state.get("next_page"), default=1)
 
     if not targets:
         summary = {
@@ -480,6 +525,8 @@ def run_refresh_known(
             "stale_hours": stale_hours,
             "limit_urls": limit_urls,
             "max_pages": max_pages,
+            "start_page": start_page,
+            "state_file": str(state_path),
             "generated_at": now_iso(),
         }
         Path(SUMMARY_FILE).write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -491,6 +538,20 @@ def run_refresh_known(
         workers=workers,
         max_pages=max_pages,
         delay_seconds=delay_seconds,
+        start_page=start_page,
+    )
+
+    save_state(
+        state_path,
+        {
+            "next_page": crawl_summary.get("next_page", 1),
+            "last_start_page": start_page,
+            "last_run_at": now_iso(),
+            "pages_crawled": crawl_summary.get("pages_crawled", 0),
+            "total_pages_detected": crawl_summary.get("total_pages_detected"),
+            "max_pages": 0 if max_pages is None else max_pages,
+            "collection_url": BASE_COLLECTION_URL,
+        },
     )
 
     output_path = output_dir_path / OUTPUT_FILE
@@ -504,6 +565,7 @@ def run_refresh_known(
         "limit_urls": limit_urls,
         "max_pages": max_pages,
         "output_file": str(output_path),
+        "state_file": str(state_path),
         **crawl_summary,
     }
     Path(SUMMARY_FILE).write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
