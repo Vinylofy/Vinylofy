@@ -19,7 +19,7 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
-      VINYLOFY_SCRAPER_CMD_SOUNDSHAARLEM: python -u scripts/scrapers/soundshaarlem.py --mode both --max-pages 24 --limit 100 --limit-details 250 --delay-seconds 0.5 --output-dir data/raw/soundshaarlem
+      VINYLOFY_SCRAPER_CMD_SOUNDSHAARLEM: python -u scripts/scrapers/soundshaarlem.py --mode both --max-pages 13 --limit 192 --limit-details 25 --delay-seconds 0.5 --output-dir data/raw/soundshaarlem
 
     steps:
       - name: Checkout

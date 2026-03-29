@@ -5,7 +5,6 @@ import argparse
 import csv
 import json
 import re
-import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -24,7 +23,7 @@ DEFAULT_OUTPUT_FILE = "soundshaarlem_products.csv"
 DEFAULT_STATE_FILE = "soundshaarlem_state.json"
 DEFAULT_TIMEOUT = 30
 DEFAULT_DELAY_SECONDS = 0.5
-DEFAULT_LIMIT = 100
+DEFAULT_LIMIT = 192
 DEFAULT_SORT = "release"
 
 CSV_COLUMNS = [
@@ -63,7 +62,7 @@ HEADERS = {
 
 PRICE_RE = re.compile(r"€\s*([0-9][0-9\.,]*)")
 DETAIL_URL_RE = re.compile(
-    r"/nl/release/(?P<release_id>\d+)/(?P<artist_slug>[^/]+)/(?P<title_slug>[^/]+)/[^/]+/(?P<format_slug>[^/]+)/(?P<ean_tail>\d+)/?$",
+    r"/(?:nl|en)/release/(?P<release_id>\d+)/(?P<artist_slug>[^/]+)/(?P<title_slug>[^/]+)/(?:[^/]+/)?(?P<format_slug>[^/]+)/(?P<ean_tail>\d+)/?$",
     re.IGNORECASE,
 )
 FORMAT_LINE_RE = re.compile(r"^\d+\s*-\s*.+$", re.IGNORECASE)
@@ -84,9 +83,11 @@ class ScraperError(RuntimeError):
     pass
 
 
+
 def log(message: str) -> None:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     print(f"[{now}] [{SHOP_ID}] {message}")
+
 
 
 def ensure_dir(path: str | Path) -> Path:
@@ -95,16 +96,20 @@ def ensure_dir(path: str | Path) -> Path:
     return p
 
 
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
 
 
 def clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
 
 
+
 def split_clean_lines(value: str) -> list[str]:
     return [clean_text(line) for line in (value or "").splitlines() if clean_text(line)]
+
 
 
 def parse_eur_to_decimal(text: str) -> str | None:
@@ -112,12 +117,17 @@ def parse_eur_to_decimal(text: str) -> str | None:
     if not raw:
         return None
     raw = raw.replace("€", "").replace(" ", "")
-    if "," in raw:
+    if "," in raw and "." in raw:
+        # English pages can already use dot decimals; Dutch pages often use comma.
+        if raw.rfind(",") > raw.rfind("."):
+            raw = raw.replace(".", "").replace(",", ".")
+    elif "," in raw:
         raw = raw.replace(".", "").replace(",", ".")
     try:
         return f"{float(raw):.2f}"
     except ValueError:
         return None
+
 
 
 def extract_prices(text: str) -> list[str]:
@@ -129,6 +139,7 @@ def extract_prices(text: str) -> list[str]:
     return values
 
 
+
 def choose_prices(prices: list[str]) -> tuple[str | None, str | None]:
     if not prices:
         return None, None
@@ -137,6 +148,7 @@ def choose_prices(prices: list[str]) -> tuple[str | None, str | None]:
     if prices[0] == prices[-1]:
         return prices[0], None
     return prices[-1], prices[0]
+
 
 
 def is_valid_gtin13(candidate: str) -> bool:
@@ -152,6 +164,7 @@ def is_valid_gtin13(candidate: str) -> bool:
     return checksum == expected
 
 
+
 def normalize_ean(candidate: str | None) -> str | None:
     if not candidate:
         return None
@@ -161,6 +174,7 @@ def normalize_ean(candidate: str | None) -> str | None:
     if is_valid_gtin13(digits):
         return digits
     return None
+
 
 
 def parse_detail_url(detail_url: str) -> dict[str, str]:
@@ -187,12 +201,13 @@ def parse_detail_url(detail_url: str) -> dict[str, str]:
     }
 
 
+
 def find_card_container(anchor: Tag) -> Tag | None:
     for parent in anchor.parents:
         if not isinstance(parent, Tag):
             continue
         text = clean_text(parent.get_text("\n", strip=True))
-        if "€" in text and len(text) <= 700:
+        if "€" in text and len(text) <= 900:
             return parent
         if parent.name in {"body", "html"}:
             break
@@ -201,11 +216,13 @@ def find_card_container(anchor: Tag) -> Tag | None:
     return None
 
 
+
 def parse_format_from_lines(lines: list[str]) -> str:
     for line in lines:
         if FORMAT_LINE_RE.match(line):
             return line.replace(" -", "-").replace("- ", "-")
     return ""
+
 
 
 def parse_page_stats(page_text: str) -> PageStats:
@@ -219,6 +236,7 @@ def parse_page_stats(page_text: str) -> PageStats:
         total_pages=int(match.group("total_pages")),
         total_results=total_results,
     )
+
 
 
 def default_row(scraped_at: str) -> dict[str, str]:
@@ -255,7 +273,7 @@ class SoundsHaarlemScraper:
 
         for anchor in soup.find_all("a", href=True):
             href = clean_text(anchor.get("href", ""))
-            if "/nl/release/" not in href:
+            if "/release/" not in href:
                 continue
 
             detail_url = urljoin(BASE_URL, href.split("#", 1)[0])
@@ -289,6 +307,7 @@ class SoundsHaarlemScraper:
             current, old = choose_prices(extract_prices(card_text))
             if current:
                 row["price_current"] = current
+                row["availability"] = row["availability"] or "in_stock"
             if old:
                 row["price_old"] = old
 
@@ -314,9 +333,16 @@ class SoundsHaarlemScraper:
         page_text = soup.get_text("\n", strip=True)
         lines = split_clean_lines(page_text)
 
-        artist_line = next((line for line in lines if line.lower().startswith("door ")), "")
+        artist_line = next(
+            (
+                line
+                for line in lines
+                if line.lower().startswith("door ") or line.lower().startswith("by ")
+            ),
+            "",
+        )
         if artist_line:
-            row["artist_raw"] = clean_text(artist_line[5:])
+            row["artist_raw"] = clean_text(artist_line.split(" ", 1)[1])
 
         format_label = parse_format_from_lines(lines)
         if format_label:
@@ -332,19 +358,20 @@ class SoundsHaarlemScraper:
         availability_text = ""
         for line in lines:
             lower = line.lower()
-            if "voorraad" in lower or "leverkans" in lower or "levertijd" in lower:
+            if any(token in lower for token in ("voorraad", "leverkans", "levertijd", "in stock", "delivery")):
                 availability_text = line
                 break
         if availability_text:
             row["availability_text"] = availability_text
             lower = availability_text.lower()
-            if "op voorraad" in lower:
+            if "op voorraad" in lower or "in stock" in lower:
                 row["availability"] = "in_stock"
-            elif "niet op voorraad" in lower or "uitverkocht" in lower:
+            elif "niet op voorraad" in lower or "uitverkocht" in lower or "out of stock" in lower:
                 row["availability"] = "out_of_stock"
 
         label_map = {
             "releasedatum": "release_date_raw",
+            "release date": "release_date_raw",
             "import": "import_text",
             "barcode": "ean_raw",
         }
@@ -373,6 +400,7 @@ class SoundsHaarlemScraper:
         return row
 
 
+
 def load_csv_rows(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []
@@ -385,6 +413,7 @@ def load_csv_rows(path: Path) -> list[dict[str, str]]:
         return rows
 
 
+
 def write_csv_rows(path: Path, rows: list[dict[str, str]]) -> None:
     ensure_dir(path.parent)
     with path.open("w", encoding="utf-8", newline="") as handle:
@@ -394,9 +423,11 @@ def write_csv_rows(path: Path, rows: list[dict[str, str]]) -> None:
             writer.writerow({column: row.get(column, "") for column in CSV_COLUMNS})
 
 
+
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     ensure_dir(path.parent)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
 
 
 def merge_rows(existing_rows: list[dict[str, str]], new_rows: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -412,6 +443,7 @@ def merge_rows(existing_rows: list[dict[str, str]], new_rows: list[dict[str, str
     result = list(merged.values())
     result.sort(key=lambda item: (item.get("detail_url", ""), item.get("display_name_raw", "")))
     return result
+
 
 
 def run_discover(
@@ -469,16 +501,16 @@ def run_discover(
     return 0
 
 
+
 def needs_detail(row: dict[str, str]) -> bool:
     if not row.get("detail_url"):
         return False
     if not normalize_ean(row.get("ean_normalized") or row.get("ean_raw")):
         return True
-    if row.get("availability") in {"", "unknown"}:
-        return True
     if not row.get("price_current"):
         return True
     return False
+
 
 
 def run_detail_fallback(
@@ -512,6 +544,8 @@ def run_detail_fallback(
         for column in CSV_COLUMNS:
             if not detail_row.get(column) and base_row.get(column):
                 detail_row[column] = base_row[column]
+        if detail_row.get("price_current") and detail_row.get("availability") in {"", "unknown"}:
+            detail_row["availability"] = "in_stock"
         if detail_row.get("ean_source") == "url" and detail_row.get("ean_normalized"):
             detail_row["ean_source"] = base_row.get("ean_source", "url") or "url"
         detail_row["source_type"] = "detail"
@@ -541,6 +575,7 @@ def run_detail_fallback(
     return 0
 
 
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Listing-first scraper voor Sounds Haarlem LP-catalogus")
     parser.add_argument(
@@ -553,15 +588,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-file", default=DEFAULT_OUTPUT_FILE)
     parser.add_argument("--state-file", default=DEFAULT_STATE_FILE)
     parser.add_argument("--input-file", default="")
-    parser.add_argument("--max-pages", type=int, default=24)
+    parser.add_argument("--max-pages", type=int, default=13)
     parser.add_argument("--start-page", type=int, default=1)
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     parser.add_argument("--sort", default=DEFAULT_SORT)
-    parser.add_argument("--limit-details", type=int, default=250)
+    parser.add_argument("--limit-details", type=int, default=25)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     parser.add_argument("--delay-seconds", type=float, default=DEFAULT_DELAY_SECONDS)
     parser.add_argument("--force-detail", action="store_true")
     return parser
+
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -29,6 +29,10 @@ CONFIG = ImportConfig(
 )
 
 
+UNKNOWN_ARTIST = "Unknown Artist"
+UNKNOWN_TITLE = "Unknown Title"
+
+
 def slug_to_text(value: str | None) -> str:
     raw = normalize_text(value)
     if not raw:
@@ -52,12 +56,77 @@ def resolve_availability(raw_status: str | None, raw_label: str | None, price: f
     if status in {"in_stock", "instock"}:
         return "in_stock"
 
-    if any(token in label for token in ("niet op voorraad", "uitverkocht", "sold out")):
+    out_of_stock_tokens = (
+        "niet op voorraad",
+        "uitverkocht",
+        "sold out",
+        "not in stock",
+        "out of stock",
+        "temporarily unavailable",
+    )
+    in_stock_tokens = (
+        "op voorraad",
+        "leverkans",
+        "levertijd",
+        "preorder",
+        "bestelbaar",
+        "in stock",
+        "estimated delivery",
+        "delivery chance",
+    )
+
+    if any(token in label for token in out_of_stock_tokens):
         return "out_of_stock"
-    if any(token in label for token in ("op voorraad", "leverkans", "levertijd", "preorder", "bestelbaar")):
+    if any(token in label for token in in_stock_tokens):
         return "in_stock"
 
     return "in_stock" if price is not None else "unknown"
+
+
+def build_fallback_display_name(row: dict) -> str:
+    candidates = [
+        normalize_text(row.get("display_name_raw")),
+        normalize_text(row.get("title_raw")),
+        slug_to_text(row.get("title_slug_raw")),
+    ]
+    for value in candidates:
+        if value:
+            return value
+    return ""
+
+
+
+def normalize_artist_title(row: dict) -> tuple[str, str]:
+    slug_artist = slug_to_text(row.get("artist_slug_raw"))
+    slug_title = slug_to_text(row.get("title_slug_raw"))
+    display_name = build_fallback_display_name(row)
+
+    raw_artist = normalize_text(row.get("artist_raw")) or slug_artist
+    raw_title = normalize_text(row.get("title_raw")) or slug_title or display_name
+
+    artist, inferred_title = infer_artist_title(raw_artist, raw_title)
+    title = normalize_text(inferred_title) or raw_title
+
+    if not artist and display_name and slug_artist:
+        compact_display = display_name.lower()
+        compact_artist = slug_artist.lower()
+        if compact_display.startswith(compact_artist + " "):
+            remainder = normalize_text(display_name[len(slug_artist) :])
+            if remainder:
+                artist = slug_artist
+                title = remainder
+
+    if not artist and slug_artist:
+        artist = slug_artist
+    if not title and slug_title:
+        title = slug_title
+    if not title and display_name:
+        title = display_name
+
+    artist = normalize_text(artist) or UNKNOWN_ARTIST
+    title = normalize_text(title) or UNKNOWN_TITLE
+    return artist, title
+
 
 
 def map_soundshaarlem_row(row: dict, line_number: int) -> tuple[CanonicalRecord | None, str | None]:
@@ -66,15 +135,7 @@ def map_soundshaarlem_row(row: dict, line_number: int) -> tuple[CanonicalRecord 
     product_url = normalize_text(row.get("detail_url"))
     captured_at = parse_timestamp(row.get("scraped_at"))
 
-    raw_artist = normalize_text(row.get("artist_raw")) or slug_to_text(row.get("artist_slug_raw"))
-    raw_title = (
-        normalize_text(row.get("title_raw"))
-        or slug_to_text(row.get("title_slug_raw"))
-        or normalize_text(row.get("display_name_raw"))
-    )
-
-    artist, inferred_title = infer_artist_title(raw_artist, raw_title)
-    title = normalize_text(inferred_title) or raw_title
+    artist, title = normalize_artist_title(row)
 
     format_label = normalize_text(row.get("format_label_raw")) or "Vinyl"
     availability = resolve_availability(row.get("availability"), row.get("availability_text"), price)
@@ -86,10 +147,6 @@ def map_soundshaarlem_row(row: dict, line_number: int) -> tuple[CanonicalRecord 
         return None, "missing_url"
     if price is None:
         return None, "invalid_price"
-    if not title:
-        return None, "missing_title"
-    if not artist:
-        return None, "missing_artist_after_inference"
 
     return CanonicalRecord(
         source_row_number=line_number,
@@ -154,6 +211,7 @@ SHOP_DEFINITION = ShopImporterDefinition(
     ),
     tags=("vinyl", "listing-first", "url-ean"),
 )
+
 
 
 def main() -> None:
