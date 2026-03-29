@@ -6,6 +6,7 @@ import csv
 import json
 import os
 import re
+import sys
 import threading
 import time
 import uuid
@@ -72,6 +73,34 @@ DETAIL_ISSUE_COLUMNS = [
     "detail_checked_at",
 ]
 
+def set_csv_field_size_limit() -> None:
+    limit = sys.maxsize
+    while True:
+        try:
+            csv.field_size_limit(limit)
+            return
+        except OverflowError:
+            limit //= 10
+
+
+def trim_listing_urls_value(value: str, max_items: int = 20) -> str:
+    if not value:
+        return ""
+    seen: set[str] = set()
+    items: list[str] = []
+    for item in value.split(" | "):
+        item = normalize_text(item)
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        items.append(item)
+    if len(items) > max_items:
+        items = items[-max_items:]
+    return " | ".join(items)
+
+
+set_csv_field_size_limit()
+
 _thread_local = threading.local()
 
 
@@ -133,10 +162,12 @@ def nl_price(value: str) -> str:
     return value.replace(".", ",")
 
 
-def unique_pipe_join(existing: str, new_value: str) -> str:
-    items = [x for x in (existing or "").split(" | ") if x]
+def unique_pipe_join(existing: str, new_value: str, max_items: int = 20) -> str:
+    items = [x for x in trim_listing_urls_value(existing, max_items=max_items).split(" | ") if x]
     if new_value and new_value not in items:
         items.append(new_value)
+    if len(items) > max_items:
+        items = items[-max_items:]
     return " | ".join(items)
 
 
@@ -206,6 +237,7 @@ def load_csv_as_dict(path: Path, columns: List[str]) -> Dict[str, Dict[str, str]
                 row["product_handle"] = product_handle_from_url(url)
             if not row.get("bron_collectie"):
                 row["bron_collectie"] = COLLECTION_NAME
+            row["bron_listing_urls"] = trim_listing_urls_value(row.get("bron_listing_urls", ""))
             rows[url] = row
     return rows
 
@@ -226,6 +258,8 @@ def write_csv(path: Path, rows_by_url: Dict[str, Dict[str, str]], columns: List[
             ),
         ):
             safe_row = {col: normalize_text(row.get(col, "")) for col in columns}
+            if "bron_listing_urls" in safe_row:
+                safe_row["bron_listing_urls"] = trim_listing_urls_value(safe_row.get("bron_listing_urls", ""))
             writer.writerow(safe_row)
 
     last_error: Exception | None = None
@@ -356,6 +390,8 @@ def merge_row(existing: Dict[str, str] | None, incoming: Dict[str, str], columns
 
     for col in columns:
         merged.setdefault(col, "")
+    if "bron_listing_urls" in merged:
+        merged["bron_listing_urls"] = trim_listing_urls_value(merged.get("bron_listing_urls", ""))
     return merged
 
 
