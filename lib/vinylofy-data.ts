@@ -514,14 +514,13 @@ export async function searchProducts(query: string): Promise<SearchResultItem[]>
     );
   }
 
-  await collect(supabase.from("products").select(baseSelect).ilike("artist", `%${normalizedQuery}%`).limit(20));
-  await collect(supabase.from("products").select(baseSelect).ilike("title", `%${normalizedQuery}%`).limit(20));
+  await collect(supabase.from("products").select(baseSelect).ilike("artist", `%${normalizedQuery}%`));
+  await collect(supabase.from("products").select(baseSelect).ilike("title", `%${normalizedQuery}%`));
   await collect(
     supabase
       .from("products")
       .select(baseSelect)
-      .ilike("search_text", `%${normalizeQuery(normalizedQuery)}%`)
-      .limit(30),
+      .ilike("search_text", `%${normalizeQuery(normalizedQuery)}%`),
   );
 
   const productList = Array.from(candidates.values()).filter(isAllowedProduct);
