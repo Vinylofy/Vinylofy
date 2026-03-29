@@ -12,9 +12,10 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -32,16 +33,52 @@ jobs:
           if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
           pip install beautifulsoup4 requests pandas python-dotenv
 
-      - name: Create runtime folders
+      - name: Prepare runtime folders
         shell: bash
         run: |
           mkdir -p data/raw/variaworld
           mkdir -p output
+          rm -f data/raw/variaworld/*.csv
+          rm -f data/raw/variaworld/output/*.csv
+          rm -f output/variaworld_*.csv
+          rm -f output/variaworld_*.json
 
       - name: Run Variaworld listing
         shell: bash
         run: |
+          set -euo pipefail
           python -u scripts/scrapers/variaworld.py --mode listing --output-dir data/raw/variaworld
+
+      - name: Verify listing output
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv
+          from pathlib import Path
+
+          csv_path = Path("data/raw/variaworld/variaworld_products.csv")
+          if not csv_path.exists():
+              raise SystemExit(f"Ontbrekend outputbestand: {csv_path}")
+
+          with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+              rows = list(csv.DictReader(handle))
+
+          if not rows:
+              raise SystemExit(f"Lege listing-output: {csv_path}")
+
+          with_price = sum(1 for row in rows if (row.get("price") or "").strip())
+          with_url = sum(1 for row in rows if (row.get("product_url") or "").strip())
+          with_title = sum(1 for row in rows if (row.get("title") or "").strip())
+
+          print(
+              f"[VERIFY] rows={len(rows)} | with_price={with_price} | "
+              f"with_url={with_url} | with_title={with_title}"
+          )
+
+          if with_url == 0 or with_title == 0:
+              raise SystemExit("Listing-output mist essentiële velden (url/title)")
+          PY
 
       - name: Upload workflow artifacts
         if: always()
