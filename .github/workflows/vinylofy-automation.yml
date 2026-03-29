@@ -16,6 +16,7 @@ on:
           - platenzaak
           - variaworld
           - groovespin
+          - soundshaarlem
           - soundsvenlo
           - recordsonvinyl
           - shop3345
@@ -39,21 +40,19 @@ jobs:
   pipeline:
     runs-on: ubuntu-latest
     timeout-minutes: 120
-
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
-
       VINYLOFY_SCRAPER_CMD_BOBSVINYL: ${{ vars.VINYLOFY_SCRAPER_CMD_BOBSVINYL }}
       VINYLOFY_SCRAPER_CMD_DGMOUTLET: ${{ vars.VINYLOFY_SCRAPER_CMD_DGMOUTLET }}
       VINYLOFY_SCRAPER_CMD_PLATOMANIA: ${{ vars.VINYLOFY_SCRAPER_CMD_PLATOMANIA }}
       VINYLOFY_SCRAPER_CMD_PLATENZAAK: ${{ vars.VINYLOFY_SCRAPER_CMD_PLATENZAAK }}
       VINYLOFY_SCRAPER_CMD_VARIAWORLD: ${{ vars.VINYLOFY_SCRAPER_CMD_VARIAWORLD }}
-
       VINYLOFY_SCRAPER_CMD_GROOVESPIN: python -u scripts/scrapers/groovespin_automation.py --mode full --output-dir data/raw/groovespin --max-pages 30 --limit-ean 250
+      VINYLOFY_SCRAPER_CMD_SOUNDSHAARLEM: python -u scripts/scrapers/soundshaarlem.py --mode both --max-pages 24 --limit 100 --limit-details 250 --delay-seconds 0.5 --output-dir data/raw/soundshaarlem
       VINYLOFY_SCRAPER_CMD_SOUNDSVENLO: python -u scripts/scrapers/soundsvenlo.py --mode both --limit-detail 250 --output-dir data/raw/soundsvenlo
       VINYLOFY_SCRAPER_CMD_RECORDSONVINYL: python -u scripts/scrapers/recordsonvinyl_automation.py --mode crawl --master-csv data/raw/recordsonvinyl/recordsonvinyl_master.csv --out data/raw/recordsonvinyl/recordsonvinyl_products.csv --max-pages 20 --limit-products 250 --workers 4
       VINYLOFY_SCRAPER_CMD_SHOP3345: python -u scripts/scrapers/shop3345_automation.py --mode both --links-file data/raw/shop3345/3345_product_links.txt --csv-file data/raw/shop3345/3345_products.csv --max-pages 20 --limit-details 250
@@ -89,6 +88,7 @@ jobs:
           mkdir -p data/raw/platenzaak
           mkdir -p data/raw/variaworld
           mkdir -p data/raw/groovespin
+          mkdir -p data/raw/soundshaarlem
           mkdir -p data/raw/soundsvenlo
           mkdir -p data/raw/recordsonvinyl
           mkdir -p data/raw/shop3345
@@ -98,7 +98,9 @@ jobs:
         shell: bash
         run: |
           SHOP_INPUT="${{ github.event.inputs.shop }}"
-          if [ -z "$SHOP_INPUT" ]; then SHOP_INPUT="all"; fi
+          if [ -z "$SHOP_INPUT" ]; then
+            SHOP_INPUT="all"
+          fi
 
           SKIP_SCRAPE=""
           if [ "${{ github.event.inputs.skip_scrape }}" = "true" ]; then

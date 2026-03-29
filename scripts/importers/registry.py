@@ -8,6 +8,7 @@ from scripts.importers.import_platomania import SHOP_DEFINITION as PLATOMANIA_IM
 from scripts.importers.import_platenzaak import SHOP_DEFINITION as PLATENZAAK_IMPORTER
 from scripts.importers.import_recordsonvinyl import SHOP_DEFINITION as RECORDSONVINYL_IMPORTER
 from scripts.importers.import_shop3345 import SHOP_DEFINITION as SHOP3345_IMPORTER
+from scripts.importers.import_soundshaarlem import SHOP_DEFINITION as SOUNDSHAARLEM_IMPORTER
 from scripts.importers.import_soundsvenlo import SHOP_DEFINITION as SOUNDSVENLO_IMPORTER
 from scripts.importers.import_variaworld import SHOP_DEFINITION as VARIAWORLD_IMPORTER
 
@@ -21,6 +22,7 @@ SHOP_IMPORTERS: dict[str, ShopImporterDefinition] = {
         PLATENZAAK_IMPORTER,
         RECORDSONVINYL_IMPORTER,
         SHOP3345_IMPORTER,
+        SOUNDSHAARLEM_IMPORTER,
         SOUNDSVENLO_IMPORTER,
         VARIAWORLD_IMPORTER,
     )
