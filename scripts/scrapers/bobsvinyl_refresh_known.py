@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import argparse
-import csv
 import json
 import os
 import re
@@ -10,11 +8,11 @@ import sys
 import threading
 import time
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import urlencode, urljoin, urlparse, parse_qsl
 
 try:
     import psycopg
@@ -28,11 +26,7 @@ if str(CURRENT) not in sys.path:
 from legacy.bobsvinyl_legacy import (  # noqa: E402
     STEP2_COLUMNS as LEGACY_STEP2_COLUMNS,
     canonical_product_url,
-    collect_product_text,
-    detect_second_hand,
-    extract_ean_from_soup,
     fetch_soup,
-    get_thread_session,
     load_csv_as_dict,
     merge_row,
     nl_price,
@@ -40,7 +34,6 @@ from legacy.bobsvinyl_legacy import (  # noqa: E402
     now_iso,
     product_handle_from_url,
     split_artist_title_drager,
-    validate_product_page,
     write_csv,
 )
 
@@ -49,6 +42,7 @@ OUTPUT_FILE = "bobsvinyl_step2_enriched.csv"
 SUMMARY_FILE = "output/bobsvinyl_refresh_known_summary.json"
 REFRESH_COLUMNS = list(LEGACY_STEP2_COLUMNS) + ["availability"]
 PRICE_PATTERN = re.compile(r"€\s*([0-9]+(?:[\.,][0-9]{2})?)")
+BASE_COLLECTION_URL = "https://bobsvinyl.nl/en/collections/all"
 LOCK = threading.Lock()
 
 
@@ -56,6 +50,15 @@ LOCK = threading.Lock()
 class SeedRow:
     row: dict[str, str]
     last_seen_at: datetime | None
+
+
+@dataclass
+class ListingRow:
+    url: str
+    title: str
+    price: str
+    availability: str
+    source_page: str
 
 
 
@@ -80,6 +83,14 @@ def parse_dt(value: str | None) -> datetime | None:
 
 def ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+
+
+
+def with_page_param(base_url: str, page: int) -> str:
+    parts = urlparse(base_url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query["page"] = str(page)
+    return parts._replace(query=urlencode(query)).geturl()
 
 
 
@@ -157,7 +168,7 @@ def load_seed_rows_from_db() -> dict[str, SeedRow]:
                         "title": normalize_text(title),
                         "drager": normalize_text(format_label),
                         "prijs": "" if price is None else nl_price(str(price)),
-                        "bron_collectie": "known-url-refresh",
+                        "bron_collectie": "known-listing-refresh",
                         "bron_listing_urls": "",
                         "ean": normalize_text(ean),
                         "mogelijk_2e_hands": "NEE",
@@ -188,298 +199,309 @@ def combine_seed_rows(csv_rows: dict[str, SeedRow], db_rows: dict[str, SeedRow])
 
 
 
-def select_stale_rows(seed_rows: dict[str, SeedRow], stale_hours: float, limit_urls: int | None) -> OrderedDict[str, SeedRow]:
+def select_target_rows(seed_rows: dict[str, SeedRow], stale_hours: float, limit_urls: int | None) -> OrderedDict[str, SeedRow]:
     now = utc_now()
     threshold = None if stale_hours <= 0 else now - timedelta(hours=stale_hours)
-    stale: list[tuple[str, SeedRow]] = []
-    fresh: list[tuple[str, SeedRow]] = []
-
+    selected: list[tuple[str, SeedRow]] = []
     for url, seed in seed_rows.items():
         last_seen = seed.last_seen_at
         if threshold is None or last_seen is None or last_seen < threshold:
-            stale.append((url, seed))
-        else:
-            fresh.append((url, seed))
-
-    stale.sort(key=lambda item: (item[1].last_seen_at or datetime(1970, 1, 1, tzinfo=UTC), item[0]))
+            selected.append((url, seed))
+    selected.sort(key=lambda item: (item[1].last_seen_at or datetime(1970, 1, 1, tzinfo=UTC), item[0]))
     if limit_urls is not None and limit_urls > 0:
-        stale = stale[:limit_urls]
-
-    selected = OrderedDict(stale)
-    for url, seed in fresh:
-        selected.setdefault(url, seed)
-    return selected
+        selected = selected[:limit_urls]
+    return OrderedDict(selected)
 
 
 
-def extract_price_from_detail_page(soup) -> str:
-    candidate_texts: list[str] = []
-    selectors = [
-        ".price__container",
-        ".price.price--large",
-        ".product__info-container",
-    ]
-    for selector in selectors:
-        for node in soup.select(selector):
-            candidate_texts.append(normalize_text(node.get_text(" ", strip=True)))
-
-    candidate_texts.append(collect_product_text(soup))
-
-    for text in candidate_texts:
-        if not text:
-            continue
-        matches = PRICE_PATTERN.findall(text)
-        if matches:
-            return nl_price(matches[0])
-    return ""
+def normalize_page_title(value: str) -> str:
+    value = normalize_text(value)
+    value = re.sub(r"\s+", " ", value)
+    return value
 
 
 
-def detect_availability(soup) -> str:
-    page_text = normalize_text(soup.get_text(" ", strip=True)).lower()
-    if "sold out" in page_text or "uitverkocht" in page_text:
+def extract_price(text: str) -> str:
+    matches = PRICE_PATTERN.findall(text)
+    if not matches:
+        return ""
+    return f"€{matches[-1].replace('.', ',')}"
+
+
+
+def classify_availability(text: str) -> str:
+    lowered = normalize_text(text).lower()
+    if "pre-order" in lowered or "preorder" in lowered:
+        return "preorder"
+    if "sold out" in lowered or "uitverkocht" in lowered:
         return "out_of_stock"
-
-    button_texts = [normalize_text(node.get_text(" ", strip=True)).lower() for node in soup.select("form[action*='/cart/add'] button")]
-    if any("sold out" in text or "uitverkocht" in text for text in button_texts):
-        return "out_of_stock"
-    if any("add to cart" in text or "in winkelwagen" in text for text in button_texts):
+    if "add to cart" in lowered or "toevoegen aan winkelwagen" in lowered:
         return "in_stock"
     return "unknown"
 
 
 
-def refresh_one(seed: SeedRow) -> dict[str, str]:
-    base_row = {column: normalize_text(seed.row.get(column, "")) for column in REFRESH_COLUMNS}
-    url = canonical_product_url(base_row.get("url", ""))
-    base_row["url"] = url
-    base_row["url_listing"] = base_row.get("url_listing") or url
-    base_row["product_handle"] = base_row.get("product_handle") or product_handle_from_url(url)
-    base_row["bron_collectie"] = base_row.get("bron_collectie") or "known-url-refresh"
-
-    result = dict(base_row)
-    result["detail_checked_at"] = now_iso()
-    result.setdefault("mogelijk_2e_hands", "NEE")
-
-    try:
-        soup = fetch_soup(get_thread_session(), url)
-    except Exception as exc:
-        result["detail_status"] = "fout_bij_refresh_fetch"
-        result["detail_opmerking"] = str(exc)
-        result["_refresh_result"] = "fetch_error"
-        return result
-
-    valid_page, validation_note = validate_product_page(soup)
-    if not valid_page:
-        result["detail_status"] = "refresh_ongeldige_pagina"
-        result["detail_opmerking"] = validation_note
-        result["_refresh_result"] = "invalid_page"
-        return result
-
-    title_node = soup.select_one(".product__title h1")
-    raw_title = normalize_text(title_node.get_text(" ", strip=True) if title_node else "")
-    artist, title, drager = split_artist_title_drager(raw_title)
-    if artist:
-        result["artist"] = artist
-    if title:
-        result["title"] = title
-    elif raw_title and not result.get("title"):
-        result["title"] = raw_title
-    if drager:
-        result["drager"] = drager
-
-    product_text = collect_product_text(soup)
-    fetched_ean = extract_ean_from_soup(soup, product_text)
-    existing_ean = normalize_text(base_row.get("ean"))
-    final_ean = fetched_ean or existing_ean
-    result["ean"] = final_ean
-
-    second_hand = detect_second_hand(soup, product_text) or "NEE"
-    result["mogelijk_2e_hands"] = second_hand
-    result["availability"] = detect_availability(soup)
-
-    refreshed_price = extract_price_from_detail_page(soup)
-    if refreshed_price:
-        result["prijs"] = refreshed_price
-
-    if second_hand == "JA":
-        result["detail_status"] = "2e_hands_bevestigd"
-        result["detail_opmerking"] = "2e hands-vermelding gevonden tijdens known-url refresh"
-        result["_refresh_result"] = "second_hand"
-        return result
-
-    if not result.get("prijs"):
-        result["detail_status"] = "refresh_zonder_prijs"
-        result["detail_opmerking"] = "Valide productpagina, maar geen prijs gevonden"
-        result["_refresh_result"] = "missing_price"
-        return result
-
-    if final_ean:
-        result["detail_status"] = "ok"
-        if fetched_ean:
-            result["detail_opmerking"] = ""
-            result["_refresh_result"] = "ok_fetched_ean"
-        else:
-            result["detail_opmerking"] = "EAN behouden uit bestaand record tijdens known-url refresh"
-            result["_refresh_result"] = "ok_preserved_ean"
-        return result
-
-    result["detail_status"] = "refresh_geen_ean"
-    result["detail_opmerking"] = "Valide productpagina, prijs gevonden, maar geen EAN beschikbaar"
-    result["_refresh_result"] = "missing_ean"
-    return result
+def iter_candidate_containers(soup):
+    selectors = [
+        "li.grid__item",
+        ".grid__item",
+        ".card-wrapper",
+        ".card",
+        ".product-card-wrapper",
+        ".product-grid-item",
+    ]
+    seen = set()
+    for selector in selectors:
+        for node in soup.select(selector):
+            identifier = id(node)
+            if identifier in seen:
+                continue
+            seen.add(identifier)
+            yield node
 
 
 
-def build_summary(rows_by_url: dict[str, dict[str, str]], selected_count: int, total_seed_rows: int, started_at: datetime) -> dict[str, object]:
-    counters = {
-        "total_seed_rows": total_seed_rows,
-        "selected_for_refresh": selected_count,
-        "ok_fetched_ean": 0,
-        "ok_preserved_ean": 0,
-        "second_hand": 0,
-        "missing_price": 0,
-        "missing_ean": 0,
-        "invalid_page": 0,
-        "fetch_error": 0,
-        "out_of_stock": 0,
-        "in_stock": 0,
-        "unknown_availability": 0,
+def extract_listing_rows_from_page(soup, page_url: str) -> list[ListingRow]:
+    rows: OrderedDict[str, ListingRow] = OrderedDict()
+
+    def add_candidate(url: str, title: str, raw_text: str) -> None:
+        canonical = canonical_product_url(url)
+        if not canonical:
+            return
+        if "/products/" not in canonical:
+            return
+        price = extract_price(raw_text)
+        if not price:
+            return
+        rows[canonical] = ListingRow(
+            url=canonical,
+            title=normalize_page_title(title),
+            price=price,
+            availability=classify_availability(raw_text),
+            source_page=page_url,
+        )
+
+    for container in iter_candidate_containers(soup):
+        anchor = container.select_one('a[href*="/products/"]')
+        if not anchor:
+            continue
+        href = normalize_text(anchor.get("href"))
+        if not href:
+            continue
+        url = urljoin(page_url, href)
+        title = anchor.get_text(" ", strip=True)
+        container_text = container.get_text(" ", strip=True)
+        add_candidate(url, title, container_text)
+
+    if rows:
+        return list(rows.values())
+
+    for anchor in soup.select('a[href*="/products/"]'):
+        href = normalize_text(anchor.get("href"))
+        if not href:
+            continue
+        url = urljoin(page_url, href)
+        parent = anchor.parent if anchor.parent is not None else anchor
+        raw_text = parent.get_text(" ", strip=True)
+        title = anchor.get_text(" ", strip=True)
+        add_candidate(url, title, raw_text)
+
+    return list(rows.values())
+
+
+
+def detect_total_pages(soup) -> int | None:
+    candidates: list[int] = []
+    for anchor in soup.select('a[href*="page="]'):
+        href = normalize_text(anchor.get("href"))
+        text = normalize_text(anchor.get_text(" ", strip=True))
+        if text.isdigit():
+            try:
+                candidates.append(int(text))
+            except ValueError:
+                pass
+        if href:
+            parsed = urlparse(urljoin(BASE_COLLECTION_URL, href))
+            query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+            page_value = normalize_text(query.get("page"))
+            if page_value.isdigit():
+                candidates.append(int(page_value))
+    return max(candidates) if candidates else None
+
+
+
+def split_title_listing(title: str, fallback_artist: str, fallback_title: str, fallback_drager: str) -> tuple[str, str, str]:
+    artist, album, drager = split_artist_title_drager(title)
+    artist = artist or fallback_artist
+    album = album or fallback_title
+    drager = drager or fallback_drager
+    return normalize_text(artist), normalize_text(album), normalize_text(drager)
+
+
+
+def refresh_rows_via_collection(
+    targets: OrderedDict[str, SeedRow],
+    workers: int,
+    max_pages: int | None,
+    delay_seconds: float,
+) -> tuple[list[dict[str, str]], dict[str, object]]:
+    known_urls = set(targets.keys())
+    refreshed: OrderedDict[str, dict[str, str]] = OrderedDict()
+    pages_crawled = 0
+    matched_total = 0
+    total_pages_detected: int | None = None
+    empty_pages_in_row = 0
+    page = 1
+    max_pages_effective = max_pages if (max_pages is not None and max_pages > 0) else None
+
+    while True:
+        if max_pages_effective is not None and page > max_pages_effective:
+            break
+        if len(refreshed) >= len(known_urls):
+            break
+
+        page_url = with_page_param(BASE_COLLECTION_URL, page)
+        soup = fetch_soup(page_url)
+        pages_crawled += 1
+
+        if page == 1:
+            total_pages_detected = detect_total_pages(soup)
+            if max_pages_effective is None and total_pages_detected:
+                max_pages_effective = total_pages_detected
+
+        listings = extract_listing_rows_from_page(soup, page_url)
+        if not listings:
+            empty_pages_in_row += 1
+            print(f"[REFRESH all p{page}] geen listings gevonden")
+            if empty_pages_in_row >= 2:
+                break
+            page += 1
+            if delay_seconds > 0:
+                time.sleep(delay_seconds)
+            continue
+
+        empty_pages_in_row = 0
+        page_matches = 0
+        for listing in listings:
+            if listing.url not in known_urls:
+                continue
+            if listing.url in refreshed:
+                continue
+            seed = targets[listing.url]
+            base_row = {column: normalize_text(seed.row.get(column, "")) for column in REFRESH_COLUMNS}
+            artist, album, drager = split_title_listing(
+                listing.title,
+                fallback_artist=base_row.get("artist", ""),
+                fallback_title=base_row.get("title", ""),
+                fallback_drager=base_row.get("drager", ""),
+            )
+            row = dict(base_row)
+            row.update(
+                {
+                    "url": listing.url,
+                    "url_listing": listing.url,
+                    "product_handle": product_handle_from_url(listing.url),
+                    "artist": artist,
+                    "title": album,
+                    "drager": drager,
+                    "prijs": listing.price,
+                    "bron_collectie": "collections-all-refresh",
+                    "bron_listing_urls": listing.source_page,
+                    "detail_checked_at": now_iso(),
+                    "detail_opmerking": "listing refresh via /collections/all",
+                    "availability": listing.availability,
+                }
+            )
+            if not row.get("detail_status") and row.get("ean"):
+                row["detail_status"] = "ok"
+            refreshed[listing.url] = row
+            page_matches += 1
+            matched_total += 1
+
+        print(
+            f"[REFRESH all p{page}] listings={len(listings)} | matched_known={page_matches} | refreshed_total={len(refreshed)}/{len(known_urls)}"
+        )
+
+        if max_pages_effective is not None and page >= max_pages_effective:
+            break
+        page += 1
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
+
+    summary = {
+        "collection_url": BASE_COLLECTION_URL,
+        "pages_crawled": pages_crawled,
+        "total_pages_detected": total_pages_detected,
+        "selected_known_urls": len(known_urls),
+        "matched_known_urls": len(refreshed),
+        "unmatched_known_urls": max(0, len(known_urls) - len(refreshed)),
+        "max_pages": 0 if max_pages is None else max_pages,
+        "delay_seconds": delay_seconds,
     }
-
-    for row in rows_by_url.values():
-        refresh_result = normalize_text(row.get("_refresh_result"))
-        if refresh_result in counters:
-            counters[refresh_result] += 1
-        availability = normalize_text(row.get("availability"))
-        if availability == "out_of_stock":
-            counters["out_of_stock"] += 1
-        elif availability == "in_stock":
-            counters["in_stock"] += 1
-        elif availability:
-            counters["unknown_availability"] += 1
-
-    return {
-        "started_at": started_at.isoformat(),
-        "finished_at": utc_now().isoformat(),
-        **counters,
-    }
-
-
-
-def write_summary(path: Path, summary: dict[str, object]) -> None:
-    ensure_parent(path)
-    path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+    return list(refreshed.values()), summary
 
 
 
 def run_refresh_known(
-    output_dir: str | Path = DEFAULT_OUTPUT_DIR,
-    workers: int = 6,
+    output_dir: str = DEFAULT_OUTPUT_DIR,
+    workers: int = 1,
     stale_hours: float = 20.0,
     limit_urls: int | None = None,
+    max_pages: int | None = None,
+    delay_seconds: float = 0.25,
 ) -> int:
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / OUTPUT_FILE
-    summary_path = Path(SUMMARY_FILE)
+    output_dir_path = Path(output_dir)
+    ensure_parent(output_dir_path / OUTPUT_FILE)
+    ensure_parent(Path(SUMMARY_FILE))
 
-    csv_seed_rows = load_seed_rows_from_csv([output_dir / OUTPUT_FILE, output_dir / "bobsvinyl_step1.csv"])
-    db_seed_rows = load_seed_rows_from_db()
-    seed_rows = combine_seed_rows(csv_seed_rows, db_seed_rows)
+    csv_seed_paths = [
+        output_dir_path / "bobsvinyl_step2_enriched.csv",
+        output_dir_path / "bobsvinyl_step1.csv",
+        output_dir_path / "bobsvinyl_products.csv",
+    ]
 
-    if not seed_rows:
-        print("[INFO] Geen Bob known URLs gevonden in DB of lokale CSV-bestanden.", flush=True)
-        write_summary(summary_path, {
-            "started_at": utc_now().isoformat(),
-            "finished_at": utc_now().isoformat(),
-            "total_seed_rows": 0,
-            "selected_for_refresh": 0,
-        })
+    csv_rows = load_seed_rows_from_csv(csv_seed_paths)
+    db_rows = load_seed_rows_from_db()
+    combined = combine_seed_rows(csv_rows, db_rows)
+    targets = select_target_rows(combined, stale_hours=stale_hours, limit_urls=limit_urls)
+
+    if not targets:
+        summary = {
+            "status": "no_targets",
+            "selected_known_urls": 0,
+            "stale_hours": stale_hours,
+            "limit_urls": limit_urls,
+            "max_pages": max_pages,
+            "generated_at": now_iso(),
+        }
+        Path(SUMMARY_FILE).write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
         return 0
 
-    selected = select_stale_rows(seed_rows, stale_hours=stale_hours, limit_urls=limit_urls)
-    selected_count = sum(1 for _, seed in selected.items() if (stale_hours <= 0) or (seed.last_seen_at is None) or (seed.last_seen_at < utc_now() - timedelta(hours=stale_hours)))
-
-    print(
-        f"[INFO] Bob refresh-known gestart | seed_rows={len(seed_rows)} | stale_hours={stale_hours} | "
-        f"te_verversen={selected_count} | workers={workers} | limit_urls={limit_urls}",
-        flush=True,
+    refreshed_rows, crawl_summary = refresh_rows_via_collection(
+        targets=targets,
+        workers=workers,
+        max_pages=max_pages,
+        delay_seconds=delay_seconds,
     )
 
-    rows_by_url: dict[str, dict[str, str]] = OrderedDict()
-    for url, seed in selected.items():
-        row = {column: normalize_text(seed.row.get(column, "")) for column in REFRESH_COLUMNS}
-        row["url"] = canonical_product_url(url)
-        row.setdefault("product_handle", product_handle_from_url(url))
-        row.setdefault("availability", normalize_text(row.get("availability")) or "unknown")
-        rows_by_url[url] = row
+    output_path = output_dir_path / OUTPUT_FILE
+    write_csv(str(output_path), refreshed_rows, REFRESH_COLUMNS)
 
-    stale_urls = []
-    threshold = None if stale_hours <= 0 else utc_now() - timedelta(hours=stale_hours)
-    for url, seed in selected.items():
-        if threshold is None or seed.last_seen_at is None or seed.last_seen_at < threshold:
-            stale_urls.append(url)
-
-    started_at = utc_now()
-
-    if stale_urls:
-        processed = 0
-        with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
-            futures = {executor.submit(refresh_one, selected[url]): url for url in stale_urls}
-            for future in as_completed(futures):
-                url = futures[future]
-                processed += 1
-                try:
-                    refreshed = future.result()
-                except Exception as exc:  # pragma: no cover
-                    refreshed = dict(rows_by_url[url])
-                    refreshed["detail_checked_at"] = now_iso()
-                    refreshed["detail_status"] = "fout_bij_refresh_worker"
-                    refreshed["detail_opmerking"] = str(exc)
-                    refreshed["_refresh_result"] = "fetch_error"
-                with LOCK:
-                    rows_by_url[url] = merge_row(rows_by_url.get(url), refreshed, REFRESH_COLUMNS + ["_refresh_result"])
-                    if processed % 50 == 0 or processed == len(stale_urls):
-                        csv_rows = OrderedDict((k, {col: normalize_text(v.get(col, "")) for col in REFRESH_COLUMNS}) for k, v in rows_by_url.items())
-                        write_csv(str(output_path), csv_rows, REFRESH_COLUMNS)
-                print(
-                    f"[REFRESH] {processed}/{len(stale_urls)} | {refreshed.get('artist', '')} - {refreshed.get('title', '')} | "
-                    f"prijs={refreshed.get('prijs', '-') or '-'} | ean={refreshed.get('ean', '-') or '-'} | "
-                    f"status={refreshed.get('detail_status', '-') or '-'} | availability={refreshed.get('availability', '-') or '-'}",
-                    flush=True,
-                )
-                time.sleep(0.05)
-
-    csv_rows = OrderedDict((k, {col: normalize_text(v.get(col, "")) for col in REFRESH_COLUMNS}) for k, v in rows_by_url.items())
-    write_csv(str(output_path), csv_rows, REFRESH_COLUMNS)
-    summary = build_summary(rows_by_url, selected_count=selected_count, total_seed_rows=len(seed_rows), started_at=started_at)
-    write_summary(summary_path, summary)
-    print(f"[KLAAR] {output_path} opgeslagen met {len(rows_by_url)} Bob known URLs.", flush=True)
-    print(f"[SUMMARY] {summary_path}", flush=True)
+    summary = {
+        "status": "ok",
+        "generated_at": now_iso(),
+        "workers": workers,
+        "stale_hours": stale_hours,
+        "limit_urls": limit_urls,
+        "max_pages": max_pages,
+        "output_file": str(output_path),
+        **crawl_summary,
+    }
+    Path(SUMMARY_FILE).write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(json.dumps(summary, indent=2, ensure_ascii=False))
     return 0
 
 
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Bob's Vinyl known-url refresher")
-    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--workers", type=int, default=6)
-    parser.add_argument("--stale-hours", type=float, default=20.0)
-    parser.add_argument("--limit-urls", type=int, default=None)
-    return parser
-
-
-
-def main() -> int:
-    args = build_parser().parse_args()
-    return run_refresh_known(
-        output_dir=args.output_dir,
-        workers=max(1, args.workers),
-        stale_hours=args.stale_hours,
-        limit_urls=args.limit_urls,
-    )
-
-
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_refresh_known())

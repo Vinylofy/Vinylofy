@@ -4,17 +4,25 @@ on:
   workflow_dispatch:
     inputs:
       workers:
-        description: "Aantal parallelle refresh workers"
+        description: "Aantal parallelle workers (alleen seed/selectie; listing crawl zelf is sequentieel)"
         required: false
-        default: "6"
+        default: "4"
       stale_hours:
         description: "Alleen Bob URLs verversen ouder dan dit aantal uur (0 = alles)"
         required: false
         default: "20"
       limit_urls:
-        description: "Max aantal URLs (0 = alles)"
+        description: "Max aantal bekende URLs dat je wilt bijwerken (0 = alles)"
         required: false
         default: "0"
+      max_pages:
+        description: "Max aantal /collections/all pagina's om te crawlen (0 = alles)"
+        required: false
+        default: "0"
+      delay_seconds:
+        description: "Pauze tussen listingpagina's"
+        required: false
+        default: "0.25"
   schedule:
     - cron: "40 1 * * *"
 
@@ -66,12 +74,19 @@ jobs:
           WORKERS="${{ github.event.inputs.workers }}"
           STALE_HOURS="${{ github.event.inputs.stale_hours }}"
           LIMIT_URLS="${{ github.event.inputs.limit_urls }}"
-          [ -n "$WORKERS" ] || WORKERS="6"
+          MAX_PAGES="${{ github.event.inputs.max_pages }}"
+          DELAY_SECONDS="${{ github.event.inputs.delay_seconds }}"
+          [ -n "$WORKERS" ] || WORKERS="4"
           [ -n "$STALE_HOURS" ] || STALE_HOURS="20"
           [ -n "$LIMIT_URLS" ] || LIMIT_URLS="0"
-          CMD="python -u scripts/scrapers/bobsvinyl.py --mode refresh-known --workers ${WORKERS} --stale-hours ${STALE_HOURS} --output-dir data/raw/bobsvinyl"
+          [ -n "$MAX_PAGES" ] || MAX_PAGES="0"
+          [ -n "$DELAY_SECONDS" ] || DELAY_SECONDS="0.25"
+          CMD="python -u scripts/scrapers/bobsvinyl.py --mode refresh-known --workers ${WORKERS} --stale-hours ${STALE_HOURS} --delay-seconds ${DELAY_SECONDS} --output-dir data/raw/bobsvinyl"
           if [ "$LIMIT_URLS" != "0" ]; then
             CMD="$CMD --limit-urls ${LIMIT_URLS}"
+          fi
+          if [ "$MAX_PAGES" != "0" ]; then
+            CMD="$CMD --max-pages ${MAX_PAGES}"
           fi
           export VINYLOFY_SCRAPER_CMD_BOBSVINYL="$CMD"
           echo "VINYLOFY_SCRAPER_CMD_BOBSVINYL=$VINYLOFY_SCRAPER_CMD_BOBSVINYL"

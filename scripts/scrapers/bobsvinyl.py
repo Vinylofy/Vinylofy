@@ -22,6 +22,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit-detail", type=int, default=None, help="Max aantal detailpagina's in step2")
     p.add_argument("--stale-hours", type=float, default=20.0, help="Alleen known URLs verversen ouder dan dit aantal uur")
     p.add_argument("--limit-urls", type=int, default=None, help="Max aantal known URLs in refresh-known")
+    p.add_argument("--max-pages", type=int, default=0, help="Max aantal /collections/all pagina's in refresh-known (0 = alles)")
+    p.add_argument("--delay-seconds", type=float, default=0.25, help="Pauze tussen listingpagina's in refresh-known")
     p.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     p.add_argument("--interactive", action="store_true")
     return p
@@ -43,6 +45,8 @@ def main() -> int:
             workers=max(1, args.workers),
             stale_hours=args.stale_hours,
             limit_urls=args.limit_urls,
+            max_pages=None if args.max_pages == 0 else max(1, args.max_pages),
+            delay_seconds=max(0.0, args.delay_seconds),
         )
 
     choice = {"step1": "1", "step2": "2", "both": "3"}[args.mode]
