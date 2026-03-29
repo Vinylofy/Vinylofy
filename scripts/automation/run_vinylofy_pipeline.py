@@ -7,6 +7,7 @@ import mimetypes
 import os
 import subprocess
 import sys
+import threading
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -79,35 +80,60 @@ def log(message: str) -> None:
 
 
 def run_command(command: str | list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    popen_kwargs: dict[str, Any] = {
+        "cwd": cwd,
+        "text": True,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "bufsize": 1,
+    }
     if isinstance(command, str):
-        return subprocess.run(
-            command,
-            cwd=cwd,
-            shell=True,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-    return subprocess.run(
-        command,
-        cwd=cwd,
-        text=True,
-        capture_output=True,
-        check=False,
+        popen_kwargs["shell"] = True
+
+    process = subprocess.Popen(command, **popen_kwargs)
+
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+
+    def _pump(stream, sink: list[str], target) -> None:
+        if stream is None:
+            return
+        try:
+            for line in iter(stream.readline, ""):
+                sink.append(line)
+                print(line, end="", file=target, flush=True)
+        finally:
+            stream.close()
+
+    stdout_thread = threading.Thread(
+        target=_pump,
+        args=(process.stdout, stdout_lines, sys.stdout),
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=_pump,
+        args=(process.stderr, stderr_lines, sys.stderr),
+        daemon=True,
+    )
+
+    stdout_thread.start()
+    stderr_thread.start()
+
+    returncode = process.wait()
+    stdout_thread.join()
+    stderr_thread.join()
+
+    return subprocess.CompletedProcess(
+        args=command,
+        returncode=returncode,
+        stdout="".join(stdout_lines),
+        stderr="".join(stderr_lines),
     )
 
 
 def emit_process_output(label: str, proc: subprocess.CompletedProcess[str]) -> None:
-    if proc.stdout:
-        print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n", flush=True)
-    if proc.stderr:
-        log(f"[{label}] stderr:")
-        print(
-            proc.stderr,
-            end="" if proc.stderr.endswith("\n") else "\n",
-            file=sys.stderr,
-            flush=True,
-        )
+    del label, proc
+    return
 
 
 def ensure_file_exists(path: Path, description: str) -> None:
