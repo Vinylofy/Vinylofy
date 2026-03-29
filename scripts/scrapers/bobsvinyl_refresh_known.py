@@ -27,6 +27,7 @@ from legacy.bobsvinyl_legacy import (  # noqa: E402
     STEP2_COLUMNS as LEGACY_STEP2_COLUMNS,
     canonical_product_url,
     fetch_soup,
+    make_session,
     load_csv_as_dict,
     merge_row,
     nl_price,
@@ -344,9 +345,11 @@ def refresh_rows_via_collection(
     workers: int,
     max_pages: int | None,
     delay_seconds: float,
-) -> tuple[list[dict[str, str]], dict[str, object]]:
+) -> tuple[OrderedDict[str, dict[str, str]], dict[str, object]]:
+    del workers
     known_urls = set(targets.keys())
     refreshed: OrderedDict[str, dict[str, str]] = OrderedDict()
+    session = make_session()
     pages_crawled = 0
     matched_total = 0
     total_pages_detected: int | None = None
@@ -361,7 +364,7 @@ def refresh_rows_via_collection(
             break
 
         page_url = with_page_param(BASE_COLLECTION_URL, page)
-        soup = fetch_soup(page_url)
+        soup = fetch_soup(session, page_url)
         pages_crawled += 1
 
         if page == 1:
@@ -428,6 +431,11 @@ def refresh_rows_via_collection(
         if delay_seconds > 0:
             time.sleep(delay_seconds)
 
+    try:
+        session.close()
+    except Exception:
+        pass
+
     summary = {
         "collection_url": BASE_COLLECTION_URL,
         "pages_crawled": pages_crawled,
@@ -438,7 +446,7 @@ def refresh_rows_via_collection(
         "max_pages": 0 if max_pages is None else max_pages,
         "delay_seconds": delay_seconds,
     }
-    return list(refreshed.values()), summary
+    return refreshed, summary
 
 
 
