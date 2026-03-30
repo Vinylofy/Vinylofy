@@ -2,6 +2,8 @@
 """
 RecordsOnVinyl.nl scraper — CSV-native edition
 
+Vinylofy implementation build.
+
 State is stored in CSV files instead of SQLite.
 
 Supported flows
@@ -753,7 +755,7 @@ def interactive_main() -> argparse.Namespace:
     if choice not in {"1", "2", "3"}:
         choice = "1"
     base = argparse.Namespace(
-        master_csv="recordsonvinyl_products_master.csv",
+        master_csv="data/raw/recordsonvinyl/recordsonvinyl_master.csv",
         delay_listing=0.15,
         delay_product=0.60,
         ignore_robots=False,
@@ -788,7 +790,7 @@ def interactive_main() -> argparse.Namespace:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="RecordsOnVinyl.nl scraper (CSV-native)")
-    p.add_argument("--master-csv", default="recordsonvinyl_products_master.csv", help="Master CSV path")
+    p.add_argument("--master-csv", default="data/raw/recordsonvinyl/recordsonvinyl_master.csv", help="Master CSV path")
     p.add_argument("--delay-listing", type=float, default=0.15)
     p.add_argument("--delay-product", type=float, default=0.60)
     p.add_argument("--ignore-robots", action="store_true")

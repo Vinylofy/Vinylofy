@@ -1,0 +1,105 @@
+name: Shop - RecordsOnVinyl Refresh
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_pages:
+        description: "Max pagina's (0 = tot uitgeput)"
+        required: false
+        default: "999"
+      limit_products:
+        description: "Max listing items om te verwerken (0 = geen limiet)"
+        required: false
+        default: "5000"
+  schedule:
+    - cron: "10 0 * * *"
+    - cron: "10 6 * * *"
+    - cron: "10 12 * * *"
+    - cron: "10 18 * * *"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: vinylofy-recordsonvinyl
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
+          pip install beautifulsoup4 requests pandas "psycopg[binary]" python-dotenv supabase playwright
+
+      - name: Create runtime folders
+        shell: bash
+        run: |
+          mkdir -p data/raw/recordsonvinyl
+          mkdir -p output
+
+      - name: Restore latest RecordsOnVinyl state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -u scripts/automation/restore_latest_state_artifact.py \
+            --repo "${{ github.repository }}" \
+            --target-dir data/raw/recordsonvinyl \
+            --artifact-prefix recordsonvinyl-state- \
+            --workflow-name "Shop - RecordsOnVinyl Refresh" \
+            --workflow-name "Shop - RecordsOnVinyl Crawl"
+          ls -la data/raw/recordsonvinyl || true
+
+      - name: Validate restored master state
+        shell: bash
+        run: |
+          if [ ! -s data/raw/recordsonvinyl/recordsonvinyl_master.csv ]; then
+            echo "recordsonvinyl_master.csv ontbreekt. Run eerst handmatig de crawl-workflow om state te seeden."
+            exit 1
+          fi
+
+      - name: Run RecordsOnVinyl refresh pipeline
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAX_PAGES="${{ github.event.inputs.max_pages }}"
+          LIMIT_PRODUCTS="${{ github.event.inputs.limit_products }}"
+          [ -n "$MAX_PAGES" ] || MAX_PAGES="999"
+          [ -n "$LIMIT_PRODUCTS" ] || LIMIT_PRODUCTS="5000"
+          export VINYLOFY_SCRAPER_CMD_RECORDSONVINYL="python -u scripts/scrapers/recordsonvinyl_automation.py --mode refresh --master-csv data/raw/recordsonvinyl/recordsonvinyl_master.csv --out data/raw/recordsonvinyl/recordsonvinyl_products.csv --max-pages ${MAX_PAGES} --limit-products ${LIMIT_PRODUCTS}"
+          echo "VINYLOFY_SCRAPER_CMD_RECORDSONVINYL=$VINYLOFY_SCRAPER_CMD_RECORDSONVINYL"
+          python -u scripts/automation/run_vinylofy_pipeline.py --shop recordsonvinyl
+
+      - name: Upload RecordsOnVinyl state artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: recordsonvinyl-state-${{ github.run_id }}
+          path: |
+            data/raw/recordsonvinyl/*.csv
+            data/raw/recordsonvinyl/*.json
+            output/**/*.json
+            output/**/*.csv
+          if-no-files-found: warn
