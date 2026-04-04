@@ -170,7 +170,7 @@ def upsert_candidate_rows(conn, candidates: list[CandidateRecord]) -> int:
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     'pending', now(), now(), now(), now(), now()
                 )
-                on conflict (product_id, image_url)
+                on conflict (product_id, image_url) where product_id is not null and image_url is not null
                 do update set
                     shop_id = coalesce(excluded.shop_id, public.product_cover_candidates.shop_id),
                     ean = coalesce(excluded.ean, public.product_cover_candidates.ean),
@@ -222,7 +222,7 @@ def upsert_queue_rows(conn, offer_sources: dict[str, list[OfferSource]], candida
                     updated_at
                 )
                 values (%s, %s, %s, %s, 'pending', now(), now(), now())
-                on conflict (product_id)
+                on conflict (product_id) where product_id is not null
                 do update set
                     priority = greatest(public.product_cover_queue.priority, excluded.priority),
                     candidate_count = greatest(public.product_cover_queue.candidate_count, excluded.candidate_count),

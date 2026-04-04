@@ -287,7 +287,7 @@ def discover_candidates_on_the_fly(conn, product_context: dict[str, Any], sessio
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     'pending', now(), now(), now(), now(), now()
                 )
-                on conflict (product_id, image_url)
+                on conflict (product_id, image_url) where product_id is not null and image_url is not null
                 do update set
                     source_type = excluded.source_type,
                     source_rank = greatest(excluded.source_rank, public.product_cover_candidates.source_rank),
