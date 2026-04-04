@@ -24,10 +24,12 @@ try:
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("Package 'psycopg' is required for the cover pipeline.") from exc
 
-try:
-    from PIL import Image, UnidentifiedImageError
-except ImportError as exc:  # pragma: no cover
-    raise RuntimeError("Package 'Pillow' is required for the cover pipeline.") from exc
+def require_pillow():
+    try:
+        from PIL import Image, UnidentifiedImageError  # type: ignore
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("Package 'Pillow' is required for image preparation in the cover pipeline.") from exc
+    return Image, UnidentifiedImageError
 
 
 SHOP_PRIORITY_DEFAULTS: dict[str, int] = {
@@ -466,6 +468,7 @@ def fetch_binary(session: requests.Session, url: str) -> tuple[bytes, str | None
 
 
 def prepare_image_for_storage(content: bytes, original_mime_type: str | None = None) -> PreparedImage:
+    Image, UnidentifiedImageError = require_pillow()
     try:
         image = Image.open(io.BytesIO(content))
     except UnidentifiedImageError as exc:

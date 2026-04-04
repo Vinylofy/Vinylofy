@@ -38,7 +38,7 @@ jobs:
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          pip install beautifulsoup4 requests "psycopg[binary]" python-dotenv
+          pip install beautifulsoup4 requests pillow "psycopg[binary]" python-dotenv
 
       - name: Prepare folders
         shell: bash
