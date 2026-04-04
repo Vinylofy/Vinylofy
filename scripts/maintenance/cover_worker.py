@@ -32,6 +32,98 @@ from cover_common import (
 )
 
 
+def get_candidate_table_profile(conn) -> tuple[set[str], list[str], str]:
+    columns = get_table_columns(conn, "product_cover_candidates")
+    url_columns = [column for column in ("image_url", "source_url", "candidate_url") if column in columns]
+    if not url_columns:
+        raise CoverPipelineError("Tabel public.product_cover_candidates mist image_url/source_url/candidate_url.")
+    preferred_url_column = "image_url" if "image_url" in columns else url_columns[0]
+    return columns, url_columns, preferred_url_column
+
+
+def candidate_url_expression(alias: str, url_columns: list[str]) -> str:
+    if len(url_columns) == 1:
+        return f"{alias}.{url_columns[0]}"
+    return "coalesce(" + ", ".join(f"{alias}.{column}" for column in url_columns) + ")"
+
+
+def find_existing_candidate(cur, product_id: str, image_url: str, url_columns: list[str], columns: set[str]) -> dict[str, Any] | None:
+    select_columns = ["id"]
+    for column in ("source_rank", "is_primary", "mime_type", "width", "height", "candidate_status"):
+        if column in columns:
+            select_columns.append(column)
+    predicates = " or ".join(f"{column} = %s" for column in url_columns)
+    cur.execute(
+        f"select {', '.join(select_columns)} from public.product_cover_candidates where product_id = %s and ({predicates}) order by updated_at desc nulls last, created_at desc nulls last, id limit 1",
+        [product_id, *([image_url] * len(url_columns))],
+    )
+    row = cur.fetchone()
+    if row is None:
+        return None
+    return dict(zip(select_columns, row))
+
+
+def build_candidate_insert_payload(candidate: CandidateRecord, columns: set[str]) -> dict[str, Any]:
+    now = utc_now()
+    payload: dict[str, Any] = {}
+    values = {
+        "product_id": candidate.product_id,
+        "shop_id": candidate.shop_id,
+        "ean": candidate.ean,
+        "product_url": candidate.product_url,
+        "image_url": candidate.image_url,
+        "source_url": candidate.image_url,
+        "candidate_url": candidate.image_url,
+        "source_type": candidate.source_type,
+        "source_rank": candidate.source_rank,
+        "is_primary": candidate.is_primary,
+        "mime_type": candidate.mime_type,
+        "width": candidate.width,
+        "height": candidate.height,
+        "candidate_status": "pending",
+        "discovered_at": now,
+        "first_seen_at": now,
+        "last_seen_at": now,
+        "created_at": now,
+        "updated_at": now,
+    }
+    for column, value in values.items():
+        if column in columns:
+            payload[column] = value
+    return payload
+
+
+def insert_candidate_row(cur, payload: dict[str, Any]) -> None:
+    columns = list(payload.keys())
+    cur.execute(
+        f"insert into public.product_cover_candidates ({', '.join(columns)}) values ({', '.join(['%s'] * len(columns))})",
+        [payload[column] for column in columns],
+    )
+
+
+def update_candidate_row(cur, row_id: Any, candidate: CandidateRecord, existing: dict[str, Any], columns: set[str]) -> None:
+    now = utc_now()
+    payload: dict[str, Any] = {}
+    if "source_type" in columns and candidate.source_type:
+        payload["source_type"] = candidate.source_type
+    if "source_rank" in columns:
+        payload["source_rank"] = max(int(existing.get("source_rank") or 0), int(candidate.source_rank or 0))
+    if "is_primary" in columns:
+        payload["is_primary"] = bool(existing.get("is_primary")) or bool(candidate.is_primary)
+    if "width" in columns:
+        payload["width"] = existing.get("width") or candidate.width
+    if "height" in columns:
+        payload["height"] = existing.get("height") or candidate.height
+    if "mime_type" in columns and candidate.mime_type and not existing.get("mime_type"):
+        payload["mime_type"] = candidate.mime_type
+    if "last_seen_at" in columns:
+        payload["last_seen_at"] = now
+    if "updated_at" in columns:
+        payload["updated_at"] = now
+    assignments = ", ".join(f"{column} = %s" for column in payload)
+    cur.execute(f"update public.product_cover_candidates set {assignments} where id = %s", [*payload.values(), row_id])
+
+
 VALID_QUEUE_SELECTIONS = {
     "publish": ("pending", "retry_later", "review"),
     "retry-failed": ("failed", "retry_later", "review"),
@@ -175,14 +267,21 @@ def load_product_context(conn, product_id: str) -> dict[str, Any]:
 
 
 def load_candidates(conn, product_context: dict[str, Any]) -> list[CandidateRecord]:
+    columns, url_columns, _ = get_candidate_table_profile(conn)
     require_table_columns(
         conn,
         "product_cover_candidates",
-        ["product_id", "shop_id", "ean", "product_url", "image_url", "source_type", "source_rank", "is_primary"],
+        ["product_id", "shop_id", "ean", "product_url", "source_type", "source_rank", "is_primary"],
     )
+    url_expr = candidate_url_expression("c", url_columns)
+    mime_expr = "c.mime_type" if "mime_type" in columns else "null"
+    width_expr = "c.width" if "width" in columns else "null"
+    height_expr = "c.height" if "height" in columns else "null"
+    last_seen_expr = "c.last_seen_at" if "last_seen_at" in columns else "null"
+    updated_expr = "c.updated_at" if "updated_at" in columns else "null"
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             select
                 c.product_id,
                 c.ean,
@@ -190,19 +289,20 @@ def load_candidates(conn, product_context: dict[str, Any]) -> list[CandidateReco
                 s.domain,
                 s.name,
                 c.product_url,
-                c.image_url,
+                {url_expr} as image_url,
                 c.source_type,
                 c.source_rank,
                 c.is_primary,
-                c.mime_type,
-                c.width,
-                c.height,
-                c.last_seen_at
+                {mime_expr} as mime_type,
+                {width_expr} as width,
+                {height_expr} as height,
+                {last_seen_expr} as last_seen_at,
+                {updated_expr} as updated_at
             from public.product_cover_candidates c
             left join public.shops s
               on s.id = c.shop_id
             where c.product_id = %s
-            order by c.source_rank desc, c.last_seen_at desc nulls last, c.updated_at desc nulls last
+            order by c.source_rank desc, {last_seen_expr} desc nulls last, {updated_expr} desc nulls last
             """,
             (product_context["product_id"],),
         )
@@ -260,76 +360,42 @@ def discover_candidates_on_the_fly(conn, product_context: dict[str, Any], sessio
     if not discovered:
         return []
 
+    columns, url_columns, _ = get_candidate_table_profile(conn)
     with conn.cursor() as cur:
         for candidate in discovered:
-            cur.execute(
-                """
-                insert into public.product_cover_candidates (
-                    product_id,
-                    shop_id,
-                    ean,
-                    product_url,
-                    image_url,
-                    source_type,
-                    source_rank,
-                    is_primary,
-                    mime_type,
-                    width,
-                    height,
-                    candidate_status,
-                    discovered_at,
-                    first_seen_at,
-                    last_seen_at,
-                    created_at,
-                    updated_at
-                )
-                values (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    'pending', now(), now(), now(), now(), now()
-                )
-                on conflict (product_id, image_url) where product_id is not null and image_url is not null
-                do update set
-                    source_type = excluded.source_type,
-                    source_rank = greatest(excluded.source_rank, public.product_cover_candidates.source_rank),
-                    is_primary = public.product_cover_candidates.is_primary or excluded.is_primary,
-                    width = coalesce(excluded.width, public.product_cover_candidates.width),
-                    height = coalesce(excluded.height, public.product_cover_candidates.height),
-                    last_seen_at = now(),
-                    updated_at = now()
-                """,
-                (
-                    candidate.product_id,
-                    candidate.shop_id,
-                    candidate.ean,
-                    candidate.product_url,
-                    candidate.image_url,
-                    candidate.source_type,
-                    candidate.source_rank,
-                    candidate.is_primary,
-                    candidate.mime_type,
-                    candidate.width,
-                    candidate.height,
-                ),
-            )
+            existing = find_existing_candidate(cur, candidate.product_id, candidate.image_url, url_columns, columns)
+            if existing is None:
+                insert_candidate_row(cur, build_candidate_insert_payload(candidate, columns))
+            else:
+                update_candidate_row(cur, existing["id"], candidate, existing, columns)
     return discovered
 
 
 def mark_candidate_result(conn, product_id: str, image_url: str, *, status: str, mime_type: str | None, width: int | None, height: int | None, error: str | None = None) -> None:
+    columns, url_columns, _ = get_candidate_table_profile(conn)
+    payload: dict[str, Any] = {}
+    if "candidate_status" in columns:
+        payload["candidate_status"] = status
+    if "mime_type" in columns and mime_type:
+        payload["mime_type"] = mime_type
+    if "width" in columns and width is not None:
+        payload["width"] = width
+    if "height" in columns and height is not None:
+        payload["height"] = height
+    if "last_checked_at" in columns:
+        payload["last_checked_at"] = utc_now()
+    if "last_error_message" in columns:
+        payload["last_error_message"] = error
+    if "updated_at" in columns:
+        payload["updated_at"] = utc_now()
+    if not payload:
+        return
+    predicates = " or ".join(f"{column} = %s" for column in url_columns)
     with conn.cursor() as cur:
+        assignments = ", ".join(f"{column} = %s" for column in payload)
         cur.execute(
-            """
-            update public.product_cover_candidates
-               set candidate_status = %s,
-                   mime_type = coalesce(%s, mime_type),
-                   width = coalesce(%s, width),
-                   height = coalesce(%s, height),
-                   last_checked_at = now(),
-                   last_error_message = %s,
-                   updated_at = now()
-             where product_id = %s
-               and image_url = %s
-            """,
-            (status, mime_type, width, height, error, product_id, image_url),
+            f"update public.product_cover_candidates set {assignments} where product_id = %s and ({predicates})",
+            [*payload.values(), product_id, *([image_url] * len(url_columns))],
         )
 
 

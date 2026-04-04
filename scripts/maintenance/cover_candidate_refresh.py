@@ -139,107 +139,184 @@ def load_offer_sources(conn, limit: int, include_covered: bool, max_offers_per_p
     return grouped
 
 
+def get_candidate_table_profile(conn) -> tuple[set[str], list[str], str]:
+    columns = get_table_columns(conn, "product_cover_candidates")
+    url_columns = [column for column in ("image_url", "source_url", "candidate_url") if column in columns]
+    if not url_columns:
+        raise CoverPipelineError("Tabel public.product_cover_candidates mist image_url/source_url/candidate_url.")
+    preferred_url_column = "image_url" if "image_url" in columns else url_columns[0]
+    return columns, url_columns, preferred_url_column
+
+
+def build_candidate_insert_payload(candidate: CandidateRecord, columns: set[str]) -> dict[str, Any]:
+    now = utc_now()
+    payload: dict[str, Any] = {}
+    values = {
+        "product_id": candidate.product_id,
+        "shop_id": candidate.shop_id,
+        "ean": candidate.ean,
+        "product_url": candidate.product_url,
+        "image_url": candidate.image_url,
+        "source_url": candidate.image_url,
+        "candidate_url": candidate.image_url,
+        "source_type": candidate.source_type,
+        "source_rank": candidate.source_rank,
+        "is_primary": candidate.is_primary,
+        "mime_type": candidate.mime_type,
+        "width": candidate.width,
+        "height": candidate.height,
+        "candidate_status": "pending",
+        "discovered_at": now,
+        "first_seen_at": now,
+        "last_seen_at": now,
+        "created_at": now,
+        "updated_at": now,
+    }
+    for column, value in values.items():
+        if column in columns:
+            payload[column] = value
+    return payload
+
+
+def find_existing_candidate(cur, product_id: str, image_url: str, url_columns: list[str], columns: set[str]) -> dict[str, Any] | None:
+    select_columns = ["id"]
+    for column in ("source_rank", "is_primary", "mime_type", "width", "height", "candidate_status"):
+        if column in columns:
+            select_columns.append(column)
+    predicates = " or ".join(f"{column} = %s" for column in url_columns)
+    cur.execute(
+        f"select {', '.join(select_columns)} from public.product_cover_candidates where product_id = %s and ({predicates}) order by updated_at desc nulls last, created_at desc nulls last, id limit 1",
+        [product_id, *([image_url] * len(url_columns))],
+    )
+    row = cur.fetchone()
+    if row is None:
+        return None
+    return dict(zip(select_columns, row))
+
+
+def insert_candidate_row(cur, payload: dict[str, Any]) -> None:
+    columns = list(payload.keys())
+    placeholders = ", ".join(["%s"] * len(columns))
+    cur.execute(
+        f"insert into public.product_cover_candidates ({', '.join(columns)}) values ({placeholders})",
+        [payload[column] for column in columns],
+    )
+
+
+def update_candidate_row(cur, row_id: Any, candidate: CandidateRecord, existing: dict[str, Any], columns: set[str]) -> None:
+    now = utc_now()
+    payload: dict[str, Any] = {}
+    if "shop_id" in columns and candidate.shop_id:
+        payload["shop_id"] = candidate.shop_id
+    if "ean" in columns and candidate.ean:
+        payload["ean"] = candidate.ean
+    if "product_url" in columns and candidate.product_url:
+        payload["product_url"] = candidate.product_url
+    for column in ("image_url", "source_url", "candidate_url"):
+        if column in columns and candidate.image_url:
+            payload[column] = candidate.image_url
+    if "source_type" in columns and candidate.source_type:
+        payload["source_type"] = candidate.source_type
+    if "source_rank" in columns:
+        payload["source_rank"] = max(int(existing.get("source_rank") or 0), int(candidate.source_rank or 0))
+    if "is_primary" in columns:
+        payload["is_primary"] = bool(existing.get("is_primary")) or bool(candidate.is_primary)
+    if "mime_type" in columns and candidate.mime_type and not existing.get("mime_type"):
+        payload["mime_type"] = candidate.mime_type
+    if "width" in columns:
+        payload["width"] = existing.get("width") or candidate.width
+    if "height" in columns:
+        payload["height"] = existing.get("height") or candidate.height
+    if "candidate_status" in columns:
+        current_status = normalize_text(existing.get("candidate_status"))
+        payload["candidate_status"] = current_status if current_status in {"published", "accepted"} else "pending"
+    if "last_seen_at" in columns:
+        payload["last_seen_at"] = now
+    if "updated_at" in columns:
+        payload["updated_at"] = now
+    if not payload:
+        return
+    assignments = ", ".join(f"{column} = %s" for column in payload)
+    cur.execute(
+        f"update public.product_cover_candidates set {assignments} where id = %s",
+        [*payload.values(), row_id],
+    )
+
+
+def get_queue_table_columns(conn) -> set[str]:
+    return get_table_columns(conn, "product_cover_queue")
+
+
 def upsert_candidate_rows(conn, candidates: list[CandidateRecord]) -> int:
     if not candidates:
         return 0
 
+    columns, url_columns, _ = get_candidate_table_profile(conn)
     with conn.cursor() as cur:
         for candidate in candidates:
-            cur.execute(
-                """
-                insert into public.product_cover_candidates (
-                    product_id,
-                    shop_id,
-                    ean,
-                    product_url,
-                    image_url,
-                    source_type,
-                    source_rank,
-                    is_primary,
-                    mime_type,
-                    width,
-                    height,
-                    candidate_status,
-                    discovered_at,
-                    first_seen_at,
-                    last_seen_at,
-                    created_at,
-                    updated_at
-                )
-                values (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    'pending', now(), now(), now(), now(), now()
-                )
-                on conflict (product_id, image_url) where product_id is not null and image_url is not null
-                do update set
-                    shop_id = coalesce(excluded.shop_id, public.product_cover_candidates.shop_id),
-                    ean = coalesce(excluded.ean, public.product_cover_candidates.ean),
-                    product_url = excluded.product_url,
-                    source_type = excluded.source_type,
-                    source_rank = greatest(excluded.source_rank, public.product_cover_candidates.source_rank),
-                    is_primary = public.product_cover_candidates.is_primary or excluded.is_primary,
-                    mime_type = coalesce(excluded.mime_type, public.product_cover_candidates.mime_type),
-                    width = coalesce(excluded.width, public.product_cover_candidates.width),
-                    height = coalesce(excluded.height, public.product_cover_candidates.height),
-                    last_seen_at = now(),
-                    updated_at = now()
-                """,
-                (
-                    candidate.product_id,
-                    candidate.shop_id,
-                    candidate.ean,
-                    candidate.product_url,
-                    candidate.image_url,
-                    candidate.source_type,
-                    candidate.source_rank,
-                    candidate.is_primary,
-                    candidate.mime_type,
-                    candidate.width,
-                    candidate.height,
-                ),
-            )
+            existing = find_existing_candidate(cur, candidate.product_id, candidate.image_url, url_columns, columns)
+            if existing is None:
+                insert_candidate_row(cur, build_candidate_insert_payload(candidate, columns))
+            else:
+                update_candidate_row(cur, existing["id"], candidate, existing, columns)
     return len(candidates)
 
 
 def upsert_queue_rows(conn, offer_sources: dict[str, list[OfferSource]], candidate_counts: dict[str, int]) -> int:
     if not offer_sources:
         return 0
+    columns = get_queue_table_columns(conn)
     touched = 0
     with conn.cursor() as cur:
         for product_id, offers in offer_sources.items():
             base_priority = max((offer.cover_priority for offer in offers), default=0)
             priority = base_priority + (len(offers) * 5) + (10 if candidate_counts.get(product_id, 0) > 0 else 0)
             cur.execute(
-                """
-                insert into public.product_cover_queue (
-                    product_id,
-                    priority,
-                    candidate_count,
-                    source_reason,
-                    status,
-                    next_attempt_at,
-                    created_at,
-                    updated_at
-                )
-                values (%s, %s, %s, %s, 'pending', now(), now(), now())
-                on conflict (product_id) where product_id is not null
-                do update set
-                    priority = greatest(public.product_cover_queue.priority, excluded.priority),
-                    candidate_count = greatest(public.product_cover_queue.candidate_count, excluded.candidate_count),
-                    source_reason = excluded.source_reason,
-                    status = case
-                        when public.product_cover_queue.status = 'processing' then public.product_cover_queue.status
-                        when public.product_cover_queue.status = 'published' and excluded.candidate_count = 0 then public.product_cover_queue.status
-                        else 'pending'
-                    end,
-                    next_attempt_at = case
-                        when public.product_cover_queue.status = 'processing' then public.product_cover_queue.next_attempt_at
-                        else now()
-                    end,
-                    updated_at = now()
-                """,
-                (product_id, priority, candidate_counts.get(product_id, 0), "candidate_refresh"),
+                "select id, status, priority, candidate_count from public.product_cover_queue where product_id = %s order by updated_at desc nulls last, created_at desc nulls last, id limit 1",
+                (product_id,),
             )
+            existing = cur.fetchone()
+            now = utc_now()
+            if existing is None:
+                payload: dict[str, Any] = {}
+                values = {
+                    "product_id": product_id,
+                    "priority": priority,
+                    "candidate_count": candidate_counts.get(product_id, 0),
+                    "source_reason": "candidate_refresh",
+                    "status": "pending",
+                    "next_attempt_at": now,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                for column, value in values.items():
+                    if column in columns:
+                        payload[column] = value
+                insert_columns = list(payload.keys())
+                cur.execute(
+                    f"insert into public.product_cover_queue ({', '.join(insert_columns)}) values ({', '.join(['%s'] * len(insert_columns))})",
+                    [payload[column] for column in insert_columns],
+                )
+            else:
+                row_id, current_status, current_priority, current_candidate_count = existing
+                payload = {}
+                if "priority" in columns:
+                    payload["priority"] = max(int(current_priority or 0), int(priority or 0))
+                if "candidate_count" in columns:
+                    payload["candidate_count"] = max(int(current_candidate_count or 0), int(candidate_counts.get(product_id, 0) or 0))
+                if "source_reason" in columns:
+                    payload["source_reason"] = "candidate_refresh"
+                if "status" in columns:
+                    payload["status"] = current_status if current_status == "processing" else (current_status if current_status == "published" and candidate_counts.get(product_id, 0) == 0 else "pending")
+                if "next_attempt_at" in columns and current_status != "processing":
+                    payload["next_attempt_at"] = now
+                if "updated_at" in columns:
+                    payload["updated_at"] = now
+                assignments = ", ".join(f"{column} = %s" for column in payload)
+                cur.execute(
+                    f"update public.product_cover_queue set {assignments} where id = %s",
+                    [*payload.values(), row_id],
+                )
             touched += 1
     return touched
 
@@ -377,7 +454,8 @@ def main() -> None:
     conn = connect_db()
     conn.autocommit = False
     try:
-        require_table_columns(conn, "product_cover_candidates", ["product_id", "image_url", "source_type", "source_rank"])
+        require_table_columns(conn, "product_cover_candidates", ["product_id", "source_type", "source_rank"])
+        get_candidate_table_profile(conn)
         require_table_columns(conn, "product_cover_queue", ["product_id", "status", "priority"])
 
         if args.csv:
