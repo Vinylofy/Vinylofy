@@ -3,6 +3,7 @@ import { ProductResultCard } from "@/components/search/product-result-card";
 import { SearchControls } from "@/components/search/search-controls";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
+import { CoverQueueBeacon } from "@/components/cover-queue-beacon";
 import { searchProducts, type SearchResultItem } from "@/lib/vinylofy-data";
 
 type SearchPageProps = {
@@ -201,6 +202,14 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
           )}
         </section>
       </main>
+
+      {filteredResults.length > 0 ? (
+        <CoverQueueBeacon
+          productIds={filteredResults.map((item) => item.id)}
+          source="search"
+          priorityBump={400}
+        />
+      ) : null}
 
       <SiteFooter />
     </div>

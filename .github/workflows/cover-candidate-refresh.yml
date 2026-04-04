@@ -1,0 +1,71 @@
+name: Cover Candidate Refresh
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Aantal producten voor candidate refresh"
+        required: true
+        default: "75"
+      max_offers_per_product:
+        description: "Maximaal aantal shop-URL's per product"
+        required: true
+        default: "3"
+      include_covered:
+        description: "Ook producten met bestaande cover meenemen"
+        required: true
+        default: false
+        type: boolean
+  schedule:
+    - cron: "15 */6 * * *"
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install beautifulsoup4 requests "psycopg[binary]" python-dotenv
+
+      - name: Prepare folders
+        shell: bash
+        run: |
+          mkdir -p output/cover_pipeline
+
+      - name: Run candidate refresh
+        shell: bash
+        run: |
+          LIMIT_INPUT="${{ github.event.inputs.limit }}"
+          if [ -z "$LIMIT_INPUT" ]; then LIMIT_INPUT="75"; fi
+          OFFERS_INPUT="${{ github.event.inputs.max_offers_per_product }}"
+          if [ -z "$OFFERS_INPUT" ]; then OFFERS_INPUT="3"; fi
+          INCLUDE_COVERED=""
+          if [ "${{ github.event.inputs.include_covered }}" = "true" ]; then
+            INCLUDE_COVERED="--include-covered"
+          fi
+          python -u scripts/maintenance/cover_candidate_refresh.py \
+            --limit "$LIMIT_INPUT" \
+            --max-offers-per-product "$OFFERS_INPUT" \
+            $INCLUDE_COVERED \
+            --output-json output/cover_pipeline/candidate_refresh_summary.json
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: cover-candidate-refresh-${{ github.run_id }}
+          path: output/cover_pipeline/**/*.json
+          if-no-files-found: warn

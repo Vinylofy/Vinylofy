@@ -44,6 +44,9 @@ class ProductRow:
     raw_name: str
     description_snippet: str
     scraped_at: str
+    image_url: str
+    image_source_page_url: str
+    image_source_type: str
 
 
 class DGMOutletLPScraper:
@@ -162,6 +165,10 @@ class DGMOutletLPScraper:
         price_original = self._extract_original_price(card)
         artist, title, fmt = self._parse_name(raw_name, description)
 
+        image_url = self._extract_listing_image_url(card, page_url)
+        image_source_page_url = page_url if image_url else ""
+        image_source_type = "listing_img_src" if image_url else ""
+
         return ProductRow(
             source_shop=SHOP_NAME,
             page=page,
@@ -175,7 +182,21 @@ class DGMOutletLPScraper:
             raw_name=raw_name,
             description_snippet=description,
             scraped_at=scraped_at,
+            image_url=image_url,
+            image_source_page_url=image_source_page_url,
+            image_source_type=image_source_type,
         )
+
+    def _extract_listing_image_url(self, card: Tag, page_url: str) -> str:
+        image_node = card.select_one("a.product-image-link img")
+        if image_node is None:
+            return ""
+
+        raw_src = (image_node.get("src") or "").strip()
+        if not raw_src:
+            return ""
+
+        return urljoin(page_url, raw_src)
 
     def _extract_current_price(self, card: Tag) -> str:
         price_node = card.select_one("span.product-price")
@@ -352,6 +373,9 @@ class DGMOutletLPScraper:
             raw_name="",
             description_snippet="",
             scraped_at="",
+            image_url="",
+            image_source_page_url="",
+            image_source_type="",
         )
 
 

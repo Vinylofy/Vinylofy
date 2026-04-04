@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { TopVinylList } from "@/components/home/top-vinyl-list";
+import { CoverQueueBeacon } from "@/components/cover-queue-beacon";
 import { getHomePageData } from "@/lib/vinylofy-data";
 
 export const metadata: Metadata = {
@@ -31,6 +32,7 @@ export default async function Top25Page() {
       </section>
 
       <TopVinylList items={top25} />
+      <CoverQueueBeacon productIds={top25.map((item) => item.id)} source="homepage" priorityBump={650} />
       <SiteFooter />
     </main>
   );

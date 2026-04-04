@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { NewReleasesGrid } from "@/components/home/new-releases-grid";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
+import { CoverQueueBeacon } from "@/components/cover-queue-beacon";
 import { getHomePageData } from "@/lib/vinylofy-data";
 
 export const metadata: Metadata = {
@@ -31,6 +32,7 @@ export default async function NieuweReleasesPage() {
       </section>
 
       <NewReleasesGrid items={newReleases} />
+      <CoverQueueBeacon productIds={newReleases.map((item) => item.id)} source="featured" priorityBump={550} />
       <SiteFooter />
     </main>
   );

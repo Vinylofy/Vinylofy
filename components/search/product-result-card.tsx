@@ -41,14 +41,19 @@ export function ProductResultCard({ item }: ProductResultCardProps) {
           <div className="mt-3 grid gap-x-4 gap-y-2 md:grid-cols-[minmax(0,1fr)_140px]">
             {item.shops.map((shop) => (
               <div key={`${shop.name}-${shop.productUrl}`} className="contents">
-                <a
-                  href={shop.productUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="min-w-0 truncate text-sm text-neutral-700 transition hover:text-orange-600 hover:underline"
-                >
-                  {shop.name}
-                </a>
+                <div className="min-w-0">
+                  <a
+                    href={shop.productUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="block truncate text-sm text-neutral-700 transition hover:text-orange-600 hover:underline"
+                  >
+                    {shop.name}
+                  </a>
+                  {shop.availability === "unknown" ? (
+                    <p className="mt-0.5 text-[11px] text-neutral-500">beschikbaarheid onbekend</p>
+                  ) : null}
+                </div>
 
                 <a
                   href={shop.productUrl}

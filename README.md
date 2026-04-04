@@ -1,36 +1,108 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Vinylofy cover-art MVP bundle
 
-## Getting Started
+Deze bundle bevat een backend-first MVP voor de cover-art flow.
 
-First, run the development server:
+## Bestandsoverzicht
+
+- `supabase/migrations/20260401143000_add_cover_pipeline_mvp.sql`
+- `scripts/maintenance/cover_worker.py`
+- `scripts/maintenance/cover_seed_preload.py`
+- `scripts/maintenance/cover_export_lists.py`
+- `lib/supabase/admin.ts`
+- `app/api/covers/queue/route.ts`
+- `components/cover-queue-beacon.tsx`
+- voorbeeld-integraties:
+  - `app/search/page.tsx`
+  - `app/product/[id]/page.tsx`
+  - `app/top25/page.tsx`
+  - `app/nieuwe releases/page.tsx`
+
+## Omgevingsvariabelen
+
+Voeg toe:
+
+- `SUPABASE_SERVICE_ROLE_KEY=...`
+- `MUSICBRAINZ_USER_AGENT=Vinylofy/0.1 (covers; your-email-or-contact-url)`
+
+Bestaand nodig:
+
+- `DATABASE_URL=...`
+- `NEXT_PUBLIC_SUPABASE_URL=...`
+
+## Python packages
+
+Installeer minimaal:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+pip install "psycopg[binary]" python-dotenv requests supabase
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Aanbevolen uitvoeringsvolgorde
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+1. SQL migratie draaien.
+2. Bucket checken in Supabase Storage: `product-covers`.
+3. `SUPABASE_SERVICE_ROLE_KEY` en `MUSICBRAINZ_USER_AGENT` toevoegen.
+4. Seed batch laden:
+   ```bash
+   python -u scripts/maintenance/cover_seed_preload.py \
+     --batch april-home-seed \
+     --input data/cover_seed_home.csv \
+     --apply
+   ```
+5. Worker draaien:
+   ```bash
+   python -u scripts/maintenance/cover_worker.py --limit 50
+   ```
+6. Vroege queue-triggers activeren via:
+   - search
+   - top25
+   - nieuwe releases
+   - detail fallback
+7. Exports draaien:
+   ```bash
+   python -u scripts/maintenance/cover_export_lists.py --kind missing --out output/cover_missing.csv
+   python -u scripts/maintenance/cover_export_lists.py --kind failed_review --out output/cover_failed_review.csv
+   python -u scripts/maintenance/cover_export_lists.py --kind priority --out output/cover_priority.csv
+   python -u scripts/maintenance/cover_export_lists.py --kind status --out output/cover_status.csv
+   ```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Testcases
 
-## Learn More
+### 1. Seed test
+- laad 5 bekende EANs in met `--apply`
+- controleer dat `product_cover_queue.state = 'pending'`
 
-To learn more about Next.js, take a look at the following resources:
+### 2. Worker test
+- draai `cover_worker.py --limit 5`
+- controleer:
+  - `products.cover_status = 'ready'`
+  - `products.cover_url` gevuld
+  - `products.cover_storage_path` gevuld
+  - bucket bevat file onder `ean/...`
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### 3. Frontend trigger test
+- open `/search?q=...`
+- controleer dat POST naar `/api/covers/queue` gebeurt
+- controleer dat dezelfde producten in queue komen
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### 4. Placeholder test
+- product zonder `cover_url` toont placeholder
+- na worker-run toont dezelfde kaart lokale `cover_url`
 
-## Deploy on Vercel
+## Dashboard-fase later
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Aanbevolen pagina: `Cover Management`
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Blokken:
+- status cards: missing / queued / ready / failed / review
+- upload area voor CSV
+- textarea voor handmatige EAN-paste
+- tabel voor failed/review
+- export buttons
+- button `Start preload batch`
+- lijst van priority candidates
+
+## Belangrijke noot
+
+De worker implementeert MusicBrainz + Cover Art Archive volledig.
+De Muziekweb fallback is bewust als adapter-hook voorbereid, maar niet hard aangezet voor unattended writes; voeg die pas toe nadat je een betrouwbare barcode/title -> cover retrieval-route hebt gevalideerd.

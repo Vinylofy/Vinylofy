@@ -1,0 +1,79 @@
+name: Cover Backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      refresh_limit:
+        description: "Aantal producten voor candidate refresh"
+        required: true
+        default: "200"
+      publish_limit:
+        description: "Aantal queue-items voor publish"
+        required: true
+        default: "100"
+      include_covered:
+        description: "Ook bestaande covers opnieuw beoordelen"
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      VINYLOFY_COVER_STORAGE_BUCKET: ${{ vars.VINYLOFY_COVER_STORAGE_BUCKET }}
+      VINYLOFY_COVER_STORAGE_PREFIX: ${{ vars.VINYLOFY_COVER_STORAGE_PREFIX }}
+      VINYLOFY_COVER_SHOP_PRIORITY_JSON: ${{ vars.VINYLOFY_COVER_SHOP_PRIORITY_JSON }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install beautifulsoup4 requests pillow "psycopg[binary]" python-dotenv supabase
+
+      - name: Prepare folders
+        shell: bash
+        run: |
+          mkdir -p output/cover_pipeline
+
+      - name: Refresh candidates
+        shell: bash
+        run: |
+          INCLUDE_COVERED=""
+          if [ "${{ github.event.inputs.include_covered }}" = "true" ]; then
+            INCLUDE_COVERED="--include-covered"
+          fi
+          python -u scripts/maintenance/cover_candidate_refresh.py \
+            --limit "${{ github.event.inputs.refresh_limit }}" \
+            --max-offers-per-product 3 \
+            $INCLUDE_COVERED \
+            --output-json output/cover_pipeline/backfill_candidate_refresh_summary.json
+
+      - name: Publish backfill batch
+        shell: bash
+        run: |
+          python -u scripts/maintenance/cover_worker.py \
+            --mode publish \
+            --limit "${{ github.event.inputs.publish_limit }}" \
+            --output-json output/cover_pipeline/backfill_publish_summary.json
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: cover-backfill-${{ github.run_id }}
+          path: output/cover_pipeline/**/*.json
+          if-no-files-found: warn

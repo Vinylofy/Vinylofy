@@ -36,6 +36,12 @@ export function ProductOffersCard({ offers }: ProductOffersCardProps) {
                   <p className="truncate text-sm font-semibold text-[#3f2616] md:text-[15px]">{offer.name}</p>
                   <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-[#7d6b5d] md:text-sm">
                     <span>{formatOfferDomain(offer.domain)}</span>
+                    {offer.availability === "unknown" ? (
+                      <>
+                        <span aria-hidden="true">•</span>
+                        <span>beschikbaarheid onbekend</span>
+                      </>
+                    ) : null}
                     {freshness ? (
                       <>
                         <span aria-hidden="true">•</span>

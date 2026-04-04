@@ -59,6 +59,10 @@ def map_dgmoutlet_row(row: dict, line_number: int) -> tuple[CanonicalRecord | No
     if price is None:
         return None, "invalid_price"
 
+    image_url = normalize_text(row.get("image_url")) or None
+    image_source_page_url = normalize_text(row.get("image_source_page_url")) or None
+    image_source_type = normalize_text(row.get("image_source_type")) or None
+
     return CanonicalRecord(
         source_row_number=line_number,
         shop_name=CONFIG.shop_name,
@@ -78,6 +82,10 @@ def map_dgmoutlet_row(row: dict, line_number: int) -> tuple[CanonicalRecord | No
         detail_status="ok",
         is_secondhand=False,
         raw=row,
+        cover_candidate_url=image_url,
+        cover_candidate_source_type=image_source_type,
+        cover_candidate_page_url=image_source_page_url,
+        cover_candidate_queue_priority=100,
     ), None
 
 
@@ -105,6 +113,9 @@ SHOP_DEFINITION = ShopImporterDefinition(
     optional_columns=(
         "artist",
         "format",
+        "image_url",
+        "image_source_page_url",
+        "image_source_type",
     ),
     tags=("vinyl", "listing-only"),
 )

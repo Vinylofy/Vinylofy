@@ -6,6 +6,7 @@ import csv
 import json
 import os
 import re
+import sys
 import threading
 import time
 import uuid
@@ -74,6 +75,19 @@ DETAIL_ISSUE_COLUMNS = [
 
 _thread_local = threading.local()
 
+def set_csv_field_size_limit() -> None:
+    limit = sys.maxsize
+    while True:
+        try:
+            csv.field_size_limit(limit)
+            return
+        except OverflowError:
+            limit //= 10
+
+
+set_csv_field_size_limit()
+
+
 
 def make_session() -> requests.Session:
     session = requests.Session()
@@ -133,11 +147,14 @@ def nl_price(value: str) -> str:
     return value.replace(".", ",")
 
 
-def unique_pipe_join(existing: str, new_value: str) -> str:
+def unique_pipe_join(existing: str, new_value: str, max_items: int = 20) -> str:
     items = [x for x in (existing or "").split(" | ") if x]
     if new_value and new_value not in items:
         items.append(new_value)
+    if len(items) > max_items:
+        items = items[-max_items:]
     return " | ".join(items)
+
 
 
 def canonical_product_url(url: str) -> str:
@@ -482,34 +499,59 @@ def validate_product_page(soup: BeautifulSoup) -> Tuple[bool, str]:
     return True, "ok"
 
 
+def extract_labeled_ean(text: str) -> str:
+    normalized = normalize_text(text)
+    if not normalized:
+        return ""
+
+    patterns = [
+        r"\bEAN(?:[\s-]*code)?\b\s*[:#-]?\s*([0-9]{8,14})",
+        r"\bbarcode\b\s*[:#-]?\s*([0-9]{8,14})",
+        r"\bgtin(?:8|12|13|14)?\b\s*[:=]\s*['\"]?([0-9]{8,14})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return ""
+
+
 def extract_ean_from_soup(soup: BeautifulSoup, product_text: str) -> str:
-    candidate_texts: List[str] = []
-    if product_text:
-        candidate_texts.append(product_text)
-
-    description = soup.select_one(".product__description")
-    if description is not None:
-        candidate_texts.append(str(description))
-        candidate_texts.append(description.get_text(" ", strip=True))
-
     info_container = soup.select_one(".product__info-container")
+    description = soup.select_one(".product__description")
+
+    primary_texts: List[str] = []
     if info_container is not None:
-        candidate_texts.append(str(info_container))
-        candidate_texts.append(info_container.get_text(" ", strip=True))
+        primary_texts.append(info_container.get_text(" ", strip=True))
+        primary_texts.append(str(info_container))
+    if description is not None:
+        primary_texts.append(description.get_text(" ", strip=True))
+        primary_texts.append(str(description))
+    if product_text:
+        primary_texts.append(product_text)
+
+    for text in primary_texts:
+        ean = extract_labeled_ean(text)
+        if ean:
+            return ean
+
+    candidate_texts: List[str] = list(primary_texts)
 
     for script in soup.select("script"):
         script_text = script.string or script.get_text(" ", strip=True)
         if not script_text:
             continue
-        if any(token in script_text.lower() for token in ["gtin", "barcode", "ean"]):
+        lowered = script_text.lower()
+        if any(token in lowered for token in ["gtin", "barcode", "ean"]):
             candidate_texts.append(script_text)
 
     patterns = [
-        r"\bEAN\b\s*[:#-]?\s*([0-9]{8,14})",
+        r"\bEAN(?:[\s-]*code)?\b\s*[:#-]?\s*([0-9]{8,14})",
         r"\bbarcode\b\s*[:#-]?\s*([0-9]{8,14})",
         r"\bgtin(?:8|12|13|14)?\b\s*[:=]\s*['\"]?([0-9]{8,14})",
         r"['\"]gtin(?:8|12|13|14)?['\"]\s*:\s*['\"]([0-9]{8,14})",
         r"['\"]barcode['\"]\s*:\s*['\"]([0-9]{8,14})",
+        r"['\"]ean['\"]\s*:\s*['\"]([0-9]{8,14})",
     ]
 
     for text in candidate_texts:
@@ -521,8 +563,6 @@ def extract_ean_from_soup(soup: BeautifulSoup, product_text: str) -> str:
             if match:
                 return match.group(1)
     return ""
-
-
 def detect_second_hand(soup: BeautifulSoup, product_text: str) -> str:
     lowered = product_text.lower()
     second_hand_patterns = [
@@ -673,6 +713,7 @@ def enrich_all(
     state_path: Path,
     workers: int = DEFAULT_WORKERS,
     batch_size: int | None = DEFAULT_BATCH_SIZE,
+    force_urls: List[str] | None = None,
 ) -> Dict[str, Dict[str, str]]:
     rows_by_url = load_csv_as_dict(input_path, STEP2_COLUMNS)
     if not rows_by_url:
@@ -681,20 +722,45 @@ def enrich_all(
 
     todo_urls = [url for url, row in rows_by_url.items() if needs_enrichment(row)]
     skipped = len(rows_by_url) - len(todo_urls)
-    selected_urls, start_cursor, next_cursor = select_rotating_urls(todo_urls, state_path, batch_size)
-    todo_rows = {url: rows_by_url[url] for url in selected_urls}
 
-    print(
-        f"[INFO] Verrijking gestart vanuit {input_path} ({len(rows_by_url)} records | "
-        f"openstaand: {len(todo_urls)} | batch: {len(todo_rows)} | overgeslagen: {skipped} | "
-        f"cursor: {start_cursor} -> {next_cursor})"
-    )
+    normalized_force_urls: List[str] = []
+    for url in (force_urls or []):
+        normalized = canonical_product_url(url)
+        if normalized not in normalized_force_urls:
+            normalized_force_urls.append(normalized)
+
+    if normalized_force_urls:
+        selected_urls = [url for url in normalized_force_urls if url in rows_by_url]
+        missing_force_urls = [url for url in normalized_force_urls if url not in rows_by_url]
+        start_cursor = 0
+        next_cursor = load_state(state_path).get("cursor", 0)
+        todo_rows = {url: rows_by_url[url] for url in selected_urls}
+
+        if missing_force_urls:
+            print(f"[WAARSCHUWING] force-url niet gevonden in bronbestand: {len(missing_force_urls)}")
+            for missing_url in missing_force_urls:
+                print(f"[WAARSCHUWING] ontbreekt: {missing_url}")
+
+        print(
+            f"[INFO] Verrijking gestart vanuit {input_path} ({len(rows_by_url)} records | "
+            f"openstaand: {len(todo_urls)} | force batch: {len(todo_rows)} | overgeslagen: {skipped})"
+        )
+    else:
+        selected_urls, start_cursor, next_cursor = select_rotating_urls(todo_urls, state_path, batch_size)
+        todo_rows = {url: rows_by_url[url] for url in selected_urls}
+
+        print(
+            f"[INFO] Verrijking gestart vanuit {input_path} ({len(rows_by_url)} records | "
+            f"openstaand: {len(todo_urls)} | batch: {len(todo_rows)} | overgeslagen: {skipped} | "
+            f"cursor: {start_cursor} -> {next_cursor})"
+        )
 
     if not todo_rows:
         if output_path != input_path or not output_path.exists():
             write_csv(output_path, rows_by_url, STEP2_COLUMNS)
         write_detail_issues(issues_output_path, rows_by_url)
-        save_state(state_path, 0, 0)
+        if not normalized_force_urls:
+            save_state(state_path, 0, 0)
         print("[KLAAR] Geen detailverrijking nodig; alle records hebben al een resolved detailstatus.")
         return rows_by_url
 
@@ -729,11 +795,13 @@ def enrich_all(
                 f"status: {status or '-'}{(' | ' + note) if note else ''}",
             )
 
-    save_state(state_path, next_cursor, len(todo_rows))
+    if not normalized_force_urls:
+        save_state(state_path, next_cursor, len(todo_rows))
+    cursor_text = f"Nieuwe cursor: {next_cursor}" if not normalized_force_urls else "Force recheck voltooid"
     print(
         f"[KLAAR] {output_path} opgeslagen met {len(rows_by_url)} records; "
         f"{total} detailpagina's verwerkt. Missersbestand: {issues_output_path.name}. "
-        f"Nieuwe cursor: {next_cursor}"
+        f"{cursor_text}"
     )
     return rows_by_url
 
@@ -782,6 +850,7 @@ def run_step2(
     workers: int = DEFAULT_WORKERS,
     limit_detail: int | None = DEFAULT_BATCH_SIZE,
     state_file: str | None = None,
+    force_urls: List[str] | None = None,
 ) -> None:
     s1 = step1_path(output_dir)
     s2 = step2_path(output_dir)
@@ -795,6 +864,7 @@ def run_step2(
         state_path=state,
         workers=workers,
         batch_size=limit_detail,
+        force_urls=force_urls,
     )
 
 
@@ -804,9 +874,16 @@ def run_both(
     delay_seconds: float = DEFAULT_DELAY_SECONDS,
     limit_detail: int | None = DEFAULT_BATCH_SIZE,
     state_file: str | None = None,
+    force_urls: List[str] | None = None,
 ) -> None:
     run_step1(output_dir=output_dir, workers=workers, delay_seconds=delay_seconds)
-    run_step2(output_dir=output_dir, workers=workers, limit_detail=limit_detail, state_file=state_file)
+    run_step2(
+        output_dir=output_dir,
+        workers=workers,
+        limit_detail=limit_detail,
+        state_file=state_file,
+        force_urls=force_urls,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -821,6 +898,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--delay-seconds", type=float, default=DEFAULT_DELAY_SECONDS)
     parser.add_argument("--output-dir", default="data/raw/bobsvinyl")
+    parser.add_argument(
+        "--force-url",
+        action="append",
+        default=[],
+        help="Specifieke product-URL om direct opnieuw te verrijken; mag meerdere keren worden opgegeven",
+    )
     parser.add_argument(
         "--state-file",
         default=None,
@@ -840,7 +923,13 @@ def main() -> int:
         run_step1(output_dir=output_dir, workers=workers, delay_seconds=delay_seconds)
         return 0
     if args.mode == "step2":
-        run_step2(output_dir=output_dir, workers=workers, limit_detail=limit_detail, state_file=args.state_file)
+        run_step2(
+            output_dir=output_dir,
+            workers=workers,
+            limit_detail=limit_detail,
+            state_file=args.state_file,
+            force_urls=args.force_url,
+        )
         return 0
 
     run_both(
@@ -849,6 +938,7 @@ def main() -> int:
         delay_seconds=delay_seconds,
         limit_detail=limit_detail,
         state_file=args.state_file,
+        force_urls=args.force_url,
     )
     return 0
 

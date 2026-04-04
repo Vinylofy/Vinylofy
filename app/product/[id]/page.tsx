@@ -5,6 +5,7 @@ import { ProductOffersCard } from "@/components/product/product-offers-card";
 import { ProductSummaryCard } from "@/components/product/product-summary-card";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
+import { CoverQueueBeacon } from "@/components/cover-queue-beacon";
 import { getProductDetail, getProductPriceHistory } from "@/lib/vinylofy-data";
 
 type ProductPageProps = {
@@ -68,6 +69,8 @@ export default async function ProductDetailPage({ params }: ProductPageProps) {
           </aside>
         </div>
       </main>
+
+      <CoverQueueBeacon productIds={[product.id]} source="detail" priorityBump={1000} />
 
       <SiteFooter />
     </div>

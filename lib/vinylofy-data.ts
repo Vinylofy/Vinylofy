@@ -35,6 +35,7 @@ type PriceRow = {
   price: number | string;
   product_url: string;
   last_seen_at: string;
+  availability: string | null;
   shops: ShopRelation;
 };
 
@@ -57,6 +58,7 @@ export type SearchShopOffer = {
   price: number;
   productUrl: string;
   lastSeenAt: string;
+  availability: "in_stock" | "unknown";
 };
 
 export type SearchResultItem = {
@@ -210,6 +212,22 @@ function normalizeShopRelation(shops: ShopRelation): { name: string; domain: str
   return shops;
 }
 
+function normalizeOfferAvailability(value: string | null | undefined): "in_stock" | "unknown" {
+  return value === "in_stock" ? "in_stock" : "unknown";
+}
+
+function compareOffers(a: SearchShopOffer, b: SearchShopOffer): number {
+  const aAvailabilityRank = a.availability === "in_stock" ? 0 : 1;
+  const bAvailabilityRank = b.availability === "in_stock" ? 0 : 1;
+
+  if (aAvailabilityRank !== bAvailabilityRank) {
+    return aAvailabilityRank - bAvailabilityRank;
+  }
+
+  if (a.price !== b.price) return a.price - b.price;
+  return b.lastSeenAt.localeCompare(a.lastSeenAt);
+}
+
 async function getProductsByIds(ids: string[]): Promise<ProductRow[]> {
   if (ids.length === 0) return [];
 
@@ -255,10 +273,10 @@ async function getOffersMap(productIds: string[]) {
 
   const { data, error } = await supabase
     .from("prices")
-    .select("product_id, price, product_url, last_seen_at, shops(name, domain)")
+    .select("product_id, price, product_url, last_seen_at, availability, shops(name, domain)")
     .in("product_id", productIds)
     .eq("is_active", true)
-    .eq("availability", "in_stock")
+    .in("availability", ["in_stock", "unknown"])
     .gte("last_seen_at", cutoff)
     .order("price", { ascending: true })
     .order("last_seen_at", { ascending: false });
@@ -277,6 +295,7 @@ async function getOffersMap(productIds: string[]) {
       price: toNumber(row.price) ?? 0,
       productUrl: row.product_url,
       lastSeenAt: row.last_seen_at,
+      availability: normalizeOfferAvailability(row.availability),
     };
 
     const existing = grouped.get(row.product_id) ?? [];
@@ -285,12 +304,7 @@ async function getOffersMap(productIds: string[]) {
   }
 
   for (const [productId, offers] of grouped.entries()) {
-    const deduped = offers.sort((a, b) => {
-      if (a.price !== b.price) return a.price - b.price;
-      return b.lastSeenAt.localeCompare(a.lastSeenAt);
-    });
-
-    grouped.set(productId, deduped);
+    grouped.set(productId, offers.sort(compareOffers));
   }
 
   return grouped;
@@ -464,10 +478,10 @@ export async function getProductDetail(id: unknown): Promise<ProductDetail | nul
   const offersMap = await getOffersMap([product.id]);
   const best = bestMap.get(product.id);
   const offers = offersMap.get(product.id) ?? [];
-  const lowestPrice = toNumber(best?.lowest_fresh_price) ?? (offers[0]?.price ?? null);
-  const freshShopCount = best?.fresh_instock_shop_count ?? offers.length;
-  const totalShopCount = best?.total_active_shop_count ?? offers.length;
-  const lastSeenAt = best?.best_price_last_seen_at ?? offers[0]?.lastSeenAt ?? null;
+  const lowestPrice = offers[0]?.price ?? toNumber(best?.lowest_fresh_price) ?? null;
+  const freshShopCount = offers.length > 0 ? offers.length : (best?.fresh_instock_shop_count ?? 0);
+  const totalShopCount = Math.max(best?.total_active_shop_count ?? 0, offers.length);
+  const lastSeenAt = offers[0]?.lastSeenAt ?? best?.best_price_last_seen_at ?? null;
 
   return {
     id: product.id,
@@ -534,10 +548,10 @@ export async function searchProducts(query: string): Promise<SearchResultItem[]>
     .map((product) => {
       const best = bestMap.get(product.id);
       const offers = offersMap.get(product.id) ?? [];
-      const lowestPrice = toNumber(best?.lowest_fresh_price) ?? (offers[0]?.price ?? null);
-      const freshShopCount = best?.fresh_instock_shop_count ?? offers.length;
-      const totalShopCount = best?.total_active_shop_count ?? offers.length;
-      const lastSeenAt = best?.best_price_last_seen_at ?? offers[0]?.lastSeenAt ?? null;
+      const lowestPrice = offers[0]?.price ?? toNumber(best?.lowest_fresh_price) ?? null;
+      const freshShopCount = offers.length > 0 ? offers.length : (best?.fresh_instock_shop_count ?? 0);
+      const totalShopCount = Math.max(best?.total_active_shop_count ?? 0, offers.length);
+      const lastSeenAt = offers[0]?.lastSeenAt ?? best?.best_price_last_seen_at ?? null;
 
       return {
         id: product.id,

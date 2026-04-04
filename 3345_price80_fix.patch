@@ -1,0 +1,124 @@
+diff --git a/scripts/scrapers/shop3345.py b/scripts/scrapers/shop3345.py
+index 1111111..2222222 100644
+--- a/scripts/scrapers/shop3345.py
++++ b/scripts/scrapers/shop3345.py
+@@
+ def extract_price_from_text(text: str) -> str:
+-    matches = re.findall(r"€\s*([\d\.,]+)", text, flags=re.IGNORECASE)
++    text = clean_text(text)
++    if not text:
++        return ""
++    lowered = text.lower()
++    # Never treat the site-wide shipping threshold as a product price.
++    if "free shipping" in lowered or "gratis verzending" in lowered:
++        return ""
++    matches = re.findall(r"€\s*([\d\.,]+)", text, flags=re.IGNORECASE)
+     if not matches:
+         return ""
+     return normalize_price(matches[-1])
+@@
+ def row_is_missing_details(row: dict[str, str] | None) -> bool:
+     if not row:
+         return True
+-    return any(not clean_text(row.get(field)) for field in DETAIL_FIELDS)
++    return (
++        any(not clean_text(row.get(field)) for field in DETAIL_FIELDS)
++        or not clean_text(row.get("price"))
++        or not clean_text(row.get("availability"))
++    )
+@@
+ def extract_detail_availability(soup: BeautifulSoup, page_text: str) -> str:
+     price_root = select_price_root(soup)
+     scope = price_root.find_parent(class_="product__price-quantity") if price_root else None
+@@
+     for node in soup.select("button[name='add'], button.product-form__submit, button[type='submit'], input[type='submit']"):
+         text = clean_text(node.get_text(" ", strip=True) or node.get("value"))
+         if text:
+             cta_texts.append(text.lower())
+-    if any("add to cart" in t or "toevoegen aan winkelwagen" in t or t == "toevoegen" for t in cta_texts):
+-        return "in_stock"
+-    if has_cart_form and not any(("sold out" in t) or ("out of stock" in t) or ("uitverkocht" in t) for t in cta_texts):
+-        return "in_stock"
+-    if any(token in scope_text for token in ("pre order", "pre-order", "preorder", "coming soon")):
+-        return "preorder"
+     if any(token in scope_text for token in ("sold out", "uitverkocht", "out of stock")):
+         return "out_of_stock"
++    if any(("sold out" in t) or ("out of stock" in t) or ("uitverkocht" in t) for t in cta_texts):
++        return "out_of_stock"
++    if any(token in scope_text for token in ("pre order", "pre-order", "preorder", "coming soon")):
++        return "preorder"
++    if any("add to cart" in t or "toevoegen aan winkelwagen" in t or t == "toevoegen" for t in cta_texts):
++        return "in_stock"
++    if has_cart_form:
++        return "in_stock"
+     return "in_stock"
+@@
+ def select_price_root(soup: BeautifulSoup) -> Tag | None:
+-    candidates = [node for node in soup.select("div[id^='price-template']") if isinstance(node, Tag)]
++    main_scope = soup.select_one(".product__price-quantity")
++    if isinstance(main_scope, Tag):
++        direct_candidates = [
++            node
++            for node in main_scope.select("div[id^='price-template'], .price, .price__container")
++            if isinstance(node, Tag)
++        ]
++        if direct_candidates:
++            candidates = direct_candidates
++        else:
++            candidates = [main_scope]
++    else:
++        candidates = [node for node in soup.select("div[id^='price-template']") if isinstance(node, Tag)]
+     if not candidates:
+         return None
+@@
+ def extract_price(soup: BeautifulSoup, page_text: str) -> str:
+     price_root = select_price_root(soup)
+     if isinstance(price_root, Tag):
+         for selector in (
+             ".price-item--sale",
+@@
+         root_text = clean_text(price_root.get_text(" ", strip=True))
+         for pattern in (
++            r"Default\s+Title\s*-\s*(?:Sold\s+out\s*-\s*)?€\s*([\d\.,]+)",
++            r"Default\s+Title\s*-\s*(?:Out\s+Of\s+Stock\s*-\s*)?€\s*([\d\.,]+)",
+             r"Default\s+Title\s*-\s*€\s*([\d\.,]+)",
+             r"Sale\s+price\s*€\s*([\d\.,]+)",
+             r"Regular\s+price\s*€\s*([\d\.,]+)",
+             r"Aanbiedingsprijs\s*€\s*([\d\.,]+)",
+             r"Normale\s+prijs\s*€\s*([\d\.,]+)",
+         ):
+             match = re.search(pattern, root_text, flags=re.IGNORECASE)
+             if match:
+                 return normalize_price(match.group(1))
+         parent = price_root.find_parent(class_="product__price-quantity")
+         if isinstance(parent, Tag):
+             parent_text = clean_text(parent.get_text(" ", strip=True))
+             for pattern in (
++                r"Default\s+Title\s*-\s*(?:Sold\s+out\s*-\s*)?€\s*([\d\.,]+)",
++                r"Default\s+Title\s*-\s*(?:Out\s+Of\s+Stock\s*-\s*)?€\s*([\d\.,]+)",
+                 r"Default\s+Title\s*-\s*€\s*([\d\.,]+)",
+                 r"Sale\s+price\s*€\s*([\d\.,]+)",
+                 r"Regular\s+price\s*€\s*([\d\.,]+)",
+                 r"Aanbiedingsprijs\s*€\s*([\d\.,]+)",
+                 r"Normale\s+prijs\s*€\s*([\d\.,]+)",
+             ):
+                 match = re.search(pattern, parent_text, flags=re.IGNORECASE)
+                 if match:
+                     return normalize_price(match.group(1))
+     return ""
+@@
+ def extract_listing_row_from_anchor(anchor: Tag, source_name: str = "") -> dict[str, str] | None:
+@@
+-    price = extract_listing_price(card)
++    # 3345 listing pages are not a trustworthy price source.
++    # Discovery is URL-first; detail pages own the final product price.
++    price = ""
+@@
+     def _apply_row(url: str, row: dict[str, str]) -> None:
+         current = rows_by_url.get(url) if update_existing else None
+         incoming = dict(row)
+-        # 3345 prices should be driven by listing pages. Detail pages are for enrichment.
+-        if current and clean_text(current.get("price")) and clean_text(incoming.get("price")):
+-            incoming["price"] = clean_text(current.get("price"))
++        # 3345 prices must be driven by the detail page. Never preserve an old listing price.
+         rows_by_url[url] = merge_row(current, incoming)

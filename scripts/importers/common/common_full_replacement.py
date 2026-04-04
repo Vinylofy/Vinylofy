@@ -146,10 +146,6 @@ class CanonicalRecord:
     detail_status: str
     is_secondhand: bool
     raw: dict
-    cover_candidate_url: str | None = None
-    cover_candidate_source_type: str | None = None
-    cover_candidate_page_url: str | None = None
-    cover_candidate_queue_priority: int | None = None
     gtin_normalized: str | None = None
 
 
@@ -175,7 +171,6 @@ class ImportStats:
     upserted_products: int = 0
     upserted_prices: int = 0
     inserted_history_rows: int = 0
-    cover_candidates_upserted: int = 0
 
 
 def canonical_product_key(record: CanonicalRecord) -> tuple[str, str]:
@@ -289,25 +284,6 @@ def ensure_shop(cur, config: ImportConfig) -> str:
     return cur.fetchone()[0]
 
 
-def get_existing_product_state(
-    cur,
-    gtin_normalized: str,
-) -> tuple[str, str | None, str | None, str | None, str | None] | None:
-    cur.execute(
-        """
-        select id, ean, format_label, cover_url, canonical_key
-        from public.products
-        where gtin_normalized = %s
-        limit 1
-        """,
-        (gtin_normalized,),
-    )
-    row = cur.fetchone()
-    if row is None:
-        return None
-    return str(row[0]), row[1], row[2], row[3], row[4]
-
-
 def upsert_product(cur, record: CanonicalRecord) -> tuple[str, bool]:
     artist_norm = normalize_text(record.artist).lower()
     title_norm = normalize_text(record.title).lower()
@@ -322,52 +298,6 @@ def upsert_product(cur, record: CanonicalRecord) -> tuple[str, bool]:
     ).lower()
     canonical_key = f"{slugify(record.artist)}::{slugify(record.title)}"
 
-    existing = get_existing_product_state(cur, gtin_normalized)
-    if existing is not None:
-        product_id, current_ean, current_format_label, current_cover_url, current_canonical_key = existing
-
-        desired_ean = current_ean
-        if not desired_ean:
-            desired_ean = ean_display
-        elif len(str(current_ean)) == 12 and len(ean_display) == 13:
-            desired_ean = ean_display
-
-        desired_format_label = current_format_label or record.format_label
-        desired_cover_url = current_cover_url or record.cover_url
-        desired_canonical_key = current_canonical_key or canonical_key
-
-        needs_update = any(
-            [
-                desired_ean != current_ean,
-                desired_format_label != current_format_label,
-                desired_cover_url != current_cover_url,
-                desired_canonical_key != current_canonical_key,
-            ]
-        )
-
-        if needs_update:
-            cur.execute(
-                """
-                update public.products
-                set ean = %s,
-                    format_label = %s,
-                    cover_url = %s,
-                    canonical_key = %s,
-                    search_text = %s,
-                    updated_at = now()
-                where id = %s
-                """,
-                (
-                    desired_ean,
-                    desired_format_label,
-                    desired_cover_url,
-                    desired_canonical_key,
-                    search_text,
-                    product_id,
-                ),
-            )
-        return product_id, False
-
     cur.execute(
         """
         insert into public.products (
@@ -375,7 +305,18 @@ def upsert_product(cur, record: CanonicalRecord) -> tuple[str, bool]:
           artist_normalized, title_normalized, search_text, created_at, updated_at
         )
         values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
-        returning id
+        on conflict (gtin_normalized) do update
+          set ean = case
+                when public.products.ean is null then excluded.ean
+                when char_length(public.products.ean) = 12 and char_length(excluded.ean) = 13 then excluded.ean
+                else public.products.ean
+              end,
+              format_label = coalesce(public.products.format_label, excluded.format_label),
+              cover_url = coalesce(public.products.cover_url, excluded.cover_url),
+              canonical_key = coalesce(public.products.canonical_key, excluded.canonical_key),
+              search_text = excluded.search_text,
+              updated_at = now()
+        returning id, (xmax = 0) as inserted
         """,
         (
             ean_display,
@@ -390,73 +331,8 @@ def upsert_product(cur, record: CanonicalRecord) -> tuple[str, bool]:
             search_text,
         ),
     )
-    return str(cur.fetchone()[0]), True
-
-
-def maybe_upsert_cover_candidate(cur, product_id: str, shop_id: str, record: CanonicalRecord) -> bool:
-    source_url = normalize_text(record.cover_candidate_url)
-    source_type = normalize_text(record.cover_candidate_source_type)
-    source_page_url = normalize_text(record.cover_candidate_page_url)
-    queue_priority = record.cover_candidate_queue_priority if record.cover_candidate_queue_priority is not None else 100
-
-    if not source_url or not source_type:
-        return False
-
-    cur.execute(
-        """
-        select ean
-        from public.products
-        where id = %s
-        limit 1
-        """,
-        (product_id,),
-    )
-    product_row = cur.fetchone()
-    if product_row is None:
-        raise ValueError(f"Product not found for cover candidate upsert: product_id={product_id}")
-
-    product_ean = normalize_ean(product_row[0])
-    if not product_ean:
-        raise ValueError(
-            f"Cannot upsert cover candidate because products.ean is invalid for product_id={product_id}: {product_row[0]!r}"
-        )
-
-    cur.execute(
-        """
-        select (
-          public.upsert_product_cover_candidate(
-            p_product_id => %s,
-            p_ean => %s,
-            p_shop_id => %s,
-            p_source_url => %s,
-            p_source_type => %s,
-            p_source_page_url => %s,
-            p_first_seen_at => %s,
-            p_last_seen_at => %s,
-            p_candidate_score => null,
-            p_queue_priority => %s,
-            p_mime_type => null,
-            p_width => null,
-            p_height => null,
-            p_file_size_bytes => null,
-            p_checksum => null
-          )
-        ).id
-        """,
-        (
-            product_id,
-            product_ean,
-            shop_id,
-            source_url,
-            source_type,
-            source_page_url or None,
-            record.captured_at,
-            record.captured_at,
-            queue_priority,
-        ),
-    )
-    return True
-
+    product_id, inserted = cur.fetchone()
+    return product_id, bool(inserted)
 
 def get_existing_price_state(cur, product_id: str, shop_id: str) -> tuple[float, str, str, str] | None:
     cur.execute(
@@ -624,7 +500,6 @@ def run_import(
         "upserted_products": 0,
         "upserted_prices": 0,
         "inserted_history_rows": 0,
-        "cover_candidates_upserted": 0,
     }
 
     Path(rejects_path).parent.mkdir(parents=True, exist_ok=True)
@@ -646,13 +521,7 @@ def run_import(
 
     log("[STEP 2] Verbinden met database...")
 
-    with psycopg.connect(
-        db_url,
-        options="-c statement_timeout=0 -c lock_timeout=0 -c idle_in_transaction_session_timeout=0",
-    ) as conn:
-        conn.execute("set statement_timeout = 0")
-        conn.execute("set lock_timeout = 0")
-        conn.execute("set idle_in_transaction_session_timeout = 0")
+    with psycopg.connect(db_url, options="-c statement_timeout=0") as conn:
         log("[DB] Verbonden")
 
         with conn.cursor() as cur:
@@ -663,16 +532,11 @@ def run_import(
             total = len(accepted)
             log(f"[STEP 4] Import starten voor {total} records...")
 
-            batch_size = 250
-
             for i, record in enumerate(accepted, start=1):
                 product_id, product_inserted = upsert_product(cur, record)
                 stats.upserted_products += 1
                 if product_inserted:
                     stats.new_products += 1
-
-                if maybe_upsert_cover_candidate(cur, product_id, shop_id, record):
-                    stats.cover_candidates_upserted += 1
 
                 price_inserted, price_changed = upsert_price(cur, product_id, shop_id, record, imported_at)
                 stats.upserted_prices += 1
@@ -690,7 +554,6 @@ def run_import(
                     log(
                         f"[PROGRESS] {i}/{total} | "
                         f"new_products={stats.new_products} | "
-                        f"cover_candidates={stats.cover_candidates_upserted} | "
                         f"new_price_rows={stats.new_price_rows} | "
                         f"price_updates={stats.price_updates} | "
                         f"unchanged_prices={stats.unchanged_prices} | "
@@ -709,7 +572,6 @@ def run_import(
             "upserted_products": stats.upserted_products,
             "upserted_prices": stats.upserted_prices,
             "inserted_history_rows": stats.inserted_history_rows,
-            "cover_candidates_upserted": stats.cover_candidates_upserted,
         }
     )
 
