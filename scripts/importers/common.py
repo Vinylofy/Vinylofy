@@ -292,20 +292,175 @@ def ensure_shop(cur, config: ImportConfig) -> str:
 def get_existing_product_state(
     cur,
     gtin_normalized: str,
-) -> tuple[str, str | None, str | None, str | None, str | None] | None:
+    ean_display: str | None = None,
+) -> tuple[str, str | None, str | None, str | None, str | None, str | None] | None:
+    """
+    Find an existing product using the strongest available identity signals.
+
+    Why this is intentionally broader than only products.gtin_normalized:
+    - Older rows may have ean filled but gtin_normalized still empty.
+    - Some shops provide UPC-12 while others provide EAN-13 with a leading zero.
+    - If we only search on gtin_normalized, the next insert can crash on products_ean_unique.
+
+    Priority:
+    1. Exact gtin_normalized match.
+    2. Exact ean match.
+    3. EAN that normalizes to the same GTIN-14.
+    """
     cur.execute(
         """
-        select id, ean, format_label, cover_url, canonical_key
+        select
+          id,
+          ean,
+          format_label,
+          cover_url,
+          canonical_key,
+          gtin_normalized
         from public.products
         where gtin_normalized = %s
+           or (%s is not null and ean = %s)
+           or (
+                %s is not null
+                and ean is not null
+                and nullif(regexp_replace(coalesce(ean, ''), '\\D', '', 'g'), '') is not null
+                and length(regexp_replace(coalesce(ean, ''), '\\D', '', 'g')) in (8, 12, 13, 14)
+                and lpad(regexp_replace(coalesce(ean, ''), '\\D', '', 'g'), 14, '0') = %s
+              )
+        order by
+          case
+            when gtin_normalized = %s then 0
+            when %s is not null and ean = %s then 1
+            else 2
+          end,
+          gtin_normalized is not null desc,
+          updated_at desc nulls last,
+          created_at asc nulls last
         limit 1
         """,
-        (gtin_normalized,),
+        (
+            gtin_normalized,
+            ean_display,
+            ean_display,
+            gtin_normalized,
+            gtin_normalized,
+            gtin_normalized,
+            ean_display,
+            ean_display,
+        ),
     )
     row = cur.fetchone()
     if row is None:
         return None
-    return str(row[0]), row[1], row[2], row[3], row[4]
+    return str(row[0]), row[1], row[2], row[3], row[4], row[5]
+
+
+def product_unique_value_available(
+    cur,
+    column_name: str,
+    value: str | None,
+    product_id: str,
+) -> bool:
+    """
+    Check whether a unique product identity value can safely be claimed.
+
+    Only allow known column names. This keeps the small f-string below safe.
+    """
+    if value is None:
+        return False
+
+    if column_name not in {"ean", "gtin_normalized"}:
+        raise ValueError(f"Unsupported unique product column: {column_name}")
+
+    cur.execute(
+        f"""
+        select 1
+        from public.products
+        where {column_name} = %s
+          and id <> %s
+        limit 1
+        """,
+        (value, product_id),
+    )
+    return cur.fetchone() is None
+
+
+def update_existing_product_from_record(
+    cur,
+    product_id: str,
+    current_ean: str | None,
+    current_format_label: str | None,
+    current_cover_url: str | None,
+    current_canonical_key: str | None,
+    current_gtin_normalized: str | None,
+    record: CanonicalRecord,
+    ean_display: str,
+    gtin_normalized: str,
+    canonical_key: str,
+    search_text: str,
+) -> None:
+    """
+    Enrich an existing product without violating unique identity constraints.
+
+    The importer should reuse existing products whenever possible, but it should not
+    blindly overwrite identity fields in a database that still contains historical
+    duplicates. Conflicting duplicate groups must be cleaned up by maintenance SQL.
+    """
+    desired_ean = current_ean
+    if not desired_ean:
+        desired_ean = ean_display
+    elif len(str(current_ean)) == 12 and len(ean_display) == 13 and ean_display.endswith(str(current_ean)):
+        desired_ean = ean_display
+
+    if desired_ean != current_ean and not product_unique_value_available(cur, "ean", desired_ean, product_id):
+        desired_ean = current_ean
+
+    desired_gtin_normalized = current_gtin_normalized
+    if not desired_gtin_normalized:
+        desired_gtin_normalized = gtin_normalized
+
+    if (
+        desired_gtin_normalized != current_gtin_normalized
+        and not product_unique_value_available(cur, "gtin_normalized", desired_gtin_normalized, product_id)
+    ):
+        desired_gtin_normalized = current_gtin_normalized
+
+    desired_format_label = current_format_label or record.format_label
+    desired_cover_url = current_cover_url or record.cover_url
+    desired_canonical_key = current_canonical_key or canonical_key
+
+    needs_update = any(
+        [
+            desired_ean != current_ean,
+            desired_gtin_normalized != current_gtin_normalized,
+            desired_format_label != current_format_label,
+            desired_cover_url != current_cover_url,
+            desired_canonical_key != current_canonical_key,
+        ]
+    )
+
+    if needs_update:
+        cur.execute(
+            """
+            update public.products
+            set ean = %s,
+                gtin_normalized = %s,
+                format_label = %s,
+                cover_url = %s,
+                canonical_key = %s,
+                search_text = %s,
+                updated_at = now()
+            where id = %s
+            """,
+            (
+                desired_ean,
+                desired_gtin_normalized,
+                desired_format_label,
+                desired_cover_url,
+                desired_canonical_key,
+                search_text,
+                product_id,
+            ),
+        )
 
 
 def upsert_product(cur, record: CanonicalRecord) -> tuple[str, bool]:
@@ -322,75 +477,96 @@ def upsert_product(cur, record: CanonicalRecord) -> tuple[str, bool]:
     ).lower()
     canonical_key = f"{slugify(record.artist)}::{slugify(record.title)}"
 
-    existing = get_existing_product_state(cur, gtin_normalized)
+    existing = get_existing_product_state(cur, gtin_normalized, ean_display)
     if existing is not None:
-        product_id, current_ean, current_format_label, current_cover_url, current_canonical_key = existing
+        (
+            product_id,
+            current_ean,
+            current_format_label,
+            current_cover_url,
+            current_canonical_key,
+            current_gtin_normalized,
+        ) = existing
 
-        desired_ean = current_ean
-        if not desired_ean:
-            desired_ean = ean_display
-        elif len(str(current_ean)) == 12 and len(ean_display) == 13:
-            desired_ean = ean_display
-
-        desired_format_label = current_format_label or record.format_label
-        desired_cover_url = current_cover_url or record.cover_url
-        desired_canonical_key = current_canonical_key or canonical_key
-
-        needs_update = any(
-            [
-                desired_ean != current_ean,
-                desired_format_label != current_format_label,
-                desired_cover_url != current_cover_url,
-                desired_canonical_key != current_canonical_key,
-            ]
+        update_existing_product_from_record(
+            cur=cur,
+            product_id=product_id,
+            current_ean=current_ean,
+            current_format_label=current_format_label,
+            current_cover_url=current_cover_url,
+            current_canonical_key=current_canonical_key,
+            current_gtin_normalized=current_gtin_normalized,
+            record=record,
+            ean_display=ean_display,
+            gtin_normalized=gtin_normalized,
+            canonical_key=canonical_key,
+            search_text=search_text,
         )
-
-        if needs_update:
-            cur.execute(
-                """
-                update public.products
-                set ean = %s,
-                    format_label = %s,
-                    cover_url = %s,
-                    canonical_key = %s,
-                    search_text = %s,
-                    updated_at = now()
-                where id = %s
-                """,
-                (
-                    desired_ean,
-                    desired_format_label,
-                    desired_cover_url,
-                    desired_canonical_key,
-                    search_text,
-                    product_id,
-                ),
-            )
         return product_id, False
 
-    cur.execute(
-        """
-        insert into public.products (
-          ean, gtin_normalized, artist, title, format_label, cover_url, canonical_key,
-          artist_normalized, title_normalized, search_text, created_at, updated_at
+    cur.execute("savepoint product_insert_attempt")
+    try:
+        cur.execute(
+            """
+            insert into public.products (
+              ean, gtin_normalized, artist, title, format_label, cover_url, canonical_key,
+              artist_normalized, title_normalized, search_text, created_at, updated_at
+            )
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
+            returning id
+            """,
+            (
+                ean_display,
+                gtin_normalized,
+                record.artist,
+                record.title,
+                record.format_label,
+                record.cover_url,
+                canonical_key,
+                artist_norm,
+                title_norm,
+                search_text,
+            ),
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
-        returning id
-        """,
+        product_id = str(cur.fetchone()[0])
+        cur.execute("release savepoint product_insert_attempt")
+        return product_id, True
+
+    except psycopg.errors.UniqueViolation:
+        # The database already has this product through either ean or gtin_normalized,
+        # but the initial lookup did not find it. Roll back only this insert attempt,
+        # re-select the existing product, enrich it safely, and continue the import.
+        cur.execute("rollback to savepoint product_insert_attempt")
+        cur.execute("release savepoint product_insert_attempt")
+
+        existing_after_conflict = get_existing_product_state(cur, gtin_normalized, ean_display)
+        if existing_after_conflict is None:
+            raise
+
         (
-            ean_display,
-            gtin_normalized,
-            record.artist,
-            record.title,
-            record.format_label,
-            record.cover_url,
-            canonical_key,
-            artist_norm,
-            title_norm,
-            search_text,
-        ),
-    )
-    return str(cur.fetchone()[0]), True
+            product_id,
+            current_ean,
+            current_format_label,
+            current_cover_url,
+            current_canonical_key,
+            current_gtin_normalized,
+        ) = existing_after_conflict
+
+        update_existing_product_from_record(
+            cur=cur,
+            product_id=product_id,
+            current_ean=current_ean,
+            current_format_label=current_format_label,
+            current_cover_url=current_cover_url,
+            current_canonical_key=current_canonical_key,
+            current_gtin_normalized=current_gtin_normalized,
+            record=record,
+            ean_display=ean_display,
+            gtin_normalized=gtin_normalized,
+            canonical_key=canonical_key,
+            search_text=search_text,
+        )
+        return product_id, False
 
 
 def maybe_upsert_cover_candidate(cur, product_id: str, shop_id: str, record: CanonicalRecord) -> bool:
