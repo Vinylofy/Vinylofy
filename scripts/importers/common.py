@@ -25,6 +25,8 @@ PRODUCT_IDENTITY_CONSTRAINTS = {
     "products_gtin_normalized_unique_idx",
 }
 
+COMMON_IMPORTER_VERSION = "product-identity-v2-2026-06-03"
+
 
 def log(message: str) -> None:
     print(message, flush=True)
@@ -67,6 +69,66 @@ def normalize_gtin14(value: str | None) -> str | None:
     if not digits:
         return None
     return digits.zfill(14)
+
+
+def _append_unique(values: list[str], value: str | None) -> None:
+    value = normalize_text(value)
+    if value and value not in values:
+        values.append(value)
+
+
+def identifier_variants(value: str | None) -> list[str]:
+    """
+    Return safe barcode variants for matching existing product rows.
+
+    Why this exists:
+    - products.ean can contain display EAN/UPC values.
+    - products.gtin_normalized should normally contain GTIN-14.
+    - historic rows may have been inserted before the normalisation rules were strict.
+    """
+    variants: list[str] = []
+
+    raw = normalize_text(value)
+    if raw:
+        _append_unique(variants, raw)
+
+    ean = normalize_ean(value)
+    if ean:
+        _append_unique(variants, ean)
+        _append_unique(variants, ean.zfill(14))
+
+        if len(ean) == 14 and ean.startswith("0"):
+            _append_unique(variants, ean[1:])
+
+        if len(ean) == 13:
+            _append_unique(variants, "0" + ean)
+
+        if len(ean) == 12:
+            _append_unique(variants, "0" + ean)
+            _append_unique(variants, "00" + ean)
+
+    return variants
+
+
+def identifier_candidates(*values: str | None) -> list[str]:
+    candidates: list[str] = []
+    for value in values:
+        for variant in identifier_variants(value):
+            _append_unique(candidates, variant)
+    return candidates
+
+
+def parse_product_identity_from_unique_violation(exc: UniqueViolation) -> tuple[str | None, str | None]:
+    """
+    psycopg/Postgres error text usually contains:
+        Key (ean)=(0602547998743) already exists.
+    Use that as a last-resort lookup key if the pre-insert lookup missed it.
+    """
+    message = str(exc)
+    match = re.search(r"Key \((ean|gtin_normalized)\)=\(([^)]+)\)", message)
+    if not match:
+        return None, None
+    return match.group(1), normalize_text(match.group(2))
 
 
 def slugify(value: str) -> str:
@@ -296,50 +358,42 @@ def get_existing_product_state(
     ean: str | None = None,
 ) -> tuple[str, str | None, str | None, str | None, str | None, str | None] | None:
     """
-    Vind een bestaand product op GTIN of EAN.
-
-    Oude gedrag zocht alleen op gtin_normalized. Daardoor kon Bob's Vinyl crashen
-    wanneer hetzelfde product al bestond met dezelfde ean maar een andere of lege
-    gtin_normalized-match. Deze functie zoekt daarom op beide product-identifiers.
+    Vind een bestaand product op GTIN of EAN, inclusief veilige barcode-varianten.
 
     Return:
         (id, ean, gtin_normalized, format_label, cover_url, canonical_key)
     """
-    if not gtin_normalized and not ean:
+    ean_candidates = identifier_candidates(ean, gtin_normalized)
+    gtin_candidates = identifier_candidates(gtin_normalized, ean)
+
+    clauses: list[str] = []
+    params: list[list[str]] = []
+
+    if gtin_candidates:
+        clauses.append("gtin_normalized = any(%s)")
+        params.append(gtin_candidates)
+
+    if ean_candidates:
+        clauses.append("ean = any(%s)")
+        params.append(ean_candidates)
+
+    if not clauses:
         return None
 
     cur.execute(
-        """
+        f"""
         select id, ean, gtin_normalized, format_label, cover_url, canonical_key
         from public.products
-        where (%s is not null and gtin_normalized = %s)
-           or (%s is not null and ean = %s)
-        order by
-            case
-                when %s is not null and gtin_normalized = %s then 0
-                when %s is not null and ean = %s then 1
-                else 2
-            end,
-            updated_at desc nulls last,
-            created_at desc nulls last
+        where {" or ".join(clauses)}
+        order by updated_at desc nulls last, created_at desc nulls last
         limit 1
         """,
-        (
-            gtin_normalized,
-            gtin_normalized,
-            ean,
-            ean,
-            gtin_normalized,
-            gtin_normalized,
-            ean,
-            ean,
-        ),
+        params,
     )
     row = cur.fetchone()
     if row is None:
         return None
     return str(row[0]), row[1], row[2], row[3], row[4], row[5]
-
 
 def _identifier_used_by_other_product(
     cur,
@@ -546,20 +600,35 @@ def upsert_product(cur, record: CanonicalRecord) -> tuple[str, bool]:
         )
         return product_id, False
 
-    cur.execute("savepoint vinylofy_product_upsert")
+    savepoint_name = "vinylofy_product_upsert"
+
+    cur.execute(f"savepoint {savepoint_name}")
     try:
         product_id = _insert_product(cur, record)
-        cur.execute("release savepoint vinylofy_product_upsert")
+        cur.execute(f"release savepoint {savepoint_name}")
         return product_id, True
     except UniqueViolation as exc:
-        cur.execute("rollback to savepoint vinylofy_product_upsert")
-        cur.execute("release savepoint vinylofy_product_upsert")
+        cur.execute(f"rollback to savepoint {savepoint_name}")
+        cur.execute(f"release savepoint {savepoint_name}")
 
         if not _is_product_identity_unique_violation(exc):
             raise
 
         existing = get_existing_product_state(cur, gtin_normalized, ean_display)
+
         if existing is None:
+            conflict_column, conflict_value = parse_product_identity_from_unique_violation(exc)
+            if conflict_column == "ean":
+                existing = get_existing_product_state(cur, gtin_normalized, conflict_value)
+            elif conflict_column == "gtin_normalized":
+                existing = get_existing_product_state(cur, conflict_value, ean_display)
+
+        if existing is None:
+            log(
+                "[PRODUCT UPSERT] Duplicate product identity was raised, but no existing "
+                f"product could be found afterwards | ean={ean_display} | "
+                f"gtin_normalized={gtin_normalized} | error={exc}"
+            )
             raise
 
         product_id = _update_existing_product_from_record(
@@ -791,6 +860,7 @@ def run_import(
     summary_path: str = "output/import_summary.json",
 ) -> None:
     load_env()
+    log(f"[COMMON] Loaded {COMMON_IMPORTER_VERSION} from {Path(__file__).resolve()}")
     db_url = os.getenv("DATABASE_URL")
     if not db_url and not dry_run:
         raise SystemExit("DATABASE_URL is not set. Add it to .env.local or export it in the shell.")
