@@ -12,20 +12,28 @@ Supported flows
    - merge into a master CSV snapshot
 
 2) Refresh prices
-   - SAFE implementation: discover product URLs from listing pages
-   - refresh every discovered product via Shopify /products/{handle}.js
-   - never parse prices from listing-card HTML
-   - merge refreshed variant price/EAN/availability into master CSV
+   - FAST + guarded implementation: parse prices from collection/listing cards
+   - scope each parsed price strictly to its own <a class="grid-product__link"> card
+   - update existing master rows by product handle/product_url only, never by title
+   - do not create new product rows from listing pages, because listing pages do not carry reliable EANs
+   - skip multi-variant handles, because one listing price cannot safely update multiple variant prices
 
 3) Export
    - write the current master snapshot to a chosen CSV path
 
 Why this version exists
 -----------------------
-The previous refresh-prices implementation parsed prices from collection/listing cards.
-On RecordsOnVinyl.nl that is unsafe because a card parent can contain unrelated price-like
-numbers or prices from adjacent DOM blocks. This version makes Shopify variant JSON the
-single source of truth for price and barcode/EAN.
+A previous listing refresh was unsafe because it searched too broadly in parent DOM blocks,
+which allowed unrelated numbers or adjacent product prices to overwrite the wrong product.
+This version keeps the speed advantage of listing-page refreshes, but only reads prices from
+price elements inside the exact product link/card being updated:
+
+- current/sale price: .sale-price-emphasis
+- original/list price: .grid-product__price--original
+- product key: the /products/{handle} URL on the same a.grid-product__link
+
+New products and EAN/barcode enrichment remain the responsibility of the crawl flow, which
+uses Shopify /products/{handle}.js.
 """
 
 from __future__ import annotations
@@ -637,8 +645,20 @@ def discover_product_urls(
         if not ignore_robots and not robots_allows(session, base, page_url, user_agent):
             raise RuntimeError(f"Blocked by robots.txt: {page_url}")
 
-        response = get_with_retry(session, page_url)
+        try:
+            response = get_with_retry(session, page_url)
+        except Exception as exc:
+            print(
+                f"WARN(listing_page_fetch_failed) page={page_num} url={page_url} error={exc}. "
+                f"Continuing with {len(all_urls)} discovered product URLs."
+            )
+            break
+
         if response.status_code != 200:
+            print(
+                f"WARN(listing_page_non_200) page={page_num} url={page_url} "
+                f"status={response.status_code}. Continuing with {len(all_urls)} discovered product URLs."
+            )
             break
 
         soup = BeautifulSoup(response.text, "html.parser")
@@ -665,8 +685,13 @@ def discover_product_urls(
     return all_urls
 
 
-# Deprecated/unsafe listing-price helpers are intentionally retained only as no-op-compatible
-# symbols for old imports/tests. Do not use these as source of truth for RecordsOnVinyl.
+# Listing-card price refresh helpers
+# ----------------------------------
+# These helpers are deliberately strict. We only parse prices from inside the exact
+# <a class="grid-product__link" href=".../products/{handle}"> card, and only from the
+# known price container/selectors. This prevents discount badges, product IDs, adjacent
+# cards, and other page numbers from being interpreted as product prices.
+
 
 def _extract_price_candidates(text: str) -> List[float]:
     if not text:
@@ -680,9 +705,64 @@ def _extract_price_candidates(text: str) -> List[float]:
     return out
 
 
+def _first_price_from_element(element: Optional[BeautifulSoup]) -> Optional[float]:
+    if element is None:
+        return None
+    candidates = _extract_price_candidates(element.get_text(" ", strip=True))
+    return candidates[0] if candidates else None
+
+
+def _clean_price_box_for_regular_price(price_box: BeautifulSoup) -> BeautifulSoup:
+    # BeautifulSoup tags are mutable; use a small re-parse so we do not damage the
+    # original soup while removing text that is not the actual product price.
+    cleaned = BeautifulSoup(str(price_box), "html.parser")
+    for selector in [
+        "style",
+        ".visually-hidden",
+        ".flair-badge-layout",
+        ".flair-badge",
+        ".grid-product__price--original",
+        ".sale-price-emphasis",
+    ]:
+        for node in cleaned.select(selector):
+            node.decompose()
+    return cleaned
+
+
 def parse_listing_prices_from_card(card: BeautifulSoup) -> Tuple[Optional[float], Optional[float]]:
-    # Intentionally disabled: collection/listing card price parsing caused wrong prices.
-    return None, None
+    """Return (price_offer, price_list) from one exact RecordsOnVinyl product card.
+
+    Sale example:
+      .grid-product__price--original = €44.95  -> price_list
+      .sale-price-emphasis           = €29.95  -> price_offer
+
+    Regular-price example:
+      .grid-product__price contains €37.95     -> price_offer
+      price_list remains None
+    """
+    price_box = card.select_one(".grid-product__price")
+    if price_box is None:
+        return None, None
+
+    sale_el = price_box.select_one(".sale-price-emphasis")
+    original_el = price_box.select_one(".grid-product__price--original")
+
+    if sale_el is not None:
+        offer = _first_price_from_element(sale_el)
+        list_price = _first_price_from_element(original_el)
+        if offer is None:
+            return None, None
+        if list_price is not None and list_price <= offer:
+            list_price = None
+        return offer, list_price
+
+    # No explicit sale price: parse only the cleaned price box. This avoids reading
+    # hidden labels, flair badges such as "-33%", or old-price elements as the price.
+    cleaned_price_box = _clean_price_box_for_regular_price(price_box)
+    candidates = _extract_price_candidates(cleaned_price_box.get_text(" ", strip=True))
+    if not candidates:
+        return None, None
+    return candidates[0], None
 
 
 def discover_listing_price_entries(
@@ -692,10 +772,77 @@ def discover_listing_price_entries(
     delay_listing: float,
     ignore_robots: bool,
     user_agent: str,
+    limit_entries: int = 0,
 ) -> List[Tuple[str, Optional[float], Optional[float], Optional[str]]]:
-    # Backwards-compatible shim: return product URLs with no parsed prices.
-    urls = discover_product_urls(session, collection_url, max_pages, delay_listing, ignore_robots, user_agent)
-    return [(url, None, None, None) for url in urls]
+    """Discover listing-card prices as (product_url, offer, list, title).
+
+    A temporary 429/5xx on a later page is not fatal. The function returns the entries
+    already collected so the pipeline can still export/import partial refresh results.
+    """
+    base = f"{urlparse(collection_url).scheme}://{urlparse(collection_url).netloc}"
+    seen_handles: set[str] = set()
+    entries: List[Tuple[str, Optional[float], Optional[float], Optional[str]]] = []
+    no_new_pages = 0
+
+    for page_num, page_url in _iter_collection_pages(collection_url, max_pages):
+        if limit_entries and len(entries) >= limit_entries:
+            break
+
+        if not ignore_robots and not robots_allows(session, base, page_url, user_agent):
+            raise RuntimeError(f"Blocked by robots.txt: {page_url}")
+
+        try:
+            response = get_with_retry(session, page_url)
+        except Exception as exc:
+            print(
+                f"WARN(listing_page_fetch_failed) page={page_num} url={page_url} error={exc}. "
+                f"Continuing with {len(entries)} listing price entries."
+            )
+            break
+
+        if response.status_code != 200:
+            print(
+                f"WARN(listing_page_non_200) page={page_num} url={page_url} "
+                f"status={response.status_code}. Continuing with {len(entries)} listing price entries."
+            )
+            break
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        page_new = 0
+        page_with_price = 0
+
+        for card in soup.select('a.grid-product__link[href*="/products/"]'):
+            href = card.get("href", "")
+            if not href or href.startswith(("mailto:", "tel:")):
+                continue
+
+            full_url = canonical_product_url(normalize_url(urljoin(base, href)))
+            handle = product_handle_from_url(full_url)
+            if not handle or handle in seen_handles:
+                continue
+
+            seen_handles.add(handle)
+            title_el = card.select_one(".grid-product__title")
+            title = title_el.get_text(" ", strip=True) if title_el else None
+            offer, list_price = parse_listing_prices_from_card(card)
+            entries.append((full_url, offer, list_price, title))
+            page_new += 1
+            if offer is not None:
+                page_with_price += 1
+
+            if limit_entries and len(entries) >= limit_entries:
+                break
+
+        print(
+            f"PAGE {page_num} new={page_new} with_price={page_with_price} "
+            f"total_unique={len(entries)} url={page_url}"
+        )
+        no_new_pages = no_new_pages + 1 if page_new == 0 else 0
+        safe_sleep(delay_listing)
+        if no_new_pages >= 2:
+            break
+
+    return entries
 
 
 # -----------------------------
@@ -818,22 +965,104 @@ def _price_delta_too_large(old_price: Optional[float], new_price: Optional[float
     return abs(new_price - old_price) / old_price > max_delta
 
 
+def _effective_handle_from_master_row(row: pd.Series) -> str:
+    handle = str(row.get("handle", "")).strip()
+    if handle:
+        return handle
+    return product_handle_from_url(str(row.get("product_url", "")).strip()) or ""
+
+
+def _master_variant_identity(row: pd.Series) -> str:
+    variant_id = str(row.get("variant_id", "")).strip()
+    if variant_id and variant_id not in {"0", "nan", "None", ""}:
+        return f"variant:{variant_id}"
+    ean = str(row.get("ean13", "")).strip()
+    if ean:
+        return f"ean:{ean}"
+    return "single_or_unknown"
+
+
 def update_prices_in_master(
     master_df: pd.DataFrame,
     entries: List[Tuple[str, Optional[float], Optional[float], Optional[str]]],
 ) -> Tuple[pd.DataFrame, int, int]:
-    """
-    Compatibility function for old tests/imports.
+    """Update existing master prices from strict listing-card entries.
 
-    The old implementation wrote listing-card prices into the master. This version refuses
-    to update prices from entries because listing-card parsing is not trusted for this shop.
-    Use refresh_master_from_shopify_json() instead.
+    Matching key is product handle extracted from the product URL. This function never
+    creates new rows and never matches by title. Handles with multiple distinct variants
+    are skipped because one product-card price cannot safely update multiple variant rows.
     """
+    if master_df is None or master_df.empty:
+        print("[WARN] No master rows available; listing refresh cannot create products without EANs.")
+        return pd.DataFrame(columns=MASTER_COLUMNS), 0, len(entries)
+
+    df = master_df.copy()
+    for col in MASTER_COLUMNS:
+        if col not in df.columns:
+            df[col] = ""
+
+    handle_to_indices: Dict[str, List[int]] = {}
+    for idx, row in df.iterrows():
+        handle = _effective_handle_from_master_row(row)
+        if handle:
+            handle_to_indices.setdefault(handle, []).append(idx)
+
+    scraped_at = now_utc_iso()
+    updated_rows = 0
+    skipped = 0
+    missing_in_master = 0
+    no_price = 0
+    multi_variant = 0
+
+    for product_url, offer, list_price, title in entries:
+        handle = product_handle_from_url(product_url) or ""
+        if not handle:
+            skipped += 1
+            continue
+
+        if offer is None:
+            no_price += 1
+            skipped += 1
+            continue
+
+        indices = handle_to_indices.get(handle, [])
+        if not indices:
+            missing_in_master += 1
+            skipped += 1
+            continue
+
+        identities = {_master_variant_identity(df.loc[idx]) for idx in indices}
+        if len(identities) > 1:
+            multi_variant += 1
+            skipped += len(indices)
+            print(
+                "SKIP(multi_variant_listing_price) "
+                f"handle={handle} rows={len(indices)} variants={sorted(identities)} title={title or ''}"
+            )
+            continue
+
+        for idx in indices:
+            old_price = _safe_float_from_cell(df.at[idx, "price_offer"])
+            if _price_delta_too_large(old_price, offer):
+                print(
+                    "WARN(large_price_delta_from_listing) "
+                    f"handle={handle} old={old_price} new={offer} url={product_url}"
+                )
+
+            df.at[idx, "scraped_at"] = scraped_at
+            df.at[idx, "product_url"] = product_url
+            df.at[idx, "handle"] = handle
+            df.at[idx, "currency"] = "EUR"
+            df.at[idx, "price_offer"] = f"{offer:.2f}"
+            df.at[idx, "price_list"] = "" if list_price is None else f"{list_price:.2f}"
+            updated_rows += 1
+
     print(
-        "[WARN] update_prices_in_master() called with listing-derived entries; "
-        "price updates are skipped by design. Use refresh_master_from_shopify_json()."
+        "[INFO] Listing refresh summary: "
+        f"entries={len(entries)} updated_rows={updated_rows} skipped={skipped} "
+        f"missing_in_master={missing_in_master} no_price={no_price} multi_variant_handles={multi_variant}"
     )
-    return master_df.copy(), 0, len(entries)
+    return df[MASTER_COLUMNS].copy(), updated_rows, skipped
 
 
 def refresh_master_from_shopify_json(
@@ -958,6 +1187,33 @@ def scrape_many_products(
     return scraped_rows, processed
 
 
+
+
+def unique_product_urls_from_master(master_df: pd.DataFrame) -> List[str]:
+    """Return stable, de-duplicated product URLs already present in the master CSV.
+
+    Refresh should update known products. It should not first crawl the listing pages,
+    because listing pages can rate-limit/503 and were also the source of the old wrong
+    price parsing issue. New products are the job of the crawl workflow.
+    """
+    if master_df is None or master_df.empty or "product_url" not in master_df.columns:
+        return []
+
+    seen_handles: set[str] = set()
+    urls: List[str] = []
+    for raw_url in master_df["product_url"].fillna("").astype(str).tolist():
+        url = canonical_product_url(normalize_url(raw_url.strip()))
+        if not url or "/products/" not in url:
+            continue
+        handle = product_handle_from_url(url)
+        key = handle or url
+        if key in seen_handles:
+            continue
+        seen_handles.add(key)
+        urls.append(url)
+    return urls
+
+
 # -----------------------------
 # Commands
 # -----------------------------
@@ -1012,51 +1268,43 @@ def cmd_crawl(args: argparse.Namespace) -> None:
 
 def cmd_refresh_prices_fast(args: argparse.Namespace) -> None:
     """
-    Safe replacement for the old FAST listing refresh.
+    Fast guarded listing-price refresh.
 
     The command name is preserved so recordsonvinyl_automation.py and the GitHub Actions
-    workflow do not need to change. Internally this now refreshes via Shopify product JSON,
-    because that is the only reliable source for price + barcode/EAN on RecordsOnVinyl.
+    workflow do not need to change. Internally this scans collection/listing pages and
+    reads prices only from the exact product card linked to each /products/{handle} URL.
+
+    It updates existing master rows by handle only. It does not create new products,
+    because listing pages do not contain reliable EAN/barcode data.
     """
     session = make_session(args.user_agent)
     master_csv = args.master_csv
     master_df = load_master_df(master_csv)
 
-    product_urls = discover_product_urls(
+    limit_entries = args.limit_products if args.limit_products and args.limit_products > 0 else 0
+    entries = discover_listing_price_entries(
         session,
         args.collection_url,
         args.max_pages,
         args.delay_listing,
         args.ignore_robots,
         args.user_agent,
+        limit_entries=limit_entries,
     )
-    if args.limit_products and args.limit_products > 0:
-        product_urls = product_urls[: args.limit_products]
 
     print(
-        f"[INFO] Shopify JSON refresh items: {len(product_urls)} "
-        "(listing-card price parsing disabled)"
+        f"[INFO] Listing refresh entries discovered: {len(entries)} "
+        f"limit_entries={limit_entries or 'none'}"
     )
 
-    # The automation wrapper currently does not pass --workers for refresh, but this keeps
-    # the command flexible when run directly.
-    workers = max(1, getattr(args, "workers", 1))
-    refreshed_rows, processed = scrape_many_products(
-        product_urls,
-        delay_product=args.delay_product,
-        ignore_robots=args.ignore_robots,
-        user_agent=args.user_agent,
-        workers=workers,
-    )
-
-    updated_df, updated_variants, skipped = refresh_master_from_shopify_json(master_df, refreshed_rows)
+    updated_df, updated_rows, skipped = update_prices_in_master(master_df, entries)
     save_master_df(updated_df, master_csv)
     if getattr(args, "out", None):
         export_latest(master_csv, args.out)
 
     print(
-        f"[OK] Done. processed_products={processed} refreshed_variant_rows={len(refreshed_rows)} "
-        f"updated_or_inserted_variants={updated_variants} skipped={skipped} out={args.out or '-'}"
+        f"[OK] Done. listing_entries={len(entries)} updated_master_rows={updated_rows} "
+        f"skipped={skipped} out={args.out or '-'}"
     )
 
 
@@ -1094,7 +1342,7 @@ def default_outfile(tag: str) -> str:
 def interactive_main() -> argparse.Namespace:
     print("=== RecordsOnVinyl scraper ===")
     print("1) Crawl (discover + scrape product pages)")
-    print("2) Refresh prices SAFE (Shopify product JSON only)")
+    print("2) Refresh prices FAST (listing cards, link-bound)")
     print("3) Export snapshot (no scraping)")
     choice = input("Kies 1/2/3 [1]: ").strip() or "1"
     if choice not in {"1", "2", "3"}:
@@ -1125,10 +1373,10 @@ def interactive_main() -> argparse.Namespace:
     if choice == "2":
         base.max_pages = _ask_int("Max pages (0 = tot uitgeput)", 0)
         base.limit_products = _ask_int("Max records (0 = geen limiet)", 0)
-        base.out = default_outfile("prices_safe")
+        base.out = default_outfile("prices_listing")
         base.cmd = "refresh-prices"
         base.func = cmd_refresh_prices_fast
-        print(f"[INFO] Refresh prices SAFE will scan: {base.collection_url}")
+        print(f"[INFO] Refresh prices FAST will scan listing cards: {base.collection_url}")
         return base
 
     base.out = _ask_path("Output CSV", default_outfile("export"))
