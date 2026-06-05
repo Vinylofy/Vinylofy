@@ -29,7 +29,11 @@ def split_args(value: str) -> list[str]:
 
 
 def run_one(shop_key: str, phase: str, scrape_args: list[str], import_args: list[str]) -> int:
-    shop = get_shop(shop_key)
+    try:
+        shop = get_shop(shop_key)
+    except KeyError as exc:
+        print(f"[USF][ERROR] {exc}", flush=True)
+        return 2
 
     if phase in {"scrape", "both"}:
         code = run_module(shop.scraper_module, scrape_args)
