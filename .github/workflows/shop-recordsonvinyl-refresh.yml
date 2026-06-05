@@ -10,7 +10,7 @@ on:
       limit_products:
         description: "Max listing items om te verwerken (0 = geen limiet)"
         required: false
-        default: "5000"
+        default: "0"
   schedule:
     - cron: "10 0 * * *"
     - cron: "10 6 * * *"
@@ -28,7 +28,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 360
 
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
