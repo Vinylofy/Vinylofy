@@ -1,0 +1,91 @@
+name: Shop - RecordsOnVinyl Reconcile Only
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: vinylofy-recordsonvinyl
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
+          pip install "psycopg[binary]" python-dotenv
+
+      - name: Create runtime folders
+        shell: bash
+        run: |
+          mkdir -p data/raw/recordsonvinyl
+          mkdir -p output
+
+      - name: Restore latest RecordsOnVinyl state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -u scripts/automation/restore_latest_state_artifact.py \
+            --repo "${{ github.repository }}" \
+            --target-dir data/raw/recordsonvinyl \
+            --artifact-prefix recordsonvinyl-state- \
+            --workflow-name "Shop - RecordsOnVinyl Refresh" \
+            --workflow-name "Shop - RecordsOnVinyl Crawl"
+
+          echo "Restored files:"
+          ls -la data/raw/recordsonvinyl || true
+
+      - name: Validate restored CSV
+        shell: bash
+        run: |
+          if [ ! -s data/raw/recordsonvinyl/recordsonvinyl_products.csv ]; then
+            echo "recordsonvinyl_products.csv ontbreekt of is leeg."
+            echo "Er is niets te importeren/reconciliëren. Draai eerst een scraper-run die een artifact met products.csv oplevert."
+            exit 1
+          fi
+
+          echo "CSV gevonden:"
+          ls -lh data/raw/recordsonvinyl/recordsonvinyl_products.csv
+
+      - name: Reconcile RecordsOnVinyl prices from existing CSV only
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -u scripts/importers/reconcile_recordsonvinyl_prices.py \
+            --csv data/raw/recordsonvinyl/recordsonvinyl_products.csv \
+            --audit output/recordsonvinyl_reconcile_audit.csv
+
+      - name: Upload reconcile audit
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: recordsonvinyl-reconcile-only-${{ github.run_id }}
+          path: |
+            data/raw/recordsonvinyl/*.csv
+            output/**/*.csv
+            output/**/*.json
+          if-no-files-found: warn
