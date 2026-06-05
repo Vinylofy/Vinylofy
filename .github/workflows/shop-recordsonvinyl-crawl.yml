@@ -30,6 +30,7 @@ jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -77,15 +78,33 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           MAX_PAGES="${{ github.event.inputs.max_pages }}"
           LIMIT_PRODUCTS="${{ github.event.inputs.limit_products }}"
           WORKERS="${{ github.event.inputs.workers }}"
+
           [ -n "$MAX_PAGES" ] || MAX_PAGES="999"
           [ -n "$LIMIT_PRODUCTS" ] || LIMIT_PRODUCTS="5000"
           [ -n "$WORKERS" ] || WORKERS="8"
+
           export VINYLOFY_SCRAPER_CMD_RECORDSONVINYL="python -u scripts/scrapers/recordsonvinyl_automation.py --mode crawl --master-csv data/raw/recordsonvinyl/recordsonvinyl_master.csv --out data/raw/recordsonvinyl/recordsonvinyl_products.csv --max-pages ${MAX_PAGES} --limit-products ${LIMIT_PRODUCTS} --workers ${WORKERS}"
+
           echo "VINYLOFY_SCRAPER_CMD_RECORDSONVINYL=$VINYLOFY_SCRAPER_CMD_RECORDSONVINYL"
           python -u scripts/automation/run_vinylofy_pipeline.py --shop recordsonvinyl
+
+      - name: Reconcile RecordsOnVinyl prices from CSV
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -s data/raw/recordsonvinyl/recordsonvinyl_products.csv ]; then
+            echo "recordsonvinyl_products.csv ontbreekt of is leeg; reconciliation wordt gestopt."
+            exit 1
+          fi
+
+          python -u scripts/importers/reconcile_recordsonvinyl_prices.py \
+            --csv data/raw/recordsonvinyl/recordsonvinyl_products.csv \
+            --audit output/recordsonvinyl_reconcile_audit.csv
 
       - name: Upload RecordsOnVinyl state artifacts
         if: always()
