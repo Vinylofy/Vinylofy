@@ -103,3 +103,51 @@ def mark_detail_scraped(link_id: str) -> None:
                 """,
                 (link_id,),
             )
+
+
+def insert_raw_shop_scrape(
+    *,
+    run_id: str | None,
+    shop_id: str,
+    source_url: str,
+    source_product_id: str | None,
+    title_raw: str | None,
+    ean_raw: str | None,
+    price_raw: str | None,
+    availability_raw: str | None,
+    image_url_raw: str | None,
+    payload: dict[str, Any],
+) -> str:
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                insert into public.raw_shop_scrapes (
+                    run_id,
+                    shop_id,
+                    source_url,
+                    source_product_id,
+                    title_raw,
+                    ean_raw,
+                    price_raw,
+                    availability_raw,
+                    image_url_raw,
+                    payload
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                returning id
+                """,
+                (
+                    run_id,
+                    shop_id,
+                    source_url,
+                    source_product_id,
+                    title_raw,
+                    ean_raw,
+                    price_raw,
+                    availability_raw,
+                    image_url_raw,
+                    Jsonb(payload),
+                ),
+            )
+            return str(cur.fetchone()[0])
