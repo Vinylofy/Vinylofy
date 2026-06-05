@@ -31,6 +31,83 @@ def extract_title(html: str) -> str | None:
     return re.sub(r"\s+", " ", m.group(1)).strip()
 
 
+
+def extract_ean(html: str) -> str | None:
+    patterns = [
+        r'"barcode"\s*:\s*"(\d{8,14})"',
+        r'"gtin(?:8|12|13|14)?"\s*:\s*"(\d{8,14})"',
+        r'\b(?:EAN|GTIN|Barcode|Streepjescode)\D{0,80}(\d{8,14})\b',
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, html, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            digits = re.sub(r"\D", "", match.group(1))
+            if 8 <= len(digits) <= 14:
+                return digits
+
+    return None
+
+
+def extract_price(html: str) -> str | None:
+    money_patterns = [
+        r'property=["\']product:price:amount["\'][^>]*content=["\']([0-9]+(?:[.,][0-9]{1,2})?)["\']',
+        r'content=["\']([0-9]+(?:[.,][0-9]{1,2})?)["\'][^>]*property=["\']product:price:amount["\']',
+        r'"price"\s*:\s*"([0-9]+(?:[.,][0-9]{1,2})?)"',
+        r'€\s*([0-9]+(?:[.,][0-9]{1,2})?)',
+    ]
+
+    for pattern in money_patterns:
+        match = re.search(pattern, html, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return match.group(1).replace(",", ".")
+
+    # Shopify JSON gebruikt vaak centen: "price":2499 = 24.99
+    cent_patterns = [
+        r'"price"\s*:\s*(\d{3,7})',
+        r'"price_min"\s*:\s*(\d{3,7})',
+    ]
+
+    for pattern in cent_patterns:
+        match = re.search(pattern, html, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            cents = int(match.group(1))
+            if cents > 100:
+                return f"{cents / 100:.2f}"
+
+    return None
+
+
+def extract_availability(html: str) -> str | None:
+    lower = html.lower()
+
+    if '"available":false' in lower or "outofstock" in lower or "sold out" in lower or "uitverkocht" in lower:
+        return "out_of_stock"
+
+    if '"available":true' in lower or "instock" in lower or "add to cart" in lower or "in winkelwagen" in lower:
+        return "in_stock"
+
+    return None
+
+
+def extract_image_url(html: str) -> str | None:
+    patterns = [
+        r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
+        r'"featured_image"\s*:\s*"([^"]+)"',
+        r'"image"\s*:\s*"([^"]+)"',
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, html, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            image_url = match.group(1).replace("\\/", "/")
+            if image_url.startswith("//"):
+                image_url = "https:" + image_url
+            return image_url
+
+    return None
+
 def main() -> int:
     args = build_parser().parse_args()
     links = get_links_for_detail_scrape(SHOP_ID, limit=args.limit)
@@ -62,6 +139,10 @@ def main() -> int:
 
         html = response.text
         title = extract_title(html)
+        ean_raw = extract_ean(html)
+        price_raw = extract_price(html)
+        availability_raw = extract_availability(html)
+        image_url_raw = extract_image_url(html)
 
         raw_id = insert_raw_shop_scrape(
             run_id=None,
@@ -69,10 +150,10 @@ def main() -> int:
             source_url=url,
             source_product_id=link["source_product_id"],
             title_raw=title,
-            ean_raw=None,
-            price_raw=None,
-            availability_raw=None,
-            image_url_raw=None,
+            ean_raw=ean_raw,
+            price_raw=price_raw,
+            availability_raw=availability_raw,
+            image_url_raw=image_url_raw,
             payload={
                 "html_length": len(html),
                 "status_code": response.status_code,
