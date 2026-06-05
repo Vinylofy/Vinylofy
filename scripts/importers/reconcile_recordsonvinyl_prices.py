@@ -72,6 +72,28 @@ def normalize_text(value: object | None) -> str:
     return re.sub(r"\s+", " ", "" if value is None else str(value)).strip()
 
 
+def normalize_db_availability(value: object | None, price: float | None = None) -> str:
+    text = normalize_text(value).lower()
+    compact = text.replace(" ", "").replace("-", "_")
+
+    if compact in {"true", "1", "yes", "ja", "y", "available", "in_stock", "instock"}:
+        return "in_stock"
+
+    if compact in {"false", "0", "no", "nee", "n", "soldout", "sold_out", "out_of_stock", "outofstock"}:
+        return "out_of_stock"
+
+    if any(token in text for token in ("uitverkocht", "sold out", "out of stock")):
+        return "out_of_stock"
+
+    if any(token in text for token in ("op voorraad", "in stock", "preorder", "bestelbaar")):
+        return "in_stock"
+
+    if text in {"in_stock", "out_of_stock", "unknown"}:
+        return text
+
+    return "in_stock" if price is not None else "unknown"
+
+
 def normalize_ean(value: object | None) -> str | None:
     raw = normalize_text(value)
     raw = re.sub(r"\.0$", "", raw)
@@ -315,6 +337,8 @@ def find_matching_product_ids(cur, row: CsvPriceRow) -> list[str]:
 
 
 def upsert_current_price(cur, product_id: str, shop_id: str, row: CsvPriceRow) -> tuple[bool, bool]:
+    safe_availability = normalize_db_availability(row.availability, row.price)
+
     cur.execute(
         """
         select price, currency, product_url, availability
@@ -337,7 +361,7 @@ def upsert_current_price(cur, product_id: str, shop_id: str, row: CsvPriceRow) -
                 round(float(existing_price), 2) != round(float(row.price), 2),
                 str(existing_currency) != CURRENCY,
                 normalize_text(existing_url) != row.product_url,
-                normalize_text(existing_availability) != row.availability,
+                normalize_text(existing_availability) != safe_availability,
             ]
         )
 
@@ -373,7 +397,7 @@ def upsert_current_price(cur, product_id: str, shop_id: str, row: CsvPriceRow) -
             row.price,
             CURRENCY,
             row.product_url,
-            row.availability,
+            safe_availability,
             row.captured_at,
         ),
     )
@@ -382,6 +406,8 @@ def upsert_current_price(cur, product_id: str, shop_id: str, row: CsvPriceRow) -
 
 
 def maybe_insert_history(cur, product_id: str, shop_id: str, row: CsvPriceRow) -> bool:
+    safe_availability = normalize_db_availability(row.availability, row.price)
+
     cur.execute(
         """
         select price, availability, captured_at
@@ -400,7 +426,7 @@ def maybe_insert_history(cur, product_id: str, shop_id: str, row: CsvPriceRow) -
         same_day = latest_captured_at.date() == row.captured_at.date()
         unchanged = (
             round(float(latest_price), 2) == round(float(row.price), 2)
-            and normalize_text(latest_availability) == row.availability
+            and normalize_text(latest_availability) == safe_availability
         )
         if same_day and unchanged:
             return False
@@ -418,7 +444,7 @@ def maybe_insert_history(cur, product_id: str, shop_id: str, row: CsvPriceRow) -
         )
         values (%s, %s, %s, %s, %s, %s, now())
         """,
-        (product_id, shop_id, row.price, CURRENCY, row.availability, row.captured_at),
+        (product_id, shop_id, row.price, CURRENCY, safe_availability, row.captured_at),
     )
     return True
 
