@@ -35,7 +35,7 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
-          pip install "psycopg[binary]" python-dotenv
+          pip install requests "psycopg[binary]" python-dotenv
 
       - name: Create runtime folders
         shell: bash
