@@ -41,15 +41,20 @@ def main() -> int:
     parser.add_argument("--detail-limit", type=int, default=25)
     parser.add_argument("--stage-limit", type=int, default=25)
     parser.add_argument("--promote-limit", type=int, default=25)
+    parser.add_argument("--quarantine-limit", type=int, default=100)
 
     parser.add_argument("--skip-detail", action="store_true")
     parser.add_argument("--skip-stage", action="store_true")
     parser.add_argument("--skip-promote", action="store_true")
+    parser.add_argument("--skip-quarantine", action="store_true")
 
     parser.add_argument(
         "--write",
         action="store_true",
-        help="Voer promote_staged_offers uit met echte writes. Zonder --write blijft promotie dry-run.",
+        help=(
+            "Voer echte writes uit voor promotie en quarantine. "
+            "Zonder --write blijven beide stappen dry-run."
+        ),
     )
 
     args = parser.parse_args()
@@ -57,13 +62,17 @@ def main() -> int:
     load_env()
 
     if not os.environ.get("DATABASE_URL"):
-        raise SystemExit("[ERROR] DATABASE_URL ontbreekt. Zet DATABASE_URL in .env, .env.local of environment.")
+        raise SystemExit(
+            "[ERROR] DATABASE_URL ontbreekt. "
+            "Zet DATABASE_URL in .env, .env.local of environment."
+        )
 
     print("[PIPELINE] RecordsonVinyl USF pipeline")
     print(f"[PIPELINE] detail_limit={args.detail_limit}")
     print(f"[PIPELINE] stage_limit={args.stage_limit}")
     print(f"[PIPELINE] promote_limit={args.promote_limit}")
-    print(f"[PIPELINE] promote_write={args.write}")
+    print(f"[PIPELINE] quarantine_limit={args.quarantine_limit}")
+    print(f"[PIPELINE] write={args.write}")
 
     if not args.skip_detail:
         run_step(
@@ -102,6 +111,20 @@ def main() -> int:
             promote_command.append("--write")
 
         run_step("promote_staged_offers", promote_command)
+
+    if not args.skip_quarantine:
+        quarantine_command = [
+            sys.executable,
+            "-m",
+            "scripts.scrapers.usf.jobs.quarantine_recordsonvinyl",
+            "--limit",
+            str(args.quarantine_limit),
+        ]
+
+        if args.write:
+            quarantine_command.append("--write")
+
+        run_step("quarantine_recordsonvinyl", quarantine_command)
 
     print("\n[PIPELINE] COMPLETE")
     return 0
