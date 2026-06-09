@@ -1,6 +1,9 @@
 name: USF - Bob's Vinyl
 
 on:
+  schedule:
+    - cron: "10 3 * * *"
+
   pull_request:
     paths:
       - ".github/workflows/usf-bobsvinyl.yml"
@@ -104,7 +107,7 @@ jobs:
 
   run:
     name: Run Bob's Vinyl USF pipeline
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     needs: validate
     runs-on: ubuntu-latest
 
@@ -184,17 +187,31 @@ jobs:
         run: |
           set -euo pipefail
 
+          DISCOVERY_MAX_PAGES="${{ inputs.discovery_max_pages }}"
+          DETAIL_LIMIT="${{ inputs.detail_limit }}"
+          STAGE_LIMIT="${{ inputs.stage_limit }}"
+          PROMOTE_LIMIT="${{ inputs.promote_limit }}"
+          WRITE="${{ inputs.write }}"
+
+          if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
+            DISCOVERY_MAX_PAGES="0"
+            DETAIL_LIMIT="500"
+            STAGE_LIMIT="500"
+            PROMOTE_LIMIT="500"
+            WRITE="true"
+          fi
+
           ARGS=(
             --discovery-start-page 1
-            --discovery-max-pages "${{ inputs.discovery_max_pages }}"
+            --discovery-max-pages "${DISCOVERY_MAX_PAGES}"
             --discovery-delay-seconds 0.20
-            --detail-limit "${{ inputs.detail_limit }}"
+            --detail-limit "${DETAIL_LIMIT}"
             --detail-sleep 0.50
-            --stage-limit "${{ inputs.stage_limit }}"
-            --promote-limit "${{ inputs.promote_limit }}"
+            --stage-limit "${STAGE_LIMIT}"
+            --promote-limit "${PROMOTE_LIMIT}"
           )
 
-          if [ "${{ inputs.write }}" = "true" ]; then
+          if [ "${WRITE}" = "true" ]; then
             ARGS+=(--write)
           fi
 
