@@ -1,0 +1,212 @@
+name: USF - Bob's Vinyl
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/usf-bobsvinyl.yml"
+      - "scripts/scrapers/bobsvinyl.py"
+      - "scripts/scrapers/usf/core/**"
+      - "scripts/scrapers/usf/jobs/*bobsvinyl.py"
+      - "supabase/migrations/20260609_usf_large_catalog_retry_policy.sql"
+
+  workflow_dispatch:
+    inputs:
+      discovery_max_pages:
+        description: "Aantal listingpagina's; 0 = volledige catalogus"
+        required: true
+        default: "2"
+        type: string
+
+      detail_limit:
+        description: "Maximaal aantal eligible detailpagina's"
+        required: true
+        default: "5"
+        type: string
+
+      stage_limit:
+        description: "Maximaal aantal rawrecords voor staging"
+        required: true
+        default: "5"
+        type: string
+
+      promote_limit:
+        description: "Maximaal aantal staged offers voor promotion"
+        required: true
+        default: "5"
+        type: string
+
+      write:
+        description: "Echte databasewrites uitvoeren"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usf-bobsvinyl-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate Bob's Vinyl USF pipeline
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            python -m pip install -r requirements.txt
+          else
+            python -m pip install \
+              requests \
+              beautifulsoup4 \
+              "psycopg[binary]" \
+              python-dotenv
+          fi
+
+      - name: Compile Bob's Vinyl USF modules
+        run: |
+          set -euo pipefail
+
+          python -m py_compile \
+            scripts/scrapers/bobsvinyl.py \
+            scripts/scrapers/usf/core/large_catalog_policy.py \
+            scripts/scrapers/usf/jobs/discover_bobsvinyl.py \
+            scripts/scrapers/usf/jobs/detail_bobsvinyl.py \
+            scripts/scrapers/usf/jobs/stage_bobsvinyl.py \
+            scripts/scrapers/usf/jobs/promote_bobsvinyl.py \
+            scripts/scrapers/usf/jobs/run_bobsvinyl_pipeline.py
+
+      - name: Validate command-line interfaces
+        run: |
+          set -euo pipefail
+
+          python -m scripts.scrapers.usf.jobs.discover_bobsvinyl --help >/dev/null
+          python -m scripts.scrapers.usf.jobs.detail_bobsvinyl --help >/dev/null
+          python -m scripts.scrapers.usf.jobs.stage_bobsvinyl --help >/dev/null
+          python -m scripts.scrapers.usf.jobs.promote_bobsvinyl --help >/dev/null
+          python -m scripts.scrapers.usf.jobs.run_bobsvinyl_pipeline --help >/dev/null
+
+          echo "Bob's Vinyl USF CLI validation complete."
+
+  run:
+    name: Run Bob's Vinyl USF pipeline
+    if: github.event_name == 'workflow_dispatch'
+    needs: validate
+    runs-on: ubuntu-latest
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            python -m pip install -r requirements.txt
+          else
+            python -m pip install \
+              requests \
+              beautifulsoup4 \
+              "psycopg[binary]" \
+              python-dotenv
+          fi
+
+      - name: Validate configuration and schema
+        run: |
+          set -euo pipefail
+
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "DATABASE_URL secret ontbreekt."
+            exit 1
+          fi
+
+          python - <<'PY'
+          from scripts.scrapers.usf.core.db import db_connection
+
+          expected = {
+              "ean_enrichment_status",
+              "ean_content_miss_count",
+              "ean_technical_failure_count",
+              "ean_last_attempt_at",
+              "ean_next_attempt_at",
+              "ean_last_result",
+              "ean_last_error",
+              "ean_last_http_status",
+          }
+
+          with db_connection() as conn:
+              with conn.cursor() as cur:
+                  cur.execute(
+                      """
+                      select column_name
+                      from information_schema.columns
+                      where table_schema = 'public'
+                        and table_name = 'shop_product_links'
+                      """
+                  )
+                  found = {str(row[0]) for row in cur.fetchall()}
+
+          missing = sorted(expected - found)
+
+          if missing:
+              raise SystemExit(
+                  f"Large-catalog databasevelden ontbreken: {missing}"
+              )
+
+          print("Databaseconfiguratie en large-catalogschema zijn geldig.")
+          PY
+
+      - name: Run Bob's Vinyl USF pipeline
+        run: |
+          set -euo pipefail
+
+          ARGS=(
+            --discovery-start-page 1
+            --discovery-max-pages "${{ inputs.discovery_max_pages }}"
+            --discovery-delay-seconds 0.20
+            --detail-limit "${{ inputs.detail_limit }}"
+            --detail-sleep 0.50
+            --stage-limit "${{ inputs.stage_limit }}"
+            --promote-limit "${{ inputs.promote_limit }}"
+          )
+
+          if [ "${{ inputs.write }}" = "true" ]; then
+            ARGS+=(--write)
+          fi
+
+          python -u -m scripts.scrapers.usf.jobs.run_bobsvinyl_pipeline \
+            "${ARGS[@]}" \
+            2>&1 | tee /tmp/bobsvinyl-usf-pipeline.log
+
+      - name: Upload pipeline log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bobsvinyl-usf-pipeline-${{ github.run_id }}
+          path: /tmp/bobsvinyl-usf-pipeline.log
+          if-no-files-found: warn
+          retention-days: 14
