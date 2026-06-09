@@ -1,0 +1,121 @@
+name: USF - RecordsonVinyl
+
+on:
+  workflow_dispatch:
+    inputs:
+      detail_limit:
+        description: "Maximaal aantal detailpagina's"
+        required: true
+        default: "25"
+      stage_limit:
+        description: "Maximaal aantal raw records naar staged_offers"
+        required: true
+        default: "25"
+      promote_limit:
+        description: "Maximaal aantal staged offers promoveren"
+        required: true
+        default: "25"
+      quarantine_limit:
+        description: "Maximaal aantal incomplete records quarantinen"
+        required: true
+        default: "100"
+      write:
+        description: "Promote en quarantine werkelijk uitvoeren"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vinylofy-recordsonvinyl
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+
+          if [ -f requirements-scrapers.txt ]; then
+            pip install -r requirements-scrapers.txt
+          fi
+
+          pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+
+      - name: Validate configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          import os
+
+          if not os.environ.get("DATABASE_URL"):
+              raise SystemExit("[ERROR] GitHub secret DATABASE_URL ontbreekt")
+
+          print("[CONFIG] DATABASE_URL is ingesteld")
+          PY
+
+      - name: Run RecordsonVinyl USF pipeline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p output/usf-recordsonvinyl
+
+          DETAIL_LIMIT="${{ inputs.detail_limit }}"
+          STAGE_LIMIT="${{ inputs.stage_limit }}"
+          PROMOTE_LIMIT="${{ inputs.promote_limit }}"
+          QUARANTINE_LIMIT="${{ inputs.quarantine_limit }}"
+          WRITE="${{ inputs.write }}"
+
+          COMMAND=(
+            python -u -m scripts.scrapers.usf.jobs.run_recordsonvinyl_pipeline
+            --detail-limit "$DETAIL_LIMIT"
+            --stage-limit "$STAGE_LIMIT"
+            --promote-limit "$PROMOTE_LIMIT"
+            --quarantine-limit "$QUARANTINE_LIMIT"
+          )
+
+          if [ "$WRITE" = "true" ]; then
+            COMMAND+=(--write)
+          fi
+
+          printf '[WORKFLOW] Command:'
+          printf ' %q' "${COMMAND[@]}"
+          printf '\n'
+
+          "${COMMAND[@]}" 2>&1 | tee output/usf-recordsonvinyl/pipeline.log
+
+      - name: Upload pipeline log
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: usf-recordsonvinyl-${{ github.run_id }}
+          path: output/usf-recordsonvinyl/**
+          if-no-files-found: warn
