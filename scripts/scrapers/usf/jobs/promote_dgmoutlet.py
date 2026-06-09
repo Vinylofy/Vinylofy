@@ -5,7 +5,8 @@ import argparse
 
 from scripts.scrapers.usf.core.promotion import (
     PromotionConfig,
-    preview_staged_offers,
+    fetch_staged_rows,
+    staged_row_to_record,
 )
 from scripts.scrapers.usf.core.promotion_writer import (
     promote_staged_offers_atomically,
@@ -44,24 +45,47 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_preview(limit: int) -> int:
-    items = preview_staged_offers(
-        config=CONFIG,
+    rows = fetch_staged_rows(
+        shop_id=CONFIG.shop_id,
         limit=limit,
     )
 
+    valid = 0
+    invalid = 0
+
     print(
         f"[PROMOTE] shop={CONFIG.shop_id} "
-        f"queued={len(items)} write=False",
+        f"queued={len(rows)} write=False",
         flush=True,
     )
 
-    for item in items:
-        record = item.record
+    for index, row in enumerate(rows, start=1):
+        staged_offer_id = str(row["staged_offer_id"])
+
+        try:
+            record = staged_row_to_record(
+                row=row,
+                config=CONFIG,
+                line_number=index,
+            )
+        except Exception as exc:
+            invalid += 1
+            print(
+                "[PROMOTE-PREVIEW-ERROR]",
+                {
+                    "staged_offer_id": staged_offer_id,
+                    "reason": str(exc),
+                },
+                flush=True,
+            )
+            continue
+
+        valid += 1
 
         print(
             "[PROMOTE-PREVIEW]",
             {
-                "staged_offer_id": item.staged_offer_id,
+                "staged_offer_id": staged_offer_id,
                 "ean": record.ean,
                 "gtin_normalized": record.gtin_normalized,
                 "artist": record.artist,
@@ -79,7 +103,12 @@ def run_preview(limit: int) -> int:
         )
 
     print(
-        "[PROMOTE] dry-run complete; geen databasewrites.",
+        "[PROMOTE] dry-run complete",
+        {
+            "valid": valid,
+            "invalid": invalid,
+            "databasewrites": False,
+        },
         flush=True,
     )
     return 0
@@ -97,6 +126,7 @@ def run_write(limit: int) -> int:
             "shop": CONFIG.shop_id,
             "queued": result.queued,
             "processed": result.processed,
+            "failed": result.failed,
             "new_products": result.new_products,
             "new_prices": result.new_prices,
             "changed_prices": result.changed_prices,
@@ -121,6 +151,16 @@ def run_write(limit: int) -> int:
                 "cover_candidate_inserted": (
                     item.cover_candidate_inserted
                 ),
+            },
+            flush=True,
+        )
+
+    for failure in result.failures:
+        print(
+            "[PROMOTE-ERROR]",
+            {
+                "staged_offer_id": failure.staged_offer_id,
+                "reason": failure.reason,
             },
             flush=True,
         )

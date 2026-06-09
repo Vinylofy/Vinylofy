@@ -36,15 +36,23 @@ class PromotedItem:
 
 
 @dataclass(frozen=True)
+class PromotionFailure:
+    staged_offer_id: str
+    reason: str
+
+
+@dataclass(frozen=True)
 class PromotionWriteResult:
     queued: int
     processed: int
+    failed: int
     new_products: int
     new_prices: int
     changed_prices: int
     history_rows: int
     cover_candidates: int
     items: tuple[PromotedItem, ...]
+    failures: tuple[PromotionFailure, ...]
 
 
 def fetch_locked_staged_rows(
@@ -106,6 +114,7 @@ def promote_staged_offers_atomically(
     )
 
     promoted_items: list[PromotedItem] = []
+    failures: list[PromotionFailure] = []
 
     with psycopg.connect(
         get_database_url(),
@@ -122,114 +131,152 @@ def promote_staged_offers_atomically(
             return PromotionWriteResult(
                 queued=0,
                 processed=0,
+                failed=0,
                 new_products=0,
                 new_prices=0,
                 changed_prices=0,
                 history_rows=0,
                 cover_candidates=0,
                 items=(),
+                failures=(),
             )
 
         with conn.cursor() as cur:
             shop_uuid = ensure_shop(cur, importer_config)
-            imported_at = datetime.now(timezone.utc)
 
-            for index, row in enumerate(rows, start=1):
-                staged_offer_id = str(row["staged_offer_id"])
+        imported_at = datetime.now(timezone.utc)
 
-                record = staged_row_to_record(
-                    row=row,
-                    config=config,
-                    line_number=index,
-                )
+        for index, row in enumerate(rows, start=1):
+            staged_offer_id = str(row["staged_offer_id"])
 
-                product_id, product_inserted = upsert_product(
-                    cur,
-                    record,
-                )
-
-                price_inserted, price_changed = upsert_price(
-                    cur,
-                    product_id,
-                    shop_uuid,
-                    record,
-                    imported_at,
-                )
-
-                history_inserted = maybe_insert_history(
-                    cur,
-                    product_id,
-                    shop_uuid,
-                    record,
-                )
-
-                cover_candidate_inserted = (
-                    maybe_upsert_cover_candidate(
-                        cur,
-                        product_id,
-                        shop_uuid,
-                        record,
-                    )
-                )
-
-                cur.execute(
-                    """
-                    update public.staged_offers
-                    set
-                        stage_status = 'promoted',
-                        stage_reason = null
-                    where id = %s
-                      and stage_status = 'staged'
-                    returning id
-                    """,
-                    (staged_offer_id,),
-                )
-
-                if cur.fetchone() is None:
-                    raise RuntimeError(
-                        "staged offer kon niet atomair als promoted "
-                        f"worden gemarkeerd: {staged_offer_id}"
+            try:
+                # Nested transaction = savepoint. Een fout rolt alleen
+                # dit ene offer terug, niet de overige geldige offers.
+                with conn.transaction():
+                    record = staged_row_to_record(
+                        row=row,
+                        config=config,
+                        line_number=index,
                     )
 
-                # Controleer binnen dezelfde transactie dat de prijs bestaat.
-                cur.execute(
-                    """
-                    select 1
-                    from public.prices
-                    where product_id = %s
-                      and shop_id = %s
-                    """,
-                    (product_id, shop_uuid),
-                )
+                    with conn.cursor() as cur:
+                        product_id, product_inserted = upsert_product(
+                            cur,
+                            record,
+                        )
 
-                if cur.fetchone() is None:
-                    raise RuntimeError(
-                        "price-upsert leverde geen controleerbare prijs op "
-                        f"voor product_id={product_id}"
+                        price_inserted, price_changed = upsert_price(
+                            cur,
+                            product_id,
+                            shop_uuid,
+                            record,
+                            imported_at,
+                        )
+
+                        history_inserted = maybe_insert_history(
+                            cur,
+                            product_id,
+                            shop_uuid,
+                            record,
+                        )
+
+                        cover_candidate_inserted = (
+                            maybe_upsert_cover_candidate(
+                                cur,
+                                product_id,
+                                shop_uuid,
+                                record,
+                            )
+                        )
+
+                        cur.execute(
+                            """
+                            update public.staged_offers
+                            set
+                                stage_status = 'promoted',
+                                stage_reason = null
+                            where id = %s
+                              and stage_status = 'staged'
+                            returning id
+                            """,
+                            (staged_offer_id,),
+                        )
+
+                        if cur.fetchone() is None:
+                            raise RuntimeError(
+                                "staged offer kon niet als promoted "
+                                f"worden gemarkeerd: {staged_offer_id}"
+                            )
+
+                        cur.execute(
+                            """
+                            select 1
+                            from public.prices
+                            where product_id = %s
+                              and shop_id = %s
+                            """,
+                            (product_id, shop_uuid),
+                        )
+
+                        if cur.fetchone() is None:
+                            raise RuntimeError(
+                                "price-upsert leverde geen prijs op "
+                                f"voor product_id={product_id}"
+                            )
+
+                    promoted_items.append(
+                        PromotedItem(
+                            staged_offer_id=staged_offer_id,
+                            product_id=str(product_id),
+                            ean=record.ean,
+                            price=record.price,
+                            product_inserted=bool(product_inserted),
+                            price_inserted=bool(price_inserted),
+                            price_changed=bool(price_changed),
+                            history_inserted=bool(history_inserted),
+                            cover_candidate_inserted=bool(
+                                cover_candidate_inserted
+                            ),
+                        )
                     )
 
-                promoted_items.append(
-                    PromotedItem(
+            except Exception as exc:
+                reason = str(exc)[:500]
+
+                # De mislukte offer-savepoint is al teruggedraaid.
+                # Leg vervolgens de foutstatus apart vast.
+                with conn.transaction():
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            update public.staged_offers
+                            set
+                                stage_status = 'promote_error',
+                                stage_reason = %s
+                            where id = %s
+                              and stage_status = 'staged'
+                            returning id
+                            """,
+                            (reason, staged_offer_id),
+                        )
+
+                        if cur.fetchone() is None:
+                            raise RuntimeError(
+                                "foutstatus kon niet worden vastgelegd "
+                                f"voor staged_offer_id={staged_offer_id}"
+                            )
+
+                failures.append(
+                    PromotionFailure(
                         staged_offer_id=staged_offer_id,
-                        product_id=str(product_id),
-                        ean=record.ean,
-                        price=record.price,
-                        product_inserted=bool(product_inserted),
-                        price_inserted=bool(price_inserted),
-                        price_changed=bool(price_changed),
-                        history_inserted=bool(history_inserted),
-                        cover_candidate_inserted=bool(
-                            cover_candidate_inserted
-                        ),
+                        reason=reason,
                     )
                 )
-
-        # De psycopg-context commit hier alleen als alle records en
-        # controles zonder uitzondering zijn voltooid.
 
     return PromotionWriteResult(
         queued=len(rows),
         processed=len(promoted_items),
+        failed=len(failures),
         new_products=sum(
             int(item.product_inserted)
             for item in promoted_items
@@ -251,4 +298,5 @@ def promote_staged_offers_atomically(
             for item in promoted_items
         ),
         items=tuple(promoted_items),
+        failures=tuple(failures),
     )
