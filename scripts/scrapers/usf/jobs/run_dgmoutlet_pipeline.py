@@ -47,8 +47,8 @@ def add_write_flag(command: list[str], write: bool) -> list[str]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Run de DGM Outlet USF-pipeline: discovery, "
-            "listingmaterialisatie, staging en promotion."
+            "Run de DGM Outlet USF-pipeline: discovery, requeue, "
+            "listingmaterialisatie, staging, promotion en quarantine."
         )
     )
 
@@ -68,12 +68,29 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.2,
     )
 
+    parser.add_argument(
+        "--requeue-stale-hours",
+        type=float,
+        default=24.0,
+    )
+    parser.add_argument(
+        "--requeue-limit",
+        type=int,
+        default=500,
+    )
+    parser.add_argument(
+        "--requeue-target-queue",
+        type=int,
+        default=500,
+    )
+
     parser.add_argument("--materialize-limit", type=int, default=100)
     parser.add_argument("--stage-limit", type=int, default=100)
     parser.add_argument("--promote-limit", type=int, default=100)
     parser.add_argument("--quarantine-limit", type=int, default=100)
 
     parser.add_argument("--skip-discovery", action="store_true")
+    parser.add_argument("--skip-requeue", action="store_true")
     parser.add_argument("--skip-materialize", action="store_true")
     parser.add_argument("--skip-stage", action="store_true")
     parser.add_argument("--skip-promote", action="store_true")
@@ -102,7 +119,13 @@ def validate_args(args: argparse.Namespace) -> None:
             "[ERROR] --discovery-max-pages mag niet negatief zijn."
         )
 
+    if args.requeue_stale_hours < 0:
+        raise SystemExit(
+            "[ERROR] --requeue-stale-hours mag niet negatief zijn."
+        )
+
     for name in (
+        "requeue_limit",
         "materialize_limit",
         "stage_limit",
         "promote_limit",
@@ -115,6 +138,11 @@ def validate_args(args: argparse.Namespace) -> None:
             raise SystemExit(
                 f"[ERROR] --{option} moet minimaal 1 zijn."
             )
+
+    if args.requeue_target_queue < 0:
+        raise SystemExit(
+            "[ERROR] --requeue-target-queue mag niet negatief zijn."
+        )
 
 
 def main() -> int:
@@ -136,6 +164,15 @@ def main() -> int:
     print(
         f"[PIPELINE] discovery_max_pages="
         f"{args.discovery_max_pages}"
+    )
+    print(
+        f"[PIPELINE] requeue_stale_hours="
+        f"{args.requeue_stale_hours}"
+    )
+    print(f"[PIPELINE] requeue_limit={args.requeue_limit}")
+    print(
+        f"[PIPELINE] requeue_target_queue="
+        f"{args.requeue_target_queue}"
     )
     print(
         f"[PIPELINE] materialize_limit="
@@ -161,6 +198,26 @@ def main() -> int:
 
         run_step(
             "discover_dgmoutlet",
+            add_write_flag(command, args.write),
+        )
+
+    if not args.skip_requeue:
+        command = [
+            sys.executable,
+            "-m",
+            "scripts.scrapers.usf.jobs.requeue_stale_links",
+            "--shop-id",
+            "dgmoutlet",
+            "--stale-hours",
+            str(args.requeue_stale_hours),
+            "--limit",
+            str(args.requeue_limit),
+            "--target-queue",
+            str(args.requeue_target_queue),
+        ]
+
+        run_step(
+            "requeue_stale_links",
             add_write_flag(command, args.write),
         )
 
