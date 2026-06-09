@@ -1,6 +1,10 @@
-name: USF - DGM Outlet - Manual Pilot
+name: USF - DGM Outlet
 
 on:
+  schedule:
+    - cron: "40 1 * * *"
+      timezone: "Europe/Amsterdam"
+
   pull_request:
     branches:
       - main
@@ -83,7 +87,7 @@ concurrency:
   group: >-
     ${{ github.event_name == 'pull_request'
         && format('usf-dgmoutlet-pr-{0}', github.event.pull_request.number)
-        || 'usf-dgmoutlet-manual-pilot' }}
+        || 'usf-dgmoutlet-production' }}
   cancel-in-progress: false
 
 jobs:
@@ -160,8 +164,8 @@ jobs:
           python -m scripts.scrapers.usf.jobs.run_dgmoutlet_pipeline --help
 
   run:
-    name: Run manual DGM USF pilot
-    if: github.event_name == 'workflow_dispatch'
+    name: Run DGM USF pipeline
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -223,40 +227,68 @@ jobs:
 
           mkdir -p output/usf-dgmoutlet
 
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            SKIP_DISCOVERY="false"
+            SKIP_REQUEUE="false"
+            DISCOVERY_START_PAGE="1"
+            DISCOVERY_MAX_PAGES="0"
+            REQUEUE_STALE_HOURS="24"
+            REQUEUE_LIMIT="500"
+            REQUEUE_TARGET_QUEUE="500"
+            MATERIALIZE_LIMIT="500"
+            STAGE_LIMIT="500"
+            PROMOTE_LIMIT="500"
+            QUARANTINE_LIMIT="100"
+            WRITE="true"
+          else
+            SKIP_DISCOVERY="${{ inputs.skip_discovery }}"
+            SKIP_REQUEUE="${{ inputs.skip_requeue }}"
+            DISCOVERY_START_PAGE="${{ inputs.discovery_start_page }}"
+            DISCOVERY_MAX_PAGES="${{ inputs.discovery_max_pages }}"
+            REQUEUE_STALE_HOURS="${{ inputs.requeue_stale_hours }}"
+            REQUEUE_LIMIT="${{ inputs.requeue_limit }}"
+            REQUEUE_TARGET_QUEUE="${{ inputs.requeue_target_queue }}"
+            MATERIALIZE_LIMIT="${{ inputs.materialize_limit }}"
+            STAGE_LIMIT="${{ inputs.stage_limit }}"
+            PROMOTE_LIMIT="${{ inputs.promote_limit }}"
+            QUARANTINE_LIMIT="${{ inputs.quarantine_limit }}"
+            WRITE="${{ inputs.write }}"
+          fi
+
           COMMAND=(
             python
             -u
             -m
             scripts.scrapers.usf.jobs.run_dgmoutlet_pipeline
             --discovery-start-page
-            "${{ inputs.discovery_start_page }}"
+            "$DISCOVERY_START_PAGE"
             --discovery-max-pages
-            "${{ inputs.discovery_max_pages }}"
+            "$DISCOVERY_MAX_PAGES"
             --requeue-stale-hours
-            "${{ inputs.requeue_stale_hours }}"
+            "$REQUEUE_STALE_HOURS"
             --requeue-limit
-            "${{ inputs.requeue_limit }}"
+            "$REQUEUE_LIMIT"
             --requeue-target-queue
-            "${{ inputs.requeue_target_queue }}"
+            "$REQUEUE_TARGET_QUEUE"
             --materialize-limit
-            "${{ inputs.materialize_limit }}"
+            "$MATERIALIZE_LIMIT"
             --stage-limit
-            "${{ inputs.stage_limit }}"
+            "$STAGE_LIMIT"
             --promote-limit
-            "${{ inputs.promote_limit }}"
+            "$PROMOTE_LIMIT"
             --quarantine-limit
-            "${{ inputs.quarantine_limit }}"
+            "$QUARANTINE_LIMIT"
           )
 
-          if [ "${{ inputs.skip_discovery }}" = "true" ]; then
+          if [ "$SKIP_DISCOVERY" = "true" ]; then
             COMMAND+=(--skip-discovery)
           fi
 
-          if [ "${{ inputs.skip_requeue }}" = "true" ]; then
+          if [ "$SKIP_REQUEUE" = "true" ]; then
             COMMAND+=(--skip-requeue)
           fi
 
-          if [ "${{ inputs.write }}" = "true" ]; then
+          if [ "$WRITE" = "true" ]; then
             COMMAND+=(--write)
           fi
 
