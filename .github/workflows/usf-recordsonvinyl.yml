@@ -1,6 +1,14 @@
 name: USF - RecordsonVinyl
 
 on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/usf-recordsonvinyl.yml"
+      - "scripts/scrapers/usf/**"
+      - "scripts/importers/common.py"
+
   workflow_dispatch:
     inputs:
       detail_limit:
@@ -29,24 +37,83 @@ permissions:
   contents: read
 
 concurrency:
-  group: vinylofy-recordsonvinyl
+  group: >-
+    ${{ github.event_name == 'pull_request'
+        && format('usf-recordsonvinyl-pr-{0}', github.event.pull_request.number)
+        || 'usf-recordsonvinyl-production' }}
   cancel-in-progress: false
 
 jobs:
+  validate:
+    name: Validate USF pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+
+          if [ -f requirements-scrapers.txt ]; then
+            pip install -r requirements-scrapers.txt
+          fi
+
+          pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+
+      - name: Compile USF modules
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m py_compile \
+            scripts/scrapers/usf/jobs/detail_recordsonvinyl.py \
+            scripts/scrapers/usf/jobs/stage_recordsonvinyl.py \
+            scripts/scrapers/usf/jobs/promote_staged_offers.py \
+            scripts/scrapers/usf/jobs/quarantine_recordsonvinyl.py \
+            scripts/scrapers/usf/jobs/run_recordsonvinyl_pipeline.py
+
+      - name: Validate command-line interfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m scripts.scrapers.usf.jobs.detail_recordsonvinyl --help
+          python -m scripts.scrapers.usf.jobs.stage_recordsonvinyl --help
+          python -m scripts.scrapers.usf.jobs.promote_staged_offers --help
+          python -m scripts.scrapers.usf.jobs.quarantine_recordsonvinyl --help
+          python -m scripts.scrapers.usf.jobs.run_recordsonvinyl_pipeline --help
+
   run:
+    name: Run USF pipeline
+    if: github.event_name == 'workflow_dispatch'
+    needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
@@ -88,21 +155,15 @@ jobs:
 
           mkdir -p output/usf-recordsonvinyl
 
-          DETAIL_LIMIT="${{ inputs.detail_limit }}"
-          STAGE_LIMIT="${{ inputs.stage_limit }}"
-          PROMOTE_LIMIT="${{ inputs.promote_limit }}"
-          QUARANTINE_LIMIT="${{ inputs.quarantine_limit }}"
-          WRITE="${{ inputs.write }}"
-
           COMMAND=(
             python -u -m scripts.scrapers.usf.jobs.run_recordsonvinyl_pipeline
-            --detail-limit "$DETAIL_LIMIT"
-            --stage-limit "$STAGE_LIMIT"
-            --promote-limit "$PROMOTE_LIMIT"
-            --quarantine-limit "$QUARANTINE_LIMIT"
+            --detail-limit "${{ inputs.detail_limit }}"
+            --stage-limit "${{ inputs.stage_limit }}"
+            --promote-limit "${{ inputs.promote_limit }}"
+            --quarantine-limit "${{ inputs.quarantine_limit }}"
           )
 
-          if [ "$WRITE" = "true" ]; then
+          if [ "${{ inputs.write }}" = "true" ]; then
             COMMAND+=(--write)
           fi
 
@@ -110,11 +171,12 @@ jobs:
           printf ' %q' "${COMMAND[@]}"
           printf '\n'
 
-          "${COMMAND[@]}" 2>&1 | tee output/usf-recordsonvinyl/pipeline.log
+          "${COMMAND[@]}" \
+            2>&1 | tee output/usf-recordsonvinyl/pipeline.log
 
       - name: Upload pipeline log
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
           name: usf-recordsonvinyl-${{ github.run_id }}
           path: output/usf-recordsonvinyl/**
