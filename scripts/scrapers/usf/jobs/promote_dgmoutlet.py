@@ -7,6 +7,9 @@ from scripts.scrapers.usf.core.promotion import (
     PromotionConfig,
     preview_staged_offers,
 )
+from scripts.scrapers.usf.core.promotion_writer import (
+    promote_staged_offers_atomically,
+)
 
 
 CONFIG = PromotionConfig(
@@ -24,25 +27,31 @@ CONFIG = PromotionConfig(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Preview DGM staged offers als CanonicalRecord. "
-            "Deze job voert nog geen publieke databasewrites uit."
+            "Promote DGM staged offers via de centrale "
+            "common.py product- en prijslogica."
         )
     )
     parser.add_argument("--limit", type=int, default=5)
+    parser.add_argument(
+        "--write",
+        action="store_true",
+        help=(
+            "Voer echte products/prices/history-writes uit. "
+            "Zonder deze vlag is dit een dry-run."
+        ),
+    )
     return parser
 
 
-def main() -> int:
-    args = build_parser().parse_args()
-
+def run_preview(limit: int) -> int:
     items = preview_staged_offers(
         config=CONFIG,
-        limit=args.limit,
+        limit=limit,
     )
 
     print(
-        f"[PROMOTE-DRY-RUN] shop={CONFIG.shop_id} "
-        f"queued={len(items)}",
+        f"[PROMOTE] shop={CONFIG.shop_id} "
+        f"queued={len(items)} write=False",
         flush=True,
     )
 
@@ -62,24 +71,73 @@ def main() -> int:
                 "currency": record.currency,
                 "availability": record.availability,
                 "product_url": record.product_url,
-                "product_handle": record.product_handle,
                 "cover_candidate_url": (
                     record.cover_candidate_url
-                ),
-                "cover_candidate_source_type": (
-                    record.cover_candidate_source_type
                 ),
             },
             flush=True,
         )
 
     print(
-        "[PROMOTE-DRY-RUN] complete; "
-        "geen products/prices/history writes.",
+        "[PROMOTE] dry-run complete; geen databasewrites.",
+        flush=True,
+    )
+    return 0
+
+
+def run_write(limit: int) -> int:
+    result = promote_staged_offers_atomically(
+        config=CONFIG,
+        limit=limit,
+    )
+
+    print(
+        "[PROMOTE] done",
+        {
+            "shop": CONFIG.shop_id,
+            "queued": result.queued,
+            "processed": result.processed,
+            "new_products": result.new_products,
+            "new_prices": result.new_prices,
+            "changed_prices": result.changed_prices,
+            "history_rows": result.history_rows,
+            "cover_candidates": result.cover_candidates,
+        },
         flush=True,
     )
 
+    for item in result.items:
+        print(
+            "[PROMOTED]",
+            {
+                "staged_offer_id": item.staged_offer_id,
+                "product_id": item.product_id,
+                "ean": item.ean,
+                "price": item.price,
+                "product_inserted": item.product_inserted,
+                "price_inserted": item.price_inserted,
+                "price_changed": item.price_changed,
+                "history_inserted": item.history_inserted,
+                "cover_candidate_inserted": (
+                    item.cover_candidate_inserted
+                ),
+            },
+            flush=True,
+        )
+
     return 0
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+
+    if args.limit < 1:
+        raise SystemExit("[ERROR] --limit moet minimaal 1 zijn.")
+
+    if args.write:
+        return run_write(args.limit)
+
+    return run_preview(args.limit)
 
 
 if __name__ == "__main__":
