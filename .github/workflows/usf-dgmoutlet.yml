@@ -1,0 +1,232 @@
+name: USF - DGM Outlet - Manual Pilot
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/usf-dgmoutlet.yml"
+      - "scripts/scrapers/dgmoutlet.py"
+      - "scripts/scrapers/usf/**"
+      - "scripts/importers/common.py"
+      - "scripts/importers/import_dgmoutlet.py"
+
+  workflow_dispatch:
+    inputs:
+      skip_discovery:
+        description: "Bestaande registry gebruiken en discovery overslaan"
+        required: true
+        default: true
+        type: boolean
+
+      discovery_start_page:
+        description: "Eerste DGM-listingpagina"
+        required: true
+        default: "1"
+
+      discovery_max_pages:
+        description: "Aantal listingpagina's; 0 = volledige listing"
+        required: true
+        default: "2"
+
+      materialize_limit:
+        description: "Maximaal aantal queued links naar raw snapshots"
+        required: true
+        default: "25"
+
+      stage_limit:
+        description: "Maximaal aantal raw snapshots naar staged_offers"
+        required: true
+        default: "25"
+
+      promote_limit:
+        description: "Maximaal aantal staged offers promoveren"
+        required: true
+        default: "25"
+
+      write:
+        description: "Werkelijke registry-, raw-, staging- en publieke writes uitvoeren"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: >-
+    ${{ github.event_name == 'pull_request'
+        && format('usf-dgmoutlet-pr-{0}', github.event.pull_request.number)
+        || 'usf-dgmoutlet-manual-pilot' }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate DGM USF pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+
+          if [ -f requirements-scrapers.txt ]; then
+            pip install -r requirements-scrapers.txt
+          fi
+
+          pip install \
+            requests \
+            beautifulsoup4 \
+            "psycopg[binary]" \
+            python-dotenv \
+            supabase
+
+      - name: Compile DGM USF modules
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m py_compile \
+            scripts/scrapers/dgmoutlet.py \
+            scripts/scrapers/usf/core/db.py \
+            scripts/scrapers/usf/core/link_registry.py \
+            scripts/scrapers/usf/core/raw_materializer.py \
+            scripts/scrapers/usf/core/staging.py \
+            scripts/scrapers/usf/core/promotion.py \
+            scripts/scrapers/usf/core/promotion_writer.py \
+            scripts/scrapers/usf/jobs/discover_dgmoutlet.py \
+            scripts/scrapers/usf/jobs/materialize_dgmoutlet_listing.py \
+            scripts/scrapers/usf/jobs/stage_dgmoutlet.py \
+            scripts/scrapers/usf/jobs/promote_dgmoutlet.py \
+            scripts/scrapers/usf/jobs/run_dgmoutlet_pipeline.py
+
+      - name: Validate command-line interfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m scripts.scrapers.usf.jobs.discover_dgmoutlet --help
+          python -m scripts.scrapers.usf.jobs.materialize_dgmoutlet_listing --help
+          python -m scripts.scrapers.usf.jobs.stage_dgmoutlet --help
+          python -m scripts.scrapers.usf.jobs.promote_dgmoutlet --help
+          python -m scripts.scrapers.usf.jobs.run_dgmoutlet_pipeline --help
+
+  run:
+    name: Run manual DGM USF pilot
+    if: github.event_name == 'workflow_dispatch'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+
+          if [ -f requirements-scrapers.txt ]; then
+            pip install -r requirements-scrapers.txt
+          fi
+
+          pip install \
+            requests \
+            beautifulsoup4 \
+            "psycopg[binary]" \
+            python-dotenv \
+            supabase
+
+      - name: Validate configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          import os
+
+          if not os.environ.get("DATABASE_URL"):
+              raise SystemExit(
+                  "[ERROR] GitHub secret DATABASE_URL ontbreekt"
+              )
+
+          print("[CONFIG] DATABASE_URL is ingesteld")
+          PY
+
+      - name: Run DGM Outlet USF pipeline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p output/usf-dgmoutlet
+
+          COMMAND=(
+            python
+            -u
+            -m
+            scripts.scrapers.usf.jobs.run_dgmoutlet_pipeline
+            --discovery-start-page
+            "${{ inputs.discovery_start_page }}"
+            --discovery-max-pages
+            "${{ inputs.discovery_max_pages }}"
+            --materialize-limit
+            "${{ inputs.materialize_limit }}"
+            --stage-limit
+            "${{ inputs.stage_limit }}"
+            --promote-limit
+            "${{ inputs.promote_limit }}"
+          )
+
+          if [ "${{ inputs.skip_discovery }}" = "true" ]; then
+            COMMAND+=(--skip-discovery)
+          fi
+
+          if [ "${{ inputs.write }}" = "true" ]; then
+            COMMAND+=(--write)
+          fi
+
+          printf '[WORKFLOW] Command:'
+          printf ' %q' "${COMMAND[@]}"
+          printf '\n'
+
+          "${COMMAND[@]}" \
+            2>&1 | tee output/usf-dgmoutlet/pipeline.log
+
+      - name: Upload pipeline log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: usf-dgmoutlet-${{ github.run_id }}
+          path: output/usf-dgmoutlet/**
+          if-no-files-found: warn
