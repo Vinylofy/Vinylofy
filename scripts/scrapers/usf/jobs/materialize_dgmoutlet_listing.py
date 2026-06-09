@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+from typing import Any
+
+from scripts.scrapers.usf.core.models import RawProductData
+from scripts.scrapers.usf.core.raw_materializer import materialize_queued_links
+
+
+SHOP_ID = "dgmoutlet"
+
+
+def clean(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def build_title(payload: dict[str, Any]) -> str | None:
+    raw_name = clean(payload.get("raw_name"))
+    if raw_name:
+        return raw_name
+
+    artist = clean(payload.get("artist"))
+    title = clean(payload.get("title"))
+
+    if artist and title:
+        return f"{artist} - {title}"
+
+    return title or artist
+
+
+def map_link_to_raw(link: dict[str, Any]) -> RawProductData:
+    listing_payload = dict(link.get("payload") or {})
+
+    return RawProductData(
+        shop_id=SHOP_ID,
+        source_url=link["source_url"],
+        source_product_id=link.get("source_product_id"),
+        title_raw=build_title(listing_payload),
+        ean_raw=clean(listing_payload.get("ean")),
+        price_raw=clean(listing_payload.get("price_current")),
+        availability_raw=None,
+        image_url_raw=clean(listing_payload.get("image_url")),
+        payload={
+            "source": "dgmoutlet_listing_payload",
+            "shop_product_link_id": link["id"],
+            "listing_payload": listing_payload,
+        },
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Materialiseer DGM listingpayload atomair naar raw_shop_scrapes."
+        )
+    )
+    parser.add_argument("--limit", type=int, default=5)
+    parser.add_argument(
+        "--write",
+        action="store_true",
+        help="Schrijf raw snapshots en haal links atomair uit de queue.",
+    )
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+
+    result = materialize_queued_links(
+        shop_id=SHOP_ID,
+        limit=args.limit,
+        mapper=map_link_to_raw,
+        write=args.write,
+    )
+
+    print(
+        f"[MATERIALIZE] shop={SHOP_ID} queued={result.queued} "
+        f"processed={result.processed} write={args.write}",
+        flush=True,
+    )
+
+    for item in result.items[:5]:
+        print(
+            "[SAMPLE]",
+            {
+                "link_id": item.link_id,
+                "raw_id": item.raw_id,
+                "source_url": item.raw.source_url,
+                "ean_raw": item.raw.ean_raw,
+                "price_raw": item.raw.price_raw,
+                "availability_raw": item.raw.availability_raw,
+                "image_url_raw": item.raw.image_url_raw,
+            },
+            flush=True,
+        )
+
+    if not args.write:
+        print("[MATERIALIZE] dry-run complete; geen databasewrites.", flush=True)
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
