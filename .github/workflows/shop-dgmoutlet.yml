@@ -1,9 +1,7 @@
-name: LEGACY - Shop - DGM Outlet
+name: PAUSED - LEGACY - Shop - DGM Outlet
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "10 0 * * *"
 
 concurrency:
   group: vinylofy-dgmoutlet
