@@ -1,4 +1,4 @@
-name: Shop - Platenzaak Listing
+name: LEGACY - Shop - Platenzaak Listing
 
 on:
   workflow_dispatch:

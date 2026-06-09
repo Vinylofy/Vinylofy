@@ -1,4 +1,4 @@
-name: Vinylofy Automation
+name: LEGACY - Vinylofy Automation
 
 on:
   workflow_dispatch:
@@ -9,10 +9,6 @@ on:
         default: "bobsvinyl"
         type: choice
         options:
-          - bobsvinyl
-          - dgmoutlet
-          - platomania
-          - platenzaak
           - variaworld
           - groovespin
           - soundshaarlem
@@ -44,10 +40,6 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
-      VINYLOFY_SCRAPER_CMD_BOBSVINYL: ${{ vars.VINYLOFY_SCRAPER_CMD_BOBSVINYL }}
-      VINYLOFY_SCRAPER_CMD_DGMOUTLET: ${{ vars.VINYLOFY_SCRAPER_CMD_DGMOUTLET }}
-      VINYLOFY_SCRAPER_CMD_PLATOMANIA: ${{ vars.VINYLOFY_SCRAPER_CMD_PLATOMANIA }}
-      VINYLOFY_SCRAPER_CMD_PLATENZAAK: ${{ vars.VINYLOFY_SCRAPER_CMD_PLATENZAAK }}
       VINYLOFY_SCRAPER_CMD_VARIAWORLD: ${{ vars.VINYLOFY_SCRAPER_CMD_VARIAWORLD }}
       VINYLOFY_SCRAPER_CMD_GROOVESPIN: python -u scripts/scrapers/groovespin_automation.py --mode full --output-dir data/raw/groovespin --max-pages 30 --limit-ean 250
       VINYLOFY_SCRAPER_CMD_SOUNDSHAARLEM: python -u scripts/scrapers/soundshaarlem.py --mode both --max-pages 13 --limit 192 --limit-details 25 --delay-seconds 0.5 --output-dir data/raw/soundshaarlem

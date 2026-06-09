@@ -1,4 +1,4 @@
-name: Shop - Platomania Step 2
+name: LEGACY - Shop - Platomania Step 2
 
 on:
   workflow_dispatch:

@@ -1,6 +1,10 @@
 name: USF - RecordsonVinyl
 
 on:
+  schedule:
+    - cron: "17 3 * * *"
+      timezone: "Europe/Amsterdam"
+
   pull_request:
     branches:
       - main
@@ -100,7 +104,7 @@ jobs:
 
   run:
     name: Run USF pipeline
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 360
@@ -155,15 +159,29 @@ jobs:
 
           mkdir -p output/usf-recordsonvinyl
 
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            DETAIL_LIMIT="500"
+            STAGE_LIMIT="500"
+            PROMOTE_LIMIT="500"
+            QUARANTINE_LIMIT="100"
+            WRITE="true"
+          else
+            DETAIL_LIMIT="${{ inputs.detail_limit }}"
+            STAGE_LIMIT="${{ inputs.stage_limit }}"
+            PROMOTE_LIMIT="${{ inputs.promote_limit }}"
+            QUARANTINE_LIMIT="${{ inputs.quarantine_limit }}"
+            WRITE="${{ inputs.write }}"
+          fi
+
           COMMAND=(
             python -u -m scripts.scrapers.usf.jobs.run_recordsonvinyl_pipeline
-            --detail-limit "${{ inputs.detail_limit }}"
-            --stage-limit "${{ inputs.stage_limit }}"
-            --promote-limit "${{ inputs.promote_limit }}"
-            --quarantine-limit "${{ inputs.quarantine_limit }}"
+            --detail-limit "$DETAIL_LIMIT"
+            --stage-limit "$STAGE_LIMIT"
+            --promote-limit "$PROMOTE_LIMIT"
+            --quarantine-limit "$QUARANTINE_LIMIT"
           )
 
-          if [ "${{ inputs.write }}" = "true" ]; then
+          if [ "$WRITE" = "true" ]; then
             COMMAND+=(--write)
           fi
 
