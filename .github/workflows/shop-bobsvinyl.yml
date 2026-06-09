@@ -15,8 +15,6 @@ on:
         description: "Pauze tussen listingpagina's"
         required: false
         default: "0.20"
-  schedule:
-    - cron: "40 1 * * *"
 
 permissions:
   contents: read
