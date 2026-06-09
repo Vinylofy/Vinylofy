@@ -15,9 +15,6 @@ on:
         description: "Aantal parallelle workers"
         required: false
         default: "8"
-  schedule:
-    - cron: "10 3 * * *"
-
 permissions:
   contents: read
   actions: read
