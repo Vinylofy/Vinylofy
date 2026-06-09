@@ -15,15 +15,25 @@ def load_env() -> None:
 
 def get_database_url() -> str:
     load_env()
+
     database_url = os.getenv("DATABASE_URL")
+
     if not database_url:
-        raise RuntimeError("DATABASE_URL ontbreekt. Zet DATABASE_URL in .env.local of je environment.")
+        raise RuntimeError(
+            "DATABASE_URL ontbreekt. "
+            "Zet DATABASE_URL in .env.local of je environment."
+        )
+
     return database_url
 
 
 @contextmanager
 def db_connection() -> Iterator[psycopg.Connection]:
-    conn = psycopg.connect(get_database_url())
+    conn = psycopg.connect(
+        get_database_url(),
+        prepare_threshold=None,
+    )
+
     try:
         yield conn
         conn.commit()
