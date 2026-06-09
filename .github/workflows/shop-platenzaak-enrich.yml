@@ -1,4 +1,4 @@
-name: Shop - Platenzaak Enrich
+name: LEGACY - Shop - Platenzaak Enrich
 
 on:
   workflow_dispatch:
