@@ -44,6 +44,11 @@ on:
         required: true
         default: "25"
 
+      quarantine_limit:
+        description: "Maximaal aantal promote errors quarantinen"
+        required: true
+        default: "100"
+
       write:
         description: "Werkelijke registry-, raw-, staging- en publieke writes uitvoeren"
         required: true
@@ -110,10 +115,12 @@ jobs:
             scripts/scrapers/usf/core/staging.py \
             scripts/scrapers/usf/core/promotion.py \
             scripts/scrapers/usf/core/promotion_writer.py \
+            scripts/scrapers/usf/core/quarantine.py \
             scripts/scrapers/usf/jobs/discover_dgmoutlet.py \
             scripts/scrapers/usf/jobs/materialize_dgmoutlet_listing.py \
             scripts/scrapers/usf/jobs/stage_dgmoutlet.py \
             scripts/scrapers/usf/jobs/promote_dgmoutlet.py \
+            scripts/scrapers/usf/jobs/quarantine_dgmoutlet.py \
             scripts/scrapers/usf/jobs/run_dgmoutlet_pipeline.py
 
       - name: Validate command-line interfaces
@@ -125,6 +132,7 @@ jobs:
           python -m scripts.scrapers.usf.jobs.materialize_dgmoutlet_listing --help
           python -m scripts.scrapers.usf.jobs.stage_dgmoutlet --help
           python -m scripts.scrapers.usf.jobs.promote_dgmoutlet --help
+          python -m scripts.scrapers.usf.jobs.quarantine_dgmoutlet --help
           python -m scripts.scrapers.usf.jobs.run_dgmoutlet_pipeline --help
 
   run:
@@ -206,6 +214,8 @@ jobs:
             "${{ inputs.stage_limit }}"
             --promote-limit
             "${{ inputs.promote_limit }}"
+            --quarantine-limit
+            "${{ inputs.quarantine_limit }}"
           )
 
           if [ "${{ inputs.skip_discovery }}" = "true" ]; then

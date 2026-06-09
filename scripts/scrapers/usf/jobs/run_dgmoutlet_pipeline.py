@@ -71,11 +71,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--materialize-limit", type=int, default=100)
     parser.add_argument("--stage-limit", type=int, default=100)
     parser.add_argument("--promote-limit", type=int, default=100)
+    parser.add_argument("--quarantine-limit", type=int, default=100)
 
     parser.add_argument("--skip-discovery", action="store_true")
     parser.add_argument("--skip-materialize", action="store_true")
     parser.add_argument("--skip-stage", action="store_true")
     parser.add_argument("--skip-promote", action="store_true")
+    parser.add_argument("--skip-quarantine", action="store_true")
 
     parser.add_argument(
         "--write",
@@ -104,6 +106,7 @@ def validate_args(args: argparse.Namespace) -> None:
         "materialize_limit",
         "stage_limit",
         "promote_limit",
+        "quarantine_limit",
     ):
         value = getattr(args, name)
 
@@ -140,6 +143,7 @@ def main() -> int:
     )
     print(f"[PIPELINE] stage_limit={args.stage_limit}")
     print(f"[PIPELINE] promote_limit={args.promote_limit}")
+    print(f"[PIPELINE] quarantine_limit={args.quarantine_limit}")
     print(f"[PIPELINE] write={args.write}")
 
     if not args.skip_discovery:
@@ -200,6 +204,20 @@ def main() -> int:
 
         run_step(
             "promote_dgmoutlet",
+            add_write_flag(command, args.write),
+        )
+
+    if not args.skip_quarantine:
+        command = [
+            sys.executable,
+            "-m",
+            "scripts.scrapers.usf.jobs.quarantine_dgmoutlet",
+            "--limit",
+            str(args.quarantine_limit),
+        ]
+
+        run_step(
+            "quarantine_dgmoutlet",
             add_write_flag(command, args.write),
         )
 
