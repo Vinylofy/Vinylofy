@@ -79,13 +79,34 @@ def extract_price(html: str) -> str | None:
 
 
 def extract_availability(html: str) -> str | None:
+    """Extract availability from Shopify product HTML.
+
+    Shopify pages can contain hidden/stale generic text such as "Sold out"
+    even when the active variant JSON says available=true. Therefore explicit
+    Shopify variant availability and visible purchase signals must win over
+    generic negative text.
+    """
     lower = html.lower()
 
-    if '"available":false' in lower or "outofstock" in lower or "sold out" in lower or "uitverkocht" in lower:
+    # Explicit Shopify variant/product JSON wins over generic page text.
+    if re.search(r'"available"\s*:\s*true\b', html, flags=re.IGNORECASE):
+        return "in_stock"
+
+    if re.search(r'"available"\s*:\s*false\b', html, flags=re.IGNORECASE):
         return "out_of_stock"
 
-    if '"available":true' in lower or "instock" in lower or "add to cart" in lower or "in winkelwagen" in lower:
+    # Positive purchase signals win over hidden generic "sold out" snippets.
+    if (
+        "instock" in lower
+        or "add to cart" in lower
+        or "in winkelwagen" in lower
+        or "in winkelmandje" in lower
+        or "binnen 48 uur" in lower
+    ):
         return "in_stock"
+
+    if "outofstock" in lower or "sold out" in lower or "uitverkocht" in lower:
+        return "out_of_stock"
 
     return None
 
