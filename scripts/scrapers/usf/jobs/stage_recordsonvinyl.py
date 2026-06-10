@@ -268,11 +268,25 @@ def extract_availability_from_html(html: str | None) -> str | None:
 
     lower = html.lower()
 
-    if '"available":false' in lower or "outofstock" in lower or "sold out" in lower or "uitverkocht" in lower:
+    # Explicit Shopify variant/product JSON wins over generic page text.
+    if re.search(r'"available"\s*:\s*true\b', html, flags=re.IGNORECASE):
+        return "in_stock"
+
+    if re.search(r'"available"\s*:\s*false\b', html, flags=re.IGNORECASE):
         return "out_of_stock"
 
-    if '"available":true' in lower or "instock" in lower or "add to cart" in lower or "in winkelwagen" in lower:
+    # Positive purchase signals win over hidden generic "sold out" snippets.
+    if (
+        "instock" in lower
+        or "add to cart" in lower
+        or "in winkelwagen" in lower
+        or "in winkelmandje" in lower
+        or "binnen 48 uur" in lower
+    ):
         return "in_stock"
+
+    if "outofstock" in lower or "sold out" in lower or "uitverkocht" in lower:
+        return "out_of_stock"
 
     return None
 
@@ -371,7 +385,9 @@ def build_staged_values(
     price = normalize_price(price_raw) or extract_price_from_html(html)
 
     availability_raw = row.get("availability_raw")
-    availability = clean_text(availability_raw) or extract_availability_from_html(html)
+    html_availability = extract_availability_from_html(html)
+    raw_availability = clean_text(availability_raw)
+    availability = html_availability or raw_availability
 
     image_url_raw = row.get("image_url_raw")
     image_url = clean_text(image_url_raw)
