@@ -2,9 +2,6 @@ name: LEGACY - Shop - Platenzaak Enrich
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "40 4 * * *"
-
 permissions:
   contents: read
   actions: read

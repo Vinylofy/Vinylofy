@@ -1,6 +1,8 @@
 name: USF - Platenzaak
 
 on:
+  schedule:
+    - cron: "55 2 * * *"
   pull_request:
     paths:
       - ".github/workflows/usf-platenzaak.yml"
@@ -134,11 +136,19 @@ jobs:
           set -euo pipefail
           mkdir -p output
 
-          DISCOVERY_MAX_PAGES="${{ inputs.discovery_max_pages }}"
-          DETAIL_LIMIT="${{ inputs.detail_limit }}"
-          STAGE_LIMIT="${{ inputs.stage_limit }}"
-          PROMOTE_LIMIT="${{ inputs.promote_limit }}"
-          WRITE="${{ inputs.write }}"
+          if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
+            DISCOVERY_MAX_PAGES="0"
+            DETAIL_LIMIT="500"
+            STAGE_LIMIT="500"
+            PROMOTE_LIMIT="500"
+            WRITE="true"
+          else
+            DISCOVERY_MAX_PAGES="${{ inputs.discovery_max_pages }}"
+            DETAIL_LIMIT="${{ inputs.detail_limit }}"
+            STAGE_LIMIT="${{ inputs.stage_limit }}"
+            PROMOTE_LIMIT="${{ inputs.promote_limit }}"
+            WRITE="${{ inputs.write }}"
+          fi
 
           COMMAND=(
             python -m scripts.scrapers.usf.jobs.run_platenzaak_pipeline
