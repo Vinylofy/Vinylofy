@@ -66,6 +66,8 @@ def normalize_availability(value: Any) -> str:
         "instock": "in_stock",
         "in_stock": "in_stock",
         "op_voorraad": "in_stock",
+        "in_winkelmandje": "in_stock",
+        "winkelmandje": "in_stock",
         "available": "in_stock",
         "outofstock": "out_of_stock",
         "out_of_stock": "out_of_stock",
