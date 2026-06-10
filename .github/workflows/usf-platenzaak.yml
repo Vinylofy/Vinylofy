@@ -1,0 +1,165 @@
+name: USF - Platenzaak
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/usf-platenzaak.yml"
+      - "scripts/scrapers/platenzaak.py"
+      - "scripts/scrapers/usf/core/**"
+      - "scripts/scrapers/usf/jobs/*platenzaak.py"
+  workflow_dispatch:
+    inputs:
+      discovery_max_pages:
+        description: "Aantal listingpagina's; 0 = volledige catalogus"
+        required: true
+        default: "2"
+        type: string
+      detail_limit:
+        description: "Maximaal aantal eligible detailpagina's"
+        required: true
+        default: "5"
+        type: string
+      stage_limit:
+        description: "Maximaal aantal raw records naar staged_offers"
+        required: true
+        default: "5"
+        type: string
+      promote_limit:
+        description: "Maximaal aantal staged offers promoveren"
+        required: true
+        default: "5"
+        type: string
+      write:
+        description: "Werkelijke registry-, raw-, staging- en publieke writes uitvoeren"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vinylofy-platenzaak
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate Platenzaak USF pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
+          pip install beautifulsoup4 requests "psycopg[binary]" python-dotenv
+
+      - name: Compile Platenzaak USF modules
+        shell: bash
+        run: |
+          python -m py_compile \
+            scripts/scrapers/platenzaak.py \
+            scripts/scrapers/usf/core/db.py \
+            scripts/scrapers/usf/core/ean.py \
+            scripts/scrapers/usf/core/large_catalog_policy.py \
+            scripts/scrapers/usf/core/link_registry.py \
+            scripts/scrapers/usf/core/staging.py \
+            scripts/scrapers/usf/core/promotion.py \
+            scripts/scrapers/usf/core/promotion_writer.py \
+            scripts/scrapers/usf/jobs/discover_platenzaak.py \
+            scripts/scrapers/usf/jobs/detail_platenzaak.py \
+            scripts/scrapers/usf/jobs/stage_platenzaak.py \
+            scripts/scrapers/usf/jobs/promote_platenzaak.py \
+            scripts/scrapers/usf/jobs/run_platenzaak_pipeline.py
+
+      - name: Validate command-line interfaces
+        shell: bash
+        run: |
+          python -m scripts.scrapers.usf.jobs.discover_platenzaak --help >/dev/null
+          python -m scripts.scrapers.usf.jobs.detail_platenzaak --help >/dev/null
+          python -m scripts.scrapers.usf.jobs.stage_platenzaak --help >/dev/null
+          python -m scripts.scrapers.usf.jobs.promote_platenzaak --help >/dev/null
+          python -m scripts.scrapers.usf.jobs.run_platenzaak_pipeline --help >/dev/null
+
+  run:
+    name: Run Platenzaak USF pipeline
+    needs: validate
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
+          pip install beautifulsoup4 requests "psycopg[binary]" python-dotenv
+
+      - name: Validate configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "[ERROR] DATABASE_URL secret ontbreekt"
+            exit 1
+          fi
+
+      - name: Run Platenzaak USF pipeline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output
+
+          DISCOVERY_MAX_PAGES="${{ inputs.discovery_max_pages }}"
+          DETAIL_LIMIT="${{ inputs.detail_limit }}"
+          STAGE_LIMIT="${{ inputs.stage_limit }}"
+          PROMOTE_LIMIT="${{ inputs.promote_limit }}"
+          WRITE="${{ inputs.write }}"
+
+          COMMAND=(
+            python -m scripts.scrapers.usf.jobs.run_platenzaak_pipeline
+            --discovery-max-pages "$DISCOVERY_MAX_PAGES"
+            --detail-limit "$DETAIL_LIMIT"
+            --stage-limit "$STAGE_LIMIT"
+            --promote-limit "$PROMOTE_LIMIT"
+          )
+
+          if [ "$WRITE" = "true" ]; then
+            COMMAND+=(--write)
+          fi
+
+          echo "Running: ${COMMAND[*]}"
+          "${COMMAND[@]}" 2>&1 | tee output/usf-platenzaak-pipeline.log
+
+      - name: Upload pipeline log
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: usf-platenzaak-pipeline-${{ github.run_id }}
+          path: |
+            output/usf-platenzaak-pipeline.log
+          if-no-files-found: warn
