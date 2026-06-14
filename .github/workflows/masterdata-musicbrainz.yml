@@ -1,0 +1,178 @@
+name: Masterdata - MusicBrainz
+
+on:
+  schedule:
+    - cron: "20 */4 * * *"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Aantal products/EANs verwerken"
+        required: true
+        default: "25"
+        type: string
+      write:
+        description: "Werkelijk naar products schrijven"
+        required: true
+        default: false
+        type: boolean
+      update_canonical:
+        description: "Artist/title/format_label aanvullen of veilig bijwerken"
+        required: true
+        default: false
+        type: boolean
+      overwrite_shop:
+        description: "Shop/importer/unknown masterdata overschrijven met MusicBrainz"
+        required: true
+        default: false
+        type: boolean
+      force:
+        description: "Retry-window negeren"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: masterdata-musicbrainz
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate MusicBrainz masterdata worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
+          pip install requests "psycopg[binary]" python-dotenv
+
+      - name: Compile worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/maintenance/masterdata_mb_worker.py
+          python scripts/maintenance/masterdata_mb_worker.py --help >/dev/null
+
+  run:
+    name: Run MusicBrainz masterdata enrichment
+    needs: validate
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      MUSICBRAINZ_USER_AGENT: ${{ vars.MUSICBRAINZ_USER_AGENT }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
+          pip install requests "psycopg[binary]" python-dotenv
+
+      - name: Validate configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "[ERROR] DATABASE_URL secret ontbreekt"
+            exit 1
+          fi
+
+      - name: Apply database migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PYSQL'
+          import os
+          from pathlib import Path
+
+          import psycopg
+
+          database_url = os.environ.get("DATABASE_URL")
+          if not database_url:
+              raise SystemExit("DATABASE_URL ontbreekt")
+
+          migration = Path("supabase/migrations/20260614170000_masterdata_musicbrainz_enrichment.sql")
+          if not migration.exists():
+              raise SystemExit(f"Migration ontbreekt: {migration}")
+
+          sql = migration.read_text(encoding="utf-8")
+
+          with psycopg.connect(database_url) as conn:
+              with conn.cursor() as cur:
+                  cur.execute(sql)
+              conn.commit()
+
+          print("OK: MusicBrainz masterdata migration toegepast")
+          PYSQL
+
+      - name: Run worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output/masterdata_musicbrainz
+
+          if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
+            LIMIT="100"
+            WRITE="true"
+            UPDATE_CANONICAL="false"
+            OVERWRITE_SHOP="false"
+            FORCE="false"
+          else
+            LIMIT="${{ inputs.limit }}"
+            WRITE="${{ inputs.write }}"
+            UPDATE_CANONICAL="${{ inputs.update_canonical }}"
+            OVERWRITE_SHOP="${{ inputs.overwrite_shop }}"
+            FORCE="${{ inputs.force }}"
+          fi
+
+          COMMAND=(
+            python -u scripts/maintenance/masterdata_mb_worker.py
+            --limit "$LIMIT"
+            --output-json output/masterdata_musicbrainz/summary.json
+          )
+
+          if [ "$WRITE" = "true" ]; then COMMAND+=(--write); fi
+          if [ "$UPDATE_CANONICAL" = "true" ]; then COMMAND+=(--update-canonical); fi
+          if [ "$OVERWRITE_SHOP" = "true" ]; then COMMAND+=(--overwrite-shop); fi
+          if [ "$FORCE" = "true" ]; then COMMAND+=(--force); fi
+
+          printf '[WORKFLOW] Command:'
+          printf ' %q' "${COMMAND[@]}"
+          printf '\n'
+
+          "${COMMAND[@]}" 2>&1 | tee output/masterdata_musicbrainz/run.log
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: masterdata-musicbrainz-${{ github.run_id }}
+          path: output/masterdata_musicbrainz/**
+          if-no-files-found: warn
