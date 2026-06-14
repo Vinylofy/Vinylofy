@@ -139,10 +139,10 @@ jobs:
           mkdir -p output/masterdata_musicbrainz
 
           if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
-            LIMIT="100"
+            LIMIT="750"
             WRITE="true"
-            UPDATE_CANONICAL="false"
-            OVERWRITE_SHOP="false"
+            UPDATE_CANONICAL="true"
+            OVERWRITE_SHOP="true"
             FORCE="false"
           else
             LIMIT="${{ inputs.limit }}"

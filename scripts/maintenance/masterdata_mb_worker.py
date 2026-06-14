@@ -22,7 +22,7 @@ except ImportError:  # pragma: no cover
 
 
 MB_BASE = "https://musicbrainz.org/ws/2"
-DEFAULT_USER_AGENT = "VinylofyMasterdataWorker/1.0 (contact: admin@vinylofy.com)"
+DEFAULT_USER_AGENT = "VinylofyMasterdataWorker/1.0 (https://vinylofy.com; contact: info@vinylofy.com)"
 DEFAULT_SLEEP_SECONDS = 1.1
 DEFAULT_TIMEOUT_SECONDS = 30
 
@@ -111,7 +111,7 @@ def parse_args() -> Config:
         update_canonical=bool(args.update_canonical),
         overwrite_shop=bool(args.overwrite_shop),
         include_verified=bool(args.include_verified),
-        user_agent=args.user_agent,
+        user_agent=(args.user_agent or DEFAULT_USER_AGENT).strip() or DEFAULT_USER_AGENT,
         sleep_seconds=max(1.0, args.sleep_seconds),
         timeout_seconds=max(5, args.timeout_seconds),
         output_json=args.output_json,
@@ -144,6 +144,18 @@ class MusicBrainzClient:
             params=params,
             timeout=self.timeout_seconds,
         )
+        if response.status_code == 403:
+            ua = self.session.headers.get("User-Agent", "")
+            raise RuntimeError(
+                "MusicBrainz 403 Forbidden. Waarschijnlijk ontbreekt een geldige User-Agent. "
+                f"Huidige User-Agent={ua!r}"
+            )
+        if response.status_code == 403:
+            ua = self.session.headers.get("User-Agent", "")
+            raise RuntimeError(
+                "MusicBrainz 403 Forbidden. Waarschijnlijk ontbreekt een geldige User-Agent. "
+                f"Huidige User-Agent={ua!r}"
+            )
         if response.status_code == 503:
             raise RuntimeError("MusicBrainz 503/rate limited; verlaag batch of verhoog sleep.")
         response.raise_for_status()
@@ -392,11 +404,16 @@ def update_product(
     canonical_title = row.get("title")
     canonical_format = row.get("format_label")
 
-    if should_replace_canonical(row, canonical_artist, cfg) and mb.get("artist"):
+    can_promote_canonical = (
+        mb.get("status") == "matched"
+        and int(mb.get("score") or 0) >= 95
+    )
+
+    if can_promote_canonical and should_replace_canonical(row, canonical_artist, cfg) and mb.get("artist"):
         canonical_artist = mb["artist"]
-    if should_replace_canonical(row, canonical_title, cfg) and mb.get("title"):
+    if can_promote_canonical and should_replace_canonical(row, canonical_title, cfg) and mb.get("title"):
         canonical_title = mb["title"]
-    if has_format_label and should_replace_canonical(row, canonical_format, cfg) and mb.get("format"):
+    if has_format_label and can_promote_canonical and should_replace_canonical(row, canonical_format, cfg) and mb.get("format"):
         canonical_format = mb["format"]
 
     base_sql = """
