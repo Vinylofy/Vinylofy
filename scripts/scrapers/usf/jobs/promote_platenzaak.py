@@ -23,7 +23,10 @@ CONFIG = PromotionConfig(
     currency="EUR",
     cover_candidate_source_type="shop_listing_image",
     cover_candidate_queue_priority=100,
-    require_artist=True,
+    # MusicBrainz is nu leidend voor canonical artist/title.
+    # Platenzaak blijft offer-source; een geldige EAN + prijs mag niet falen
+    # alleen omdat artist niet betrouwbaar uit shoptekst is afgeleid.
+    require_artist=False,
 )
 
 DEFAULT_LIMIT = 5

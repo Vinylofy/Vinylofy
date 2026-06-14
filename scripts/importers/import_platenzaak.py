@@ -77,8 +77,10 @@ def map_platenzaak_row(row: dict, line_number: int) -> tuple[CanonicalRecord | N
         return None, "invalid_price"
     if not title:
         return None, "missing_title"
+    # MusicBrainz is leidend voor canonical artist/title.
+    # Shopdata mag bij ontbrekende artist nog steeds als offer/placeholder door.
     if not artist:
-        return None, "missing_artist_after_inference"
+        artist = ""
 
     return CanonicalRecord(
         source_row_number=line_number,
