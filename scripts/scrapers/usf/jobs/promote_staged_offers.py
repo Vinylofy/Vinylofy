@@ -122,7 +122,10 @@ def staged_row_to_record(row: dict[str, Any], line_number: int) -> CanonicalReco
         title = normalize_text(row.get("title_normalized"))
 
     if not artist:
-        artist = "Unknown Artist"
+        # Records on Vinyl levert niet altijd een betrouwbare losse artiest.
+        # Schrijf dan geen scraper-fallback zoals "Unknown Artist" naar products.
+        # Laat dit leeg als shop_observed placeholder; MusicBrainz vult canonical artist later.
+        artist = ""
 
     price = row.get("price")
     if price is None:
