@@ -251,6 +251,47 @@ def canonical_gtin_key(record: CanonicalRecord) -> str:
     return normalized
 
 
+SHOP_OBSERVED_METADATA_SOURCE = "shop_observed"
+SHOP_OBSERVED_METADATA_STATUS = "placeholder"
+SHOP_OBSERVED_METADATA_CONFIDENCE = 30
+
+
+def _first_text(*values: str | None) -> str | None:
+    for value in values:
+        cleaned = normalize_text(value)
+        if cleaned:
+            return cleaned
+    return None
+
+
+def _product_search_text(
+    artist: str | None,
+    title: str | None,
+    ean_display: str | None,
+    gtin_normalized: str | None,
+) -> str:
+    return normalize_whitespace(
+        " ".join(
+            value
+            for value in [
+                normalize_text(artist),
+                normalize_text(title),
+                normalize_text(ean_display),
+                normalize_text(gtin_normalized),
+            ]
+            if value
+        )
+    ).lower()
+
+
+def _product_canonical_key(artist: str | None, title: str | None) -> str | None:
+    artist = normalize_text(artist)
+    title = normalize_text(title)
+    if not artist or not title:
+        return None
+    return f"{slugify(artist)}::{slugify(title)}"
+
+
 def read_and_filter(
     csv_path: Path,
     row_mapper: Callable[[dict, int], tuple[CanonicalRecord | None, str | None]],
@@ -356,12 +397,44 @@ def get_existing_product_state(
     cur,
     gtin_normalized: str | None,
     ean: str | None = None,
-) -> tuple[str, str | None, str | None, str | None, str | None, str | None] | None:
+) -> tuple[
+    str,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    float | None,
+    bool | None,
+] | None:
     """
     Vind een bestaand product op GTIN of EAN, inclusief veilige barcode-varianten.
 
     Return:
-        (id, ean, gtin_normalized, format_label, cover_url, canonical_key)
+    (
+      id,
+      ean,
+      gtin_normalized,
+      artist,
+      title,
+      format_label,
+      cover_url,
+      canonical_key,
+      artist_normalized,
+      title_normalized,
+      search_text,
+      metadata_source,
+      metadata_status,
+      metadata_confidence,
+      metadata_needs_review,
+    )
     """
     ean_candidates = identifier_candidates(ean, gtin_normalized)
     gtin_candidates = identifier_candidates(gtin_normalized, ean)
@@ -382,7 +455,22 @@ def get_existing_product_state(
 
     cur.execute(
         f"""
-        select id, ean, gtin_normalized, format_label, cover_url, canonical_key
+        select
+          id,
+          ean,
+          gtin_normalized,
+          artist,
+          title,
+          format_label,
+          cover_url,
+          canonical_key,
+          artist_normalized,
+          title_normalized,
+          search_text,
+          metadata_source,
+          metadata_status,
+          metadata_confidence,
+          metadata_needs_review
         from public.products
         where {" or ".join(clauses)}
         order by updated_at desc nulls last, created_at desc nulls last
@@ -393,7 +481,24 @@ def get_existing_product_state(
     row = cur.fetchone()
     if row is None:
         return None
-    return str(row[0]), row[1], row[2], row[3], row[4], row[5]
+
+    return (
+        str(row[0]),
+        row[1],
+        row[2],
+        row[3],
+        row[4],
+        row[5],
+        row[6],
+        row[7],
+        row[8],
+        row[9],
+        row[10],
+        row[11],
+        row[12],
+        row[13],
+        row[14],
+    )
 
 def _identifier_used_by_other_product(
     cur,
@@ -430,7 +535,23 @@ def _is_product_identity_unique_violation(exc: UniqueViolation) -> bool:
 
 def _update_existing_product_from_record(
     cur,
-    existing: tuple[str, str | None, str | None, str | None, str | None, str | None],
+    existing: tuple[
+        str,
+        str | None,
+        str | None,
+        str | None,
+        str | None,
+        str | None,
+        str | None,
+        str | None,
+        str | None,
+        str | None,
+        str | None,
+        str | None,
+        str | None,
+        float | None,
+        bool | None,
+    ],
     record: CanonicalRecord,
     *,
     ean_display: str,
@@ -442,9 +563,18 @@ def _update_existing_product_from_record(
         product_id,
         current_ean,
         current_gtin_normalized,
+        current_artist,
+        current_title,
         current_format_label,
         current_cover_url,
         current_canonical_key,
+        current_artist_normalized,
+        current_title_normalized,
+        current_search_text,
+        current_metadata_source,
+        current_metadata_status,
+        current_metadata_confidence,
+        current_metadata_needs_review,
     ) = existing
 
     desired_ean = current_ean
@@ -472,17 +602,82 @@ def _update_existing_product_from_record(
         if can_use_gtin:
             desired_gtin_normalized = gtin_normalized
 
-    desired_format_label = current_format_label or record.format_label
-    desired_cover_url = current_cover_url or record.cover_url
-    desired_canonical_key = current_canonical_key or canonical_key
+    # Canonical productdata: shopdata mag alleen lege velden vullen.
+    # Bestaande MusicBrainz/manual/verified/canonical waarden blijven dus intact.
+    desired_artist = _first_text(current_artist, record.artist)
+    desired_title = _first_text(current_title, record.title)
+    desired_format_label = _first_text(current_format_label, record.format_label)
+    desired_cover_url = _first_text(current_cover_url, record.cover_url)
+
+    desired_canonical_key = normalize_text(current_canonical_key)
+    if not desired_canonical_key:
+        desired_canonical_key = (
+            _product_canonical_key(desired_artist, desired_title)
+            or canonical_key
+        )
+
+    desired_artist_normalized = normalize_text(current_artist_normalized)
+    if not desired_artist_normalized and desired_artist:
+        desired_artist_normalized = desired_artist.lower()
+
+    desired_title_normalized = normalize_text(current_title_normalized)
+    if not desired_title_normalized and desired_title:
+        desired_title_normalized = desired_title.lower()
+
+    desired_search_text = normalize_text(current_search_text)
+    if not desired_search_text:
+        desired_search_text = _product_search_text(
+            desired_artist,
+            desired_title,
+            desired_ean,
+            desired_gtin_normalized,
+        ) or search_text
+
+    shop_filled_canonical = any(
+        [
+            normalize_text(current_artist) == "" and normalize_text(desired_artist) != "",
+            normalize_text(current_title) == "" and normalize_text(desired_title) != "",
+            normalize_text(current_format_label) == "" and normalize_text(desired_format_label) != "",
+            normalize_text(current_cover_url) == "" and normalize_text(desired_cover_url) != "",
+            normalize_text(current_canonical_key) == "" and normalize_text(desired_canonical_key) != "",
+        ]
+    )
+
+    desired_metadata_source = normalize_text(current_metadata_source) or None
+    desired_metadata_status = normalize_text(current_metadata_status) or None
+    desired_metadata_confidence = current_metadata_confidence
+    desired_metadata_needs_review = current_metadata_needs_review
+
+    if shop_filled_canonical:
+        desired_metadata_source = desired_metadata_source or SHOP_OBSERVED_METADATA_SOURCE
+        desired_metadata_status = desired_metadata_status or SHOP_OBSERVED_METADATA_STATUS
+        desired_metadata_confidence = (
+            desired_metadata_confidence
+            if desired_metadata_confidence is not None
+            else SHOP_OBSERVED_METADATA_CONFIDENCE
+        )
+        desired_metadata_needs_review = (
+            desired_metadata_needs_review
+            if desired_metadata_needs_review is not None
+            else True
+        )
 
     needs_update = any(
         [
             desired_ean != current_ean,
             desired_gtin_normalized != current_gtin_normalized,
-            desired_format_label != current_format_label,
-            desired_cover_url != current_cover_url,
-            desired_canonical_key != current_canonical_key,
+            normalize_text(desired_artist) != normalize_text(current_artist),
+            normalize_text(desired_title) != normalize_text(current_title),
+            normalize_text(desired_format_label) != normalize_text(current_format_label),
+            normalize_text(desired_cover_url) != normalize_text(current_cover_url),
+            normalize_text(desired_canonical_key) != normalize_text(current_canonical_key),
+            normalize_text(desired_artist_normalized) != normalize_text(current_artist_normalized),
+            normalize_text(desired_title_normalized) != normalize_text(current_title_normalized),
+            normalize_text(desired_search_text) != normalize_text(current_search_text),
+            desired_metadata_source != current_metadata_source,
+            desired_metadata_status != current_metadata_status,
+            desired_metadata_confidence != current_metadata_confidence,
+            desired_metadata_needs_review != current_metadata_needs_review,
         ]
     )
 
@@ -490,28 +685,44 @@ def _update_existing_product_from_record(
         cur.execute(
             """
             update public.products
-            set ean = %s,
-                gtin_normalized = %s,
-                format_label = %s,
-                cover_url = %s,
-                canonical_key = %s,
-                search_text = %s,
-                updated_at = now()
+            set
+              ean = %s,
+              gtin_normalized = %s,
+              artist = %s,
+              title = %s,
+              format_label = %s,
+              cover_url = %s,
+              canonical_key = %s,
+              artist_normalized = %s,
+              title_normalized = %s,
+              search_text = %s,
+              metadata_source = %s,
+              metadata_status = %s,
+              metadata_confidence = %s,
+              metadata_needs_review = %s,
+              updated_at = now()
             where id = %s
             """,
             (
                 desired_ean,
                 desired_gtin_normalized,
+                desired_artist,
+                desired_title,
                 desired_format_label,
                 desired_cover_url,
                 desired_canonical_key,
-                search_text,
+                desired_artist_normalized,
+                desired_title_normalized,
+                desired_search_text,
+                desired_metadata_source,
+                desired_metadata_status,
+                desired_metadata_confidence,
+                desired_metadata_needs_review,
                 product_id,
             ),
         )
 
     return product_id
-
 
 def _insert_product(cur, record: CanonicalRecord) -> str:
     artist_norm = normalize_text(record.artist).lower()
@@ -522,28 +733,36 @@ def _insert_product(cur, record: CanonicalRecord) -> str:
     if not ean_display or not gtin_normalized:
         raise ValueError(f"Cannot upsert product without EAN/GTIN for line {record.source_row_number}")
 
-    search_text = normalize_whitespace(
-        f"{record.artist} {record.title} {ean_display} {gtin_normalized}"
-    ).lower()
-    canonical_key = f"{slugify(record.artist)}::{slugify(record.title)}"
+    search_text = _product_search_text(
+        record.artist,
+        record.title,
+        ean_display,
+        gtin_normalized,
+    )
+
+    canonical_key = _product_canonical_key(record.artist, record.title) or f"{slugify(record.artist)}::{slugify(record.title)}"
 
     cur.execute(
         """
         insert into public.products (
-            ean,
-            gtin_normalized,
-            artist,
-            title,
-            format_label,
-            cover_url,
-            canonical_key,
-            artist_normalized,
-            title_normalized,
-            search_text,
-            created_at,
-            updated_at
+          ean,
+          gtin_normalized,
+          artist,
+          title,
+          format_label,
+          cover_url,
+          canonical_key,
+          artist_normalized,
+          title_normalized,
+          search_text,
+          metadata_source,
+          metadata_status,
+          metadata_confidence,
+          metadata_needs_review,
+          created_at,
+          updated_at
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
         returning id
         """,
         (
@@ -557,10 +776,14 @@ def _insert_product(cur, record: CanonicalRecord) -> str:
             artist_norm,
             title_norm,
             search_text,
+            SHOP_OBSERVED_METADATA_SOURCE,
+            SHOP_OBSERVED_METADATA_STATUS,
+            SHOP_OBSERVED_METADATA_CONFIDENCE,
+            True,
         ),
     )
-    return str(cur.fetchone()[0])
 
+    return str(cur.fetchone()[0])
 
 def upsert_product(cur, record: CanonicalRecord) -> tuple[str, bool]:
     """
