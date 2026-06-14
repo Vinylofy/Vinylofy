@@ -349,7 +349,7 @@ def select_candidates(conn: psycopg.Connection, cfg: Config) -> list[dict[str, A
             from public.products
             where ean is not null
               and char_length(regexp_replace(ean::text, '\\D', '', 'g')) in (8, 12, 13, 14)
-              and (%(ean)s is null or regexp_replace(ean::text, '\\D', '', 'g') = %(ean)s)
+              and (%(ean)s::text is null or regexp_replace(ean::text, '\\D', '', 'g') = %(ean)s::text)
               and (
                 %(include_verified)s = true
                 or coalesce(metadata_status, '') not in ('manual', 'verified')
