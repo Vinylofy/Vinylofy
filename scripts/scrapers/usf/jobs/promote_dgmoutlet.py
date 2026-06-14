@@ -21,7 +21,10 @@ CONFIG = PromotionConfig(
     currency="EUR",
     cover_candidate_source_type="shop_listing_image",
     cover_candidate_queue_priority=100,
-    require_artist=True,
+    # DGM is een EAN/prijs/listing-source.
+# MusicBrainz is leidend voor canonical artist/title.
+# DGM-promotie mag dus niet falen op ontbrekende artist.
+require_artist=False,
 )
 
 

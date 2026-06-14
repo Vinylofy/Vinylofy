@@ -16,18 +16,41 @@ def clean(value: Any) -> str | None:
     return text or None
 
 
-def build_title(payload: dict[str, Any]) -> str | None:
+def build_title(
+    payload: dict[str, Any],
+    *,
+    fallback_url: str | None = None,
+    source_product_id: str | None = None,
+) -> str | None:
+    # DGM is voor Vinylofy primair EAN + prijs + URL.
+    # raw_name/title/artist zijn alleen technische shop-observaties.
+    # Als die ontbreken, maken we een neutrale technische placeholder
+    # zodat promotie niet faalt voordat MusicBrainz canonical data vult.
     raw_name = clean(payload.get("raw_name"))
     if raw_name:
         return raw_name
 
-    artist = clean(payload.get("artist"))
     title = clean(payload.get("title"))
+    if title:
+        return title
 
-    if artist and title:
-        return f"{artist} - {title}"
+    artist = clean(payload.get("artist"))
+    if artist:
+        return artist
 
-    return title or artist
+    ean = clean(payload.get("ean"))
+    if ean:
+        return f"DGM Outlet EAN {ean}"
+
+    handle = clean(source_product_id)
+    if handle:
+        return f"DGM Outlet {handle}"
+
+    url = clean(fallback_url)
+    if url:
+        return f"DGM Outlet {url.rstrip('/').split('/')[-1]}"
+
+    return "DGM Outlet offer"
 
 
 def map_link_to_raw(link: dict[str, Any]) -> RawProductData:
@@ -37,7 +60,11 @@ def map_link_to_raw(link: dict[str, Any]) -> RawProductData:
         shop_id=SHOP_ID,
         source_url=link["source_url"],
         source_product_id=link.get("source_product_id"),
-        title_raw=build_title(listing_payload),
+        title_raw=build_title(
+            listing_payload,
+            fallback_url=link["source_url"],
+            source_product_id=link.get("source_product_id"),
+        ),
         ean_raw=clean(listing_payload.get("ean")),
         price_raw=clean(listing_payload.get("price_current")),
         availability_raw=None,
