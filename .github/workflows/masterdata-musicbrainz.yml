@@ -76,7 +76,7 @@ jobs:
     timeout-minutes: 90
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      MUSICBRAINZ_USER_AGENT: ${{ vars.MUSICBRAINZ_USER_AGENT }}
+      MUSICBRAINZ_USER_AGENT: 'VinylofyMasterdataWorker/1.0 (https://vinylofy.com; contact: info@vinylofy.com)'
     steps:
       - name: Checkout
         uses: actions/checkout@v5
