@@ -180,7 +180,7 @@ def get_table_columns(conn: psycopg.Connection, table_name: str, schema: str = "
             """,
             (schema, table_name),
         )
-        return {str(row[0]) for row in cur.fetchall()}
+        return {str(row["column_name"]) for row in cur.fetchall()}
 
 
 def require_products_columns(conn: psycopg.Connection) -> None:
