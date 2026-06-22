@@ -20,6 +20,24 @@ SHOP_DOMAIN = "bobsvinyl.nl"
 SHOP_COUNTRY = "NL"
 
 
+
+def normalize_listing_availability(raw: object, price: object) -> str:
+    value = str(raw or "").strip().lower()
+
+    if any(token in value for token in ("sold out", "uitverkocht", "niet op voorraad", "out of stock")):
+        return "out_of_stock"
+
+    if value in {"in_stock", "op voorraad", "available", "beschikbaar", "in winkelmandje"}:
+        return "in_stock"
+
+    # Bob listing pages are the current offer source.
+    # If a listing card has a valid price and is not explicitly sold out,
+    # treat it as available for frontend visibility.
+    if str(price or "").strip():
+        return "in_stock"
+
+    return "unknown"
+
 def clean(value: object) -> str:
     return str(value or "").strip()
 
@@ -75,7 +93,7 @@ def main() -> int:
                 shop_country=SHOP_COUNTRY,
                 source_url=link.source_url,
                 price=price,
-                availability=clean(payload.get("availability")) or "unknown",
+                availability=normalize_listing_availability(payload.get("availability"), price),
                 currency="EUR",
                 seen_at=seen_at,
                 raw=payload,
