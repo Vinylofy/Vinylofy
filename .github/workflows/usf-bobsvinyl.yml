@@ -211,6 +211,7 @@ jobs:
             --detail-sleep 0.50
             --stage-limit "${STAGE_LIMIT}"
             --promote-limit "${PROMOTE_LIMIT}"
+    --skip-post-detail-refresh
           )
 
           if [ "${WRITE}" = "true" ]; then

@@ -77,6 +77,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--skip-post-detail-refresh",
+        action="store_true",
+        help=(
+            "Skip the second listing refresh after detail enrichment. "
+            "Useful for full daily listing refreshes where detail processes no new records."
+        ),
+    )
+
+    parser.add_argument(
         "--write",
         action="store_true",
         help="Voer echte registry-, raw- en publieke listing-price writes uit.",
@@ -121,6 +130,7 @@ def main() -> int:
             "skip_discovery": args.skip_discovery,
             "skip_detail": args.skip_detail,
             "allow_legacy_stage_promote": args.allow_legacy_stage_promote,
+            "skip_post_detail_refresh": args.skip_post_detail_refresh,
         },
         flush=True,
     )
@@ -148,10 +158,17 @@ def main() -> int:
             ),
         )
 
-        if not args.skip_discovery:
+        if not args.skip_discovery and not args.skip_post_detail_refresh:
             run_step(
                 "refresh_bobsvinyl_listing_prices_after_detail",
                 add_write_flag(listing_refresh_command(args), args.write),
+            )
+        elif not args.skip_discovery:
+            print()
+            print(
+                "[PIPELINE] SKIP post-detail listing refresh: "
+                "Bob daily listing refresh already ran before detail.",
+                flush=True,
             )
 
     if args.allow_legacy_stage_promote:
