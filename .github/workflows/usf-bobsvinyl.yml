@@ -5,6 +5,8 @@ on:
     - cron: "10 3 * * *"
 
   pull_request:
+    branches:
+      - main
     paths:
       - ".github/workflows/usf-bobsvinyl.yml"
       - "scripts/scrapers/bobsvinyl.py"
@@ -19,25 +21,21 @@ on:
         required: true
         default: "2"
         type: string
-
       detail_limit:
         description: "Maximaal aantal eligible detailpagina's"
         required: true
         default: "5"
         type: string
-
       stage_limit:
-        description: "Maximaal aantal rawrecords voor staging"
+        description: "Maximaal aantal raw records voor staging"
         required: true
         default: "5"
         type: string
-
       promote_limit:
         description: "Maximaal aantal staged offers voor promotion"
         required: true
         default: "5"
         type: string
-
       write:
         description: "Echte databasewrites uitvoeren"
         required: true
@@ -53,7 +51,7 @@ concurrency:
 
 jobs:
   validate:
-    name: Validate Bob's Vinyl USF pipeline
+    name: Validate Bobsvinyl USF pipeline
     runs-on: ubuntu-latest
 
     steps:
@@ -69,21 +67,15 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-
           if [ -f requirements.txt ]; then
             python -m pip install -r requirements.txt
           else
-            python -m pip install \
-              requests \
-              beautifulsoup4 \
-              "psycopg[binary]" \
-              python-dotenv
+            python -m pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
           fi
 
-      - name: Compile Bob's Vinyl USF modules
+      - name: Compile Bobsvinyl USF modules
         run: |
           set -euo pipefail
-
           python -m py_compile \
             scripts/scrapers/bobsvinyl.py \
             scripts/scrapers/usf/core/large_catalog_policy.py \
@@ -97,18 +89,16 @@ jobs:
       - name: Validate command-line interfaces
         run: |
           set -euo pipefail
-
           python -m scripts.scrapers.usf.jobs.discover_bobsvinyl --help >/dev/null
           python -m scripts.scrapers.usf.jobs.refresh_bobsvinyl_listing_prices --help >/dev/null
           python -m scripts.scrapers.usf.jobs.detail_bobsvinyl --help >/dev/null
           python -m scripts.scrapers.usf.jobs.stage_bobsvinyl --help >/dev/null
           python -m scripts.scrapers.usf.jobs.promote_bobsvinyl --help >/dev/null
           python -m scripts.scrapers.usf.jobs.run_bobsvinyl_pipeline --help >/dev/null
-
-          echo "Bob's Vinyl USF CLI validation complete."
+          echo "Bobsvinyl USF CLI validation complete."
 
   run:
-    name: Run Bob's Vinyl USF pipeline
+    name: Run Bobsvinyl USF pipeline
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     needs: validate
     runs-on: ubuntu-latest
@@ -129,15 +119,10 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-
           if [ -f requirements.txt ]; then
             python -m pip install -r requirements.txt
           else
-            python -m pip install \
-              requests \
-              beautifulsoup4 \
-              "psycopg[binary]" \
-              python-dotenv
+            python -m pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
           fi
 
       - name: Validate configuration and schema
@@ -165,27 +150,22 @@ jobs:
 
           with db_connection() as conn:
               with conn.cursor() as cur:
-                  cur.execute(
-                      """
+                  cur.execute("""
                       select column_name
                       from information_schema.columns
                       where table_schema = 'public'
                         and table_name = 'shop_product_links'
-                      """
-                  )
+                  """)
                   found = {str(row[0]) for row in cur.fetchall()}
 
           missing = sorted(expected - found)
-
           if missing:
-              raise SystemExit(
-                  f"Large-catalog databasevelden ontbreken: {missing}"
-              )
+              raise SystemExit(f"Large-catalog databasevelden ontbreken: {missing}")
 
           print("Databaseconfiguratie en large-catalogschema zijn geldig.")
           PY
 
-      - name: Run Bob's Vinyl USF pipeline
+      - name: Run Bobsvinyl USF pipeline
         run: |
           set -euo pipefail
 
@@ -206,12 +186,9 @@ jobs:
           ARGS=(
             --discovery-start-page 1
             --discovery-max-pages "${DISCOVERY_MAX_PAGES}"
-            --discovery-delay-seconds 0.20
             --detail-limit "${DETAIL_LIMIT}"
-            --detail-sleep 0.50
             --stage-limit "${STAGE_LIMIT}"
             --promote-limit "${PROMOTE_LIMIT}"
-    --skip-post-detail-refresh
           )
 
           if [ "${WRITE}" = "true" ]; then
