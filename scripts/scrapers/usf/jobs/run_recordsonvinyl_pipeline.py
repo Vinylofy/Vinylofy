@@ -38,6 +38,10 @@ def run_step(label: str, command: list[str]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
 
+    parser.add_argument("--listing-start-page", type=int, default=1)
+    parser.add_argument("--listing-max-pages", type=int, default=5)
+    parser.add_argument("--listing-sleep", type=float, default=1.5)
+    parser.add_argument("--skip-listing-refresh", action="store_true")
     parser.add_argument("--detail-limit", type=int, default=25)
     parser.add_argument("--stage-limit", type=int, default=25)
     parser.add_argument("--promote-limit", type=int, default=25)
@@ -68,11 +72,29 @@ def main() -> int:
         )
 
     print("[PIPELINE] RecordsonVinyl USF pipeline")
+    print(f"[PIPELINE] listing_max_pages={args.listing_max_pages}")
     print(f"[PIPELINE] detail_limit={args.detail_limit}")
     print(f"[PIPELINE] stage_limit={args.stage_limit}")
     print(f"[PIPELINE] promote_limit={args.promote_limit}")
     print(f"[PIPELINE] quarantine_limit={args.quarantine_limit}")
     print(f"[PIPELINE] write={args.write}")
+
+    
+    if not args.skip_listing_refresh:
+        listing_command = [
+            sys.executable,
+            "-m",
+            "scripts.scrapers.usf.jobs.refresh_recordsonvinyl_listing_prices",
+            "--start-page",
+            str(args.listing_start_page),
+            "--max-pages",
+            str(args.listing_max_pages),
+            "--sleep",
+            str(args.listing_sleep),
+        ]
+        if args.write:
+            listing_command.append("--write")
+        run_step("refresh_recordsonvinyl_listing_prices", listing_command)
 
     if not args.skip_detail:
         run_step(

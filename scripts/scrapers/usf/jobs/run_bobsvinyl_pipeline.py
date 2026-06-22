@@ -187,7 +187,7 @@ def main() -> int:
         command = [
             sys.executable,
             "-m",
-            "scripts.scrapers.usf.jobs.discover_bobsvinyl",
+            "scripts.scrapers.usf.jobs.refresh_bobsvinyl_listing_prices",
             "--start-page",
             str(args.discovery_start_page),
             "--max-pages",
@@ -197,7 +197,7 @@ def main() -> int:
         ]
 
         run_step(
-            "discover_bobsvinyl",
+            "refresh_bobsvinyl_listing_prices",
             add_write_flag(command, args.write),
         )
 

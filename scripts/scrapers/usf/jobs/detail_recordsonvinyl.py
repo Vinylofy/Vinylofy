@@ -161,7 +161,7 @@ def main() -> int:
         html = response.text
         title = extract_title(html)
         ean_raw = extract_ean(html)
-        price_raw = extract_price(html)
+        price_raw = None  # listing-first policy: detail pages are not a current price source
         availability_raw = extract_availability(html)
         image_url_raw = extract_image_url(html)
 
@@ -179,6 +179,7 @@ def main() -> int:
                 "html_length": len(html),
                 "status_code": response.status_code,
                 "source": "detail_recordsonvinyl",
+                "detail_price_policy": "no_current_price_from_detail_page",
             },
         )
 

@@ -85,6 +85,7 @@ jobs:
           set -euo pipefail
 
           python -m py_compile \
+            scripts/scrapers/usf/jobs/refresh_recordsonvinyl_listing_prices.py \
             scripts/scrapers/usf/jobs/detail_recordsonvinyl.py \
             scripts/scrapers/usf/jobs/stage_recordsonvinyl.py \
             scripts/scrapers/usf/jobs/promote_staged_offers.py \
@@ -96,6 +97,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          python -m scripts.scrapers.usf.jobs.refresh_recordsonvinyl_listing_prices --help
           python -m scripts.scrapers.usf.jobs.detail_recordsonvinyl --help
           python -m scripts.scrapers.usf.jobs.stage_recordsonvinyl --help
           python -m scripts.scrapers.usf.jobs.promote_staged_offers --help
@@ -160,6 +162,7 @@ jobs:
           mkdir -p output/usf-recordsonvinyl
 
           if [ "${{ github.event_name }}" = "schedule" ]; then
+            LISTING_MAX_PAGES="0"
             DETAIL_LIMIT="500"
             STAGE_LIMIT="500"
             PROMOTE_LIMIT="500"
@@ -175,7 +178,7 @@ jobs:
 
           COMMAND=(
             python -u -m scripts.scrapers.usf.jobs.run_recordsonvinyl_pipeline
-            --detail-limit "$DETAIL_LIMIT"
+            --listing-max-pages "$LISTING_MAX_PAGES" --detail-limit "$DETAIL_LIMIT"
             --stage-limit "$STAGE_LIMIT"
             --promote-limit "$PROMOTE_LIMIT"
             --quarantine-limit "$QUARANTINE_LIMIT"

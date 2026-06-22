@@ -88,6 +88,7 @@ jobs:
             scripts/scrapers/bobsvinyl.py \
             scripts/scrapers/usf/core/large_catalog_policy.py \
             scripts/scrapers/usf/jobs/discover_bobsvinyl.py \
+            scripts/scrapers/usf/jobs/refresh_bobsvinyl_listing_prices.py \
             scripts/scrapers/usf/jobs/detail_bobsvinyl.py \
             scripts/scrapers/usf/jobs/stage_bobsvinyl.py \
             scripts/scrapers/usf/jobs/promote_bobsvinyl.py \
@@ -98,6 +99,7 @@ jobs:
           set -euo pipefail
 
           python -m scripts.scrapers.usf.jobs.discover_bobsvinyl --help >/dev/null
+          python -m scripts.scrapers.usf.jobs.refresh_bobsvinyl_listing_prices --help >/dev/null
           python -m scripts.scrapers.usf.jobs.detail_bobsvinyl --help >/dev/null
           python -m scripts.scrapers.usf.jobs.stage_bobsvinyl --help >/dev/null
           python -m scripts.scrapers.usf.jobs.promote_bobsvinyl --help >/dev/null

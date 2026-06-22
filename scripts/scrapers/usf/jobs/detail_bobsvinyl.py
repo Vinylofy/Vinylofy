@@ -301,7 +301,7 @@ def insert_raw_snapshot(
             link.source_product_id,
             build_listing_title(listing_payload),
             outcome.ean,
-            clean(listing_payload.get("price")),
+            None,  # listing-first policy: detail jobs do not write current prices
             None,
             clean(listing_payload.get("image_url")),
             Jsonb(raw_payload),
