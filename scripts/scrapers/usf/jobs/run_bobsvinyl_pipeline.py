@@ -43,7 +43,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--discovery-start-page", type=int, default=1)
     parser.add_argument("--discovery-max-pages", type=int, default=2)
+    parser.add_argument(
+        "--discovery-delay-seconds",
+        type=float,
+        default=0.20,
+        help="Legacy workflow compatibility argument. Bob listing refresh currently ignores this.",
+    )
     parser.add_argument("--detail-limit", type=int, default=500)
+    parser.add_argument(
+        "--detail-sleep",
+        type=float,
+        default=0.50,
+        help="Sleep between detail requests.",
+    )
 
     # Legacy args blijven bestaan zodat bestaande workflow-inputs niet breken.
     parser.add_argument("--stage-limit", type=int, default=500)
@@ -77,8 +89,12 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("[ERROR] --discovery-start-page moet minimaal 1 zijn.")
     if args.discovery_max_pages < 0:
         raise SystemExit("[ERROR] --discovery-max-pages mag niet negatief zijn.")
+    if args.discovery_delay_seconds < 0:
+        raise SystemExit("[ERROR] --discovery-delay-seconds mag niet negatief zijn.")
     if args.detail_limit < 1:
         raise SystemExit("[ERROR] --detail-limit moet minimaal 1 zijn.")
+    if args.detail_sleep < 0:
+        raise SystemExit("[ERROR] --detail-sleep mag niet negatief zijn.")
     if args.stage_limit < 1:
         raise SystemExit("[ERROR] --stage-limit moet minimaal 1 zijn.")
     if args.promote_limit < 1:
@@ -96,7 +112,9 @@ def main() -> int:
             "policy": "listing_first_current_pricing",
             "discovery_start_page": args.discovery_start_page,
             "discovery_max_pages": args.discovery_max_pages,
+            "discovery_delay_seconds": args.discovery_delay_seconds,
             "detail_limit": args.detail_limit,
+            "detail_sleep": args.detail_sleep,
             "stage_limit": args.stage_limit,
             "promote_limit": args.promote_limit,
             "write": args.write,
@@ -123,6 +141,8 @@ def main() -> int:
                     "scripts.scrapers.usf.jobs.detail_bobsvinyl",
                     "--limit",
                     str(args.detail_limit),
+                    "--sleep",
+                    str(args.detail_sleep),
                 ],
                 args.write,
             ),
