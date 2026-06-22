@@ -302,7 +302,7 @@ def insert_raw_snapshot(link: EligibleLink, outcome: DetailOutcome) -> str:
         source_product_id=link.source_product_id,
         title_raw=build_listing_title(listing_payload),
         ean_raw=outcome.ean or clean(details.get("ean")) or None,
-        price_raw=clean(listing_payload.get("price")) or None,
+        price_raw=None,  # listing-first policy: current price comes from listing refresh only
         availability_raw=clean(listing_payload.get("availability")) or None,
         image_url_raw=outcome.image_url,
         payload=raw_payload,
