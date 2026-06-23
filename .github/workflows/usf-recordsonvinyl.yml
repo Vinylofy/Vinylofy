@@ -176,7 +176,8 @@ jobs:
             WRITE="${{ inputs.write }}"
           fi
 
-          COMMAND=(
+          LISTING_MAX_PAGES="${LISTING_MAX_PAGES:-0}"
+        COMMAND=(
             python -u -m scripts.scrapers.usf.jobs.run_recordsonvinyl_pipeline
             --listing-max-pages "$LISTING_MAX_PAGES" --detail-limit "$DETAIL_LIMIT"
             --stage-limit "$STAGE_LIMIT"
