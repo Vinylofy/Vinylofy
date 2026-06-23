@@ -202,7 +202,13 @@ export async function GET(request: Request) {
     const suggestions = buildArtistSuggestions(rows, query)
       .sort(sortSuggestions)
       .slice(0, 5)
-      .map(({ bucket, score, ...suggestion }) => suggestion);
+      .map((suggestion) => ({
+        id: suggestion.id,
+        kind: suggestion.kind,
+        label: suggestion.label,
+        href: suggestion.href,
+        searchValue: suggestion.searchValue,
+      }));
 
     return NextResponse.json({ suggestions });
   } catch (error) {
