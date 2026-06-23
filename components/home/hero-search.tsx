@@ -23,7 +23,7 @@ export function HeroSearch() {
         </div>
 
         <p className="mt-2 text-sm text-neutral-500">
-          Zoek direct op artiest, album of nummer.
+          Zoek op artiest of albumtitel. Suggesties tonen alleen artiesten.
         </p>
 
         <div className="mt-4 w-full max-w-[920px]">
