@@ -192,6 +192,7 @@ def main() -> int:
 
     all_links: list[DiscoveredLink] = []
     all_offers: list[ListingOffer] = []
+    seen_page_signatures: set[tuple[str, ...]] = set()
 
     page = args.start_page
     pages_done = 0
@@ -270,6 +271,23 @@ def main() -> int:
             listing_url=listing_url,
             seen_at=seen_at,
         )
+
+        page_signature = tuple(link.source_url for link in links)
+        if page_signature and page_signature in seen_page_signatures:
+            print(
+                "[LISTING-REFRESH][WARN] duplicate listing page detected; stopping safely.",
+                {
+                    "page": page,
+                    "links": len(links),
+                    "first_link": page_signature[0],
+                    "last_link": page_signature[-1],
+                },
+                flush=True,
+            )
+            break
+        if page_signature:
+            seen_page_signatures.add(page_signature)
+
 
         print(
             "[LISTING-REFRESH-PAGE]",
