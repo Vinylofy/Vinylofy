@@ -165,6 +165,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Aantal listingpagina's; 0 = doorlopen tot lege pagina.",
     )
     parser.add_argument("--sleep", type=float, default=1.5)
+    parser.add_argument(
+        "--max-page-failures",
+        type=int,
+        default=3,
+        help="Stop veilig na dit aantal opeenvolgende mislukte listingpagina's.",
+    )
     parser.add_argument("--write", action="store_true")
     return parser
 
@@ -178,6 +184,8 @@ def main() -> int:
         raise SystemExit("[ERROR] --max-pages mag niet negatief zijn.")
     if args.sleep < 0:
         raise SystemExit("[ERROR] --sleep mag niet negatief zijn.")
+    if args.max_page_failures < 1:
+        raise SystemExit("[ERROR] --max-page-failures moet minimaal 1 zijn.")
 
     session = requests.Session()
     seen_at = datetime.now(timezone.utc)
@@ -187,19 +195,74 @@ def main() -> int:
 
     page = args.start_page
     pages_done = 0
+    consecutive_page_failures = 0
+    failed_pages: list[int] = []
 
     while args.max_pages == 0 or pages_done < args.max_pages:
         listing_url = f"{BASE_URL}/collections/all?page={page}"
 
         print(f"[LISTING-REFRESH] page={page} url={listing_url}", flush=True)
 
-        response = session.get(listing_url, timeout=30)
+        try:
+            response = session.get(listing_url, timeout=30)
+        except requests.RequestException as exc:
+            consecutive_page_failures += 1
+            failed_pages.append(page)
+            print(
+                "[LISTING-REFRESH][WARN] request failed; skipping page",
+                {
+                    "page": page,
+                    "failure": str(exc),
+                    "consecutive_page_failures": consecutive_page_failures,
+                    "max_page_failures": args.max_page_failures,
+                },
+                flush=True,
+            )
+            if consecutive_page_failures >= args.max_page_failures:
+                print(
+                    "[LISTING-REFRESH][WARN] max consecutive page failures reached; stopping safely.",
+                    {"failed_pages": failed_pages[-args.max_page_failures:]},
+                    flush=True,
+                )
+                break
+            pages_done += 1
+            page += 1
+            if args.max_pages == 0 or pages_done < args.max_pages:
+                time.sleep(args.sleep)
+            continue
 
         if response.status_code == 429:
             print("[LISTING-REFRESH][WARN] HTTP 429, stopping safely.", flush=True)
             break
 
+        if response.status_code >= 500:
+            consecutive_page_failures += 1
+            failed_pages.append(page)
+            print(
+                "[LISTING-REFRESH][WARN] server error; skipping page",
+                {
+                    "page": page,
+                    "status_code": response.status_code,
+                    "consecutive_page_failures": consecutive_page_failures,
+                    "max_page_failures": args.max_page_failures,
+                },
+                flush=True,
+            )
+            if consecutive_page_failures >= args.max_page_failures:
+                print(
+                    "[LISTING-REFRESH][WARN] max consecutive server errors reached; stopping safely.",
+                    {"failed_pages": failed_pages[-args.max_page_failures:]},
+                    flush=True,
+                )
+                break
+            pages_done += 1
+            page += 1
+            if args.max_pages == 0 or pages_done < args.max_pages:
+                time.sleep(args.sleep)
+            continue
+
         response.raise_for_status()
+        consecutive_page_failures = 0
 
         links, offers = parse_listing_page(
             response.text,
