@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 
 type SearchSuggestion = {
   id: string;
-  kind: "artist" | "album";
+  kind: "artist";
   label: string;
   sublabel?: string;
   href: string;
@@ -293,7 +293,7 @@ export function SearchAutocompleteForm({
                   </span>
 
                   <span className="shrink-0 rounded-full border border-neutral-200 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-500">
-                    {suggestion.kind === "artist" ? "Artiest" : "Album"}
+                    Artiest
                   </span>
                 </button>
               );
