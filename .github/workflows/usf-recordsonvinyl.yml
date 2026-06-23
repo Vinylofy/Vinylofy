@@ -3,7 +3,34 @@ name: USF - RecordsonVinyl
 on:
   schedule:
     - cron: "17 3 * * *"
-      timezone: "Europe/Amsterdam"
+
+  workflow_dispatch:
+    inputs:
+      listing_max_pages:
+        description: "Aantal listingpagina's; 0 = volledige catalogus"
+        required: true
+        default: "0"
+      detail_limit:
+        description: "Maximaal aantal detailpagina's"
+        required: true
+        default: "500"
+      stage_limit:
+        description: "Maximaal aantal raw records naar staged_offers"
+        required: true
+        default: "500"
+      promote_limit:
+        description: "Maximaal aantal staged offers promoveren"
+        required: true
+        default: "500"
+      quarantine_limit:
+        description: "Maximaal aantal incomplete records quarantinen"
+        required: true
+        default: "100"
+      write:
+        description: "Werkelijke databasewrites uitvoeren"
+        required: true
+        default: true
+        type: boolean
 
   pull_request:
     branches:
@@ -13,52 +40,25 @@ on:
       - "scripts/scrapers/usf/**"
       - "scripts/importers/common.py"
 
-  workflow_dispatch:
-    inputs:
-      detail_limit:
-        description: "Maximaal aantal detailpagina's"
-        required: true
-        default: "25"
-      stage_limit:
-        description: "Maximaal aantal raw records naar staged_offers"
-        required: true
-        default: "25"
-      promote_limit:
-        description: "Maximaal aantal staged offers promoveren"
-        required: true
-        default: "25"
-      quarantine_limit:
-        description: "Maximaal aantal incomplete records quarantinen"
-        required: true
-        default: "100"
-      write:
-        description: "Promote en quarantine werkelijk uitvoeren"
-        required: true
-        default: false
-        type: boolean
-
 permissions:
   contents: read
 
 concurrency:
-  group: >-
-    ${{ github.event_name == 'pull_request'
-        && format('usf-recordsonvinyl-pr-{0}', github.event.pull_request.number)
-        || 'usf-recordsonvinyl-production' }}
+  group: ${{ github.event_name == 'pull_request' && format('usf-recordsonvinyl-pr-{0}', github.event.pull_request.number) || 'usf-recordsonvinyl-production' }}
   cancel-in-progress: false
 
 jobs:
   validate:
-    name: Validate USF pipeline
+    name: Validate ROV USF pipeline
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
@@ -66,7 +66,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           python -m pip install --upgrade pip
 
           if [ -f requirements.txt ]; then
@@ -79,11 +78,10 @@ jobs:
 
           pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
 
-      - name: Compile USF modules
+      - name: Compile ROV USF modules
         shell: bash
         run: |
           set -euo pipefail
-
           python -m py_compile \
             scripts/scrapers/usf/jobs/refresh_recordsonvinyl_listing_prices.py \
             scripts/scrapers/usf/jobs/detail_recordsonvinyl.py \
@@ -96,7 +94,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           python -m scripts.scrapers.usf.jobs.refresh_recordsonvinyl_listing_prices --help
           python -m scripts.scrapers.usf.jobs.detail_recordsonvinyl --help
           python -m scripts.scrapers.usf.jobs.stage_recordsonvinyl --help
@@ -105,7 +102,7 @@ jobs:
           python -m scripts.scrapers.usf.jobs.run_recordsonvinyl_pipeline --help
 
   run:
-    name: Run USF pipeline
+    name: Run ROV USF pipeline
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     needs: validate
     runs-on: ubuntu-latest
@@ -116,10 +113,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
@@ -127,7 +124,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           python -m pip install --upgrade pip
 
           if [ -f requirements.txt ]; then
@@ -144,7 +140,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           python - <<'PY'
           import os
 
@@ -169,6 +164,7 @@ jobs:
             QUARANTINE_LIMIT="100"
             WRITE="true"
           else
+            LISTING_MAX_PAGES="${{ inputs.listing_max_pages }}"
             DETAIL_LIMIT="${{ inputs.detail_limit }}"
             STAGE_LIMIT="${{ inputs.stage_limit }}"
             PROMOTE_LIMIT="${{ inputs.promote_limit }}"
@@ -177,9 +173,16 @@ jobs:
           fi
 
           LISTING_MAX_PAGES="${LISTING_MAX_PAGES:-0}"
-        COMMAND=(
+          DETAIL_LIMIT="${DETAIL_LIMIT:-500}"
+          STAGE_LIMIT="${STAGE_LIMIT:-500}"
+          PROMOTE_LIMIT="${PROMOTE_LIMIT:-500}"
+          QUARANTINE_LIMIT="${QUARANTINE_LIMIT:-100}"
+          WRITE="${WRITE:-true}"
+
+          COMMAND=(
             python -u -m scripts.scrapers.usf.jobs.run_recordsonvinyl_pipeline
-            --listing-max-pages "$LISTING_MAX_PAGES" --detail-limit "$DETAIL_LIMIT"
+            --listing-max-pages "$LISTING_MAX_PAGES"
+            --detail-limit "$DETAIL_LIMIT"
             --stage-limit "$STAGE_LIMIT"
             --promote-limit "$PROMOTE_LIMIT"
             --quarantine-limit "$QUARANTINE_LIMIT"
@@ -193,12 +196,11 @@ jobs:
           printf ' %q' "${COMMAND[@]}"
           printf '\n'
 
-          "${COMMAND[@]}" \
-            2>&1 | tee output/usf-recordsonvinyl/pipeline.log
+          "${COMMAND[@]}" 2>&1 | tee output/usf-recordsonvinyl/pipeline.log
 
       - name: Upload pipeline log
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: usf-recordsonvinyl-${{ github.run_id }}
           path: output/usf-recordsonvinyl/**
