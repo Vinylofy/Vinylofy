@@ -5,7 +5,7 @@ type ProductSummaryCardProps = {
 };
 
 export function ProductSummaryCard({ product }: ProductSummaryCardProps) {
-  const coverSrc = product.coverUrl ?? "/placeholders/vinylofy-cover-placeholder.png";
+  const coverSrc = product.coverUrl ?? "/placeholders/cover-placeholder-white.png";
   const hasRealCover = Boolean(product.coverUrl);
 
   return (

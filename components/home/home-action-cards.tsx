@@ -11,17 +11,17 @@ const links: QuickLink[] = [
   {
     href: "/nieuwe-releases",
     label: "Nieuwe releases",
-    imageSrc: "/home-cards/nieuwe-releases.png",
+    imageSrc: "/home-cards/nieuwe-releases-white.png",
   },
   {
     href: "/top-25",
     label: "Top 25",
-    imageSrc: "/home-cards/top-25.png",
+    imageSrc: "/home-cards/top-25-white.png",
   },
   {
     href: "/topdeals",
     label: "Best Deals",
-    imageSrc: "/home-cards/best-deals.png",
+    imageSrc: "/home-cards/best-deals-white.png",
   },
 ];
 
