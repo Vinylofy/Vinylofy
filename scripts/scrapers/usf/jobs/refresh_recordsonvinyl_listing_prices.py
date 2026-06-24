@@ -32,18 +32,28 @@ def normalize_product_url(href: str) -> str:
 
 
 def extract_price(text: str) -> str | None:
-    patterns = [
+    """
+    Records on Vinyl cards can contain both:
+    'Standaard prijs €39.95 aanbiedingsprijs €15.95'.
+
+    In that case, use the active sale price, not the strike-through compare-at price.
+    """
+    sale_patterns = [
+        r"(?:aanbiedingsprijs|sale\s*price)\s*[:]?\s*€\s*([0-9]+(?:[.,][0-9]{1,2})?)",
+        r"(?:aanbiedingsprijs|sale\s*price)\s*[:]?\s*EUR\s*([0-9]+(?:[.,][0-9]{1,2})?)",
+    ]
+
+    fallback_patterns = [
         r"€\s*([0-9]+(?:[.,][0-9]{1,2})?)",
         r"EUR\s*([0-9]+(?:[.,][0-9]{1,2})?)",
     ]
 
-    for pattern in patterns:
+    for pattern in sale_patterns + fallback_patterns:
         match = re.search(pattern, text, flags=re.I)
         if match:
             return match.group(1).replace(",", ".")
 
     return None
-
 
 def extract_availability(text: str) -> str:
     lower = text.lower()
