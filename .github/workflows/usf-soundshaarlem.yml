@@ -1,0 +1,189 @@
+name: USF - Sounds Haarlem
+
+on:
+  schedule:
+    - cron: "45 2 * * *"
+
+  workflow_dispatch:
+    inputs:
+      seed_limit:
+        description: "Aantal collectie-seeds; 0 = alle seeds"
+        required: true
+        default: "1"
+        type: string
+      max_pages_per_seed:
+        description: "Aantal pagina's per collectie; 0 = tot leeg/dubbel"
+        required: true
+        default: "1"
+        type: string
+      run_detail:
+        description: "Ook detail scrape draaien"
+        required: true
+        default: false
+        type: boolean
+      detail_limit:
+        description: "Maximaal aantal detailpagina's"
+        required: true
+        default: "25"
+        type: string
+      fast_price_sync:
+        description: "Snelle price-only bulk sync gebruiken"
+        required: true
+        default: true
+        type: boolean
+      write:
+        description: "Werkelijke databasewrites uitvoeren"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usf-soundshaarlem-production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate Sounds Haarlem USF pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
+          pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+
+      - name: Compile Sounds Haarlem USF modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/scrapers/usf/jobs/refresh_soundshaarlem_listing_prices.py \
+            scripts/scrapers/usf/jobs/detail_soundshaarlem.py \
+            scripts/scrapers/usf/jobs/run_soundshaarlem_pipeline.py
+
+      - name: Validate command-line interfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m scripts.scrapers.usf.jobs.refresh_soundshaarlem_listing_prices --help >/dev/null
+          python -m scripts.scrapers.usf.jobs.detail_soundshaarlem --help >/dev/null
+          python -m scripts.scrapers.usf.jobs.run_soundshaarlem_pipeline --help >/dev/null
+
+  run:
+    name: Run Sounds Haarlem USF pipeline
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
+          pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+
+      - name: Validate configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "[ERROR] DATABASE_URL secret ontbreekt"
+            exit 1
+          fi
+          echo "[CONFIG] DATABASE_URL is ingesteld"
+
+      - name: Run Sounds Haarlem USF pipeline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output/usf-soundshaarlem
+
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            SEED_LIMIT="0"
+            MAX_PAGES_PER_SEED="0"
+            DETAIL_LIMIT="1000"
+            FAST_PRICE_SYNC="true"
+            WRITE="true"
+
+            DAY_OF_WEEK="$(date -u +%u)"
+            if [ "$DAY_OF_WEEK" = "1" ] || [ "$DAY_OF_WEEK" = "4" ]; then
+              RUN_DETAIL="true"
+            else
+              RUN_DETAIL="false"
+            fi
+          else
+            SEED_LIMIT="${{ inputs.seed_limit }}"
+            MAX_PAGES_PER_SEED="${{ inputs.max_pages_per_seed }}"
+            RUN_DETAIL="${{ inputs.run_detail }}"
+            DETAIL_LIMIT="${{ inputs.detail_limit }}"
+            FAST_PRICE_SYNC="${{ inputs.fast_price_sync }}"
+            WRITE="${{ inputs.write }}"
+          fi
+
+          COMMAND=(
+            python -u -m scripts.scrapers.usf.jobs.run_soundshaarlem_pipeline
+            --seed-limit "$SEED_LIMIT"
+            --max-pages-per-seed "$MAX_PAGES_PER_SEED"
+            --delay-seconds 0.35
+            --detail-limit "$DETAIL_LIMIT"
+            --detail-delay-seconds 0.50
+            --detail-rescrape-days 14
+          )
+
+          if [ "$FAST_PRICE_SYNC" = "true" ]; then
+            COMMAND+=(--fast-price-sync)
+          fi
+
+          if [ "$RUN_DETAIL" = "true" ]; then
+            COMMAND+=(--run-detail)
+          fi
+
+          if [ "$WRITE" = "true" ]; then
+            COMMAND+=(--write)
+          fi
+
+          printf '[WORKFLOW] Command:'
+          printf ' %q' "${COMMAND[@]}"
+          printf '\n'
+
+          "${COMMAND[@]}" 2>&1 | tee output/usf-soundshaarlem/pipeline.log
+
+      - name: Upload pipeline log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usf-soundshaarlem-${{ github.run_id }}
+          path: output/usf-soundshaarlem/**
+          if-no-files-found: warn
+          retention-days: 14
