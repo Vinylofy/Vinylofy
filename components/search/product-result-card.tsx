@@ -10,7 +10,7 @@ export function ProductResultCard({ item }: ProductResultCardProps) {
   const effectiveShopCount = Math.max(item.foundIn ?? 0, visibleShopCount);
   const shouldShowShopCount = effectiveShopCount > 3;
   const hasMeta = Boolean(item.freshnessLabel) || shouldShowShopCount;
-  const coverSrc = item.coverUrl ?? "/placeholders/cover-placeholder-white.png";
+  const coverSrc = item.coverUrl ?? "/placeholders/vinylofy-cover-placeholder-white2.png";
   const hasRealCover = Boolean(item.coverUrl);
 
   return (
