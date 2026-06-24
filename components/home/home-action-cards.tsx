@@ -15,12 +15,12 @@ const links: QuickLink[] = [
   },
   {
     href: "/top-25",
-    label: "Populaire vinyl",
+    label: "Top 25",
     imageSrc: "/home-cards/top-25.png",
   },
   {
     href: "/topdeals",
-    label: "BestOffers",
+    label: "Best Deals",
     imageSrc: "/home-cards/best-deals.png",
   },
 ];
@@ -35,21 +35,18 @@ export function HomeActionCards() {
         <Link
           key={href}
           href={href}
+          aria-label={label}
           className="group flex flex-col items-center justify-start text-center"
         >
-          <div className="flex h-[88px] items-center justify-center md:h-[96px]">
+          <div className="flex h-[112px] items-center justify-center md:h-[128px]">
             <Image
               src={imageSrc}
               alt=""
-              width={256}
-              height={256}
+              width={320}
+              height={320}
               className="h-full w-auto object-contain transition group-hover:scale-[1.02]"
             />
           </div>
-
-          <span className="mt-2 text-sm font-medium text-neutral-700 transition group-hover:text-orange-600 md:text-base">
-            {label}
-          </span>
         </Link>
       ))}
     </nav>
