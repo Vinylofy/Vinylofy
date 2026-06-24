@@ -175,7 +175,7 @@ jobs:
             QUARANTINE_LIMIT="100"
             WRITE="true"
             FAST_PRICE_SYNC="true"
-            PRICE_ONLY="false"
+            PRICE_ONLY="true"
           else
             LISTING_MAX_PAGES="${{ inputs.listing_max_pages }}"
             DETAIL_LIMIT="${{ inputs.detail_limit }}"
