@@ -9,7 +9,7 @@ export function HeroSearch() {
       <div className="mx-auto flex max-w-6xl flex-col items-center text-center">
         <div className="mb-3 w-full max-w-[220px] md:mb-4 md:max-w-[270px]">
           <Image
-            src="/vinylofy-hero-logo-v2.png"
+            src="/vinylofy-hero-logo-white3.png"
             alt="Vinylofy"
             width={1536}
             height={1152}
