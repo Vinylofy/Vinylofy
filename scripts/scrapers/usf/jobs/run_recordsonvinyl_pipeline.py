@@ -42,6 +42,11 @@ def main() -> int:
     parser.add_argument("--listing-max-pages", type=int, default=5)
     parser.add_argument("--listing-sleep", type=float, default=1.5)
     parser.add_argument("--skip-listing-refresh", action="store_true")
+    parser.add_argument(
+        "--fast-price-sync",
+        action="store_true",
+        help="Gebruik snelle bulk price sync voor ROV listing refresh.",
+    )
     parser.add_argument("--detail-limit", type=int, default=25)
     parser.add_argument("--stage-limit", type=int, default=25)
     parser.add_argument("--promote-limit", type=int, default=25)
@@ -78,6 +83,7 @@ def main() -> int:
     print(f"[PIPELINE] promote_limit={args.promote_limit}")
     print(f"[PIPELINE] quarantine_limit={args.quarantine_limit}")
     print(f"[PIPELINE] write={args.write}")
+    print(f"[PIPELINE] fast_price_sync={args.fast_price_sync}")
 
     
     if not args.skip_listing_refresh:
@@ -92,6 +98,8 @@ def main() -> int:
             "--sleep",
             str(args.listing_sleep),
         ]
+        if args.fast_price_sync:
+            listing_command.append("--fast-price-sync")
         if args.write:
             listing_command.append("--write")
         run_step("refresh_recordsonvinyl_listing_prices", listing_command)

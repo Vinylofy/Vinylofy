@@ -10,6 +10,16 @@ on:
         description: "Aantal listingpagina's; 0 = volledige catalogus"
         required: true
         default: "0"
+      fast_price_sync:
+        description: "Gebruik snelle bulk price sync vanuit de link registry"
+        required: true
+        default: true
+        type: boolean
+      price_only:
+        description: "Alleen snelle listing-prijsupdate; sla detail/stage/promote/quarantine over"
+        required: true
+        default: false
+        type: boolean
       detail_limit:
         description: "Maximaal aantal detailpagina's"
         required: true
@@ -83,6 +93,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m py_compile \
+            scripts/scrapers/usf/core/fast_listing_price_sync.py \
             scripts/scrapers/usf/jobs/refresh_recordsonvinyl_listing_prices.py \
             scripts/scrapers/usf/jobs/detail_recordsonvinyl.py \
             scripts/scrapers/usf/jobs/stage_recordsonvinyl.py \
@@ -163,6 +174,8 @@ jobs:
             PROMOTE_LIMIT="500"
             QUARANTINE_LIMIT="100"
             WRITE="true"
+            FAST_PRICE_SYNC="true"
+            PRICE_ONLY="false"
           else
             LISTING_MAX_PAGES="${{ inputs.listing_max_pages }}"
             DETAIL_LIMIT="${{ inputs.detail_limit }}"
@@ -170,6 +183,8 @@ jobs:
             PROMOTE_LIMIT="${{ inputs.promote_limit }}"
             QUARANTINE_LIMIT="${{ inputs.quarantine_limit }}"
             WRITE="${{ inputs.write }}"
+            FAST_PRICE_SYNC="${{ inputs.fast_price_sync }}"
+            PRICE_ONLY="${{ inputs.price_only }}"
           fi
 
           LISTING_MAX_PAGES="${LISTING_MAX_PAGES:-0}"
@@ -178,6 +193,8 @@ jobs:
           PROMOTE_LIMIT="${PROMOTE_LIMIT:-500}"
           QUARANTINE_LIMIT="${QUARANTINE_LIMIT:-100}"
           WRITE="${WRITE:-true}"
+          FAST_PRICE_SYNC="${FAST_PRICE_SYNC:-true}"
+          PRICE_ONLY="${PRICE_ONLY:-false}"
 
           COMMAND=(
             python -u -m scripts.scrapers.usf.jobs.run_recordsonvinyl_pipeline
@@ -187,6 +204,14 @@ jobs:
             --promote-limit "$PROMOTE_LIMIT"
             --quarantine-limit "$QUARANTINE_LIMIT"
           )
+
+          if [ "$FAST_PRICE_SYNC" = "true" ]; then
+            COMMAND+=(--fast-price-sync)
+          fi
+
+          if [ "$PRICE_ONLY" = "true" ]; then
+            COMMAND+=(--skip-detail --skip-stage --skip-promote --skip-quarantine)
+          fi
 
           if [ "$WRITE" = "true" ]; then
             COMMAND+=(--write)

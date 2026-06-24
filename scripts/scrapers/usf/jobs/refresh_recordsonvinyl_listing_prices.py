@@ -13,6 +13,7 @@ from bs4 import BeautifulSoup
 from scripts.scrapers.usf.core.db import db_connection
 from scripts.scrapers.usf.core.link_registry import upsert_discovered_links
 from scripts.scrapers.usf.core.listing_price_sync import ListingOffer, sync_listing_offers
+from scripts.scrapers.usf.core.fast_listing_price_sync import bulk_update_prices_from_link_registry
 from scripts.scrapers.usf.core.models import DiscoveredLink
 
 
@@ -180,6 +181,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=3,
         help="Stop veilig na dit aantal opeenvolgende mislukte listingpagina's.",
+    )
+    parser.add_argument(
+        "--fast-price-sync",
+        action="store_true",
+        help="Gebruik snelle bulk price sync vanuit shop_product_links; sla generieke per-offer matching over.",
     )
     parser.add_argument("--write", action="store_true")
     return parser
@@ -367,9 +373,18 @@ def main() -> int:
     )
 
     with db_connection() as conn:
-        stats = sync_listing_offers(conn, all_offers, write=True)
-
-    print("[LISTING-REFRESH] price_sync", vars(stats), flush=True)
+        if args.fast_price_sync:
+            stats = bulk_update_prices_from_link_registry(
+                conn,
+                shop_registry_id=SHOP_ID,
+                shop_domain=SHOP_DOMAIN,
+                write=True,
+                currency="EUR",
+            )
+            print("[LISTING-REFRESH] fast_price_sync", vars(stats), flush=True)
+        else:
+            stats = sync_listing_offers(conn, all_offers, write=True)
+            print("[LISTING-REFRESH] price_sync", vars(stats), flush=True)
 
     return 0
 
