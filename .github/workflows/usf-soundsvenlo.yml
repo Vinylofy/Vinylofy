@@ -1,0 +1,163 @@
+name: USF - Sounds Venlo
+
+on:
+  schedule:
+    - cron: "15 3 * * *"
+
+  workflow_dispatch:
+    inputs:
+      seed_limit:
+        description: "Aantal seedcategorieen; 0 = alle seeds"
+        required: true
+        default: "1"
+        type: string
+      max_pages_per_seed:
+        description: "Aantal pagina's per seed; 0 = tot leeg/dubbel"
+        required: true
+        default: "1"
+        type: string
+      fast_price_sync:
+        description: "Snelle price-only bulk sync gebruiken"
+        required: true
+        default: true
+        type: boolean
+      write:
+        description: "Werkelijke databasewrites uitvoeren"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usf-soundsvenlo-production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate Sounds Venlo USF pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
+          pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+
+      - name: Compile Sounds Venlo USF modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/scrapers/usf/jobs/discover_soundsvenlo.py \
+            scripts/scrapers/usf/jobs/refresh_soundsvenlo_listing_prices.py \
+            scripts/scrapers/usf/jobs/run_soundsvenlo_pipeline.py
+
+      - name: Validate command-line interfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m scripts.scrapers.usf.jobs.discover_soundsvenlo --help >/dev/null
+          python -m scripts.scrapers.usf.jobs.refresh_soundsvenlo_listing_prices --help >/dev/null
+          python -m scripts.scrapers.usf.jobs.run_soundsvenlo_pipeline --help >/dev/null
+
+  run:
+    name: Run Sounds Venlo USF pipeline
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
+          pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+
+      - name: Validate configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "[ERROR] DATABASE_URL secret ontbreekt"
+            exit 1
+          fi
+          echo "[CONFIG] DATABASE_URL is ingesteld"
+
+      - name: Run Sounds Venlo USF pipeline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output/usf-soundsvenlo
+
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            SEED_LIMIT="0"
+            MAX_PAGES_PER_SEED="0"
+            FAST_PRICE_SYNC="true"
+            WRITE="true"
+          else
+            SEED_LIMIT="${{ inputs.seed_limit }}"
+            MAX_PAGES_PER_SEED="${{ inputs.max_pages_per_seed }}"
+            FAST_PRICE_SYNC="${{ inputs.fast_price_sync }}"
+            WRITE="${{ inputs.write }}"
+          fi
+
+          COMMAND=(
+            python -u -m scripts.scrapers.usf.jobs.run_soundsvenlo_pipeline
+            --seed-limit "$SEED_LIMIT"
+            --max-pages-per-seed "$MAX_PAGES_PER_SEED"
+            --delay-seconds 0.35
+            --max-page-failures 3
+          )
+
+          if [ "$FAST_PRICE_SYNC" = "true" ]; then
+            COMMAND+=(--fast-price-sync)
+          fi
+
+          if [ "$WRITE" = "true" ]; then
+            COMMAND+=(--write)
+          fi
+
+          printf '[WORKFLOW] Command:'
+          printf ' %q' "${COMMAND[@]}"
+          printf '\n'
+
+          "${COMMAND[@]}" 2>&1 | tee output/usf-soundsvenlo/pipeline.log
+
+      - name: Upload pipeline log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usf-soundsvenlo-${{ github.run_id }}
+          path: output/usf-soundsvenlo/**
+          if-no-files-found: warn
+          retention-days: 14
