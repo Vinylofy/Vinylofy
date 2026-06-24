@@ -44,23 +44,39 @@ def normalize_url(url: str) -> str:
     return urlunparse(("https", "soundshaarlem.nl", parsed.path.rstrip("/"), "", "", ""))
 
 
-def extract_price(text: str) -> str | None:
+def extract_prices(text: str) -> tuple[str | None, str | None]:
     text = clean(text)
 
     sale_matches = re.findall(r"Sale price\s*€\s*([0-9]+(?:[.,][0-9]{1,2})?)", text, flags=re.I)
-    if sale_matches:
-        return sale_matches[-1].replace(",", ".")
-
     regular_matches = re.findall(r"Regular price\s*€\s*([0-9]+(?:[.,][0-9]{1,2})?)", text, flags=re.I)
-    if regular_matches:
-        return regular_matches[0].replace(",", ".")
 
-    matches = PRICE_RE.findall(text)
-    if matches:
-        return matches[-1].replace(",", ".")
+    if sale_matches:
+        current_price = sale_matches[-1].replace(",", ".")
+        old_price = regular_matches[0].replace(",", ".") if regular_matches else None
+        if old_price == current_price:
+            old_price = None
+        return current_price, old_price
 
-    return None
+    all_prices = [price.replace(",", ".") for price in PRICE_RE.findall(text)]
 
+    if not all_prices:
+        return None, None
+
+    # Sounds Haarlem sale cards/details can render as:
+    # old strikethrough price first, current sale price second.
+    if len(all_prices) >= 2:
+        current_price = all_prices[-1]
+        old_price = all_prices[0]
+        if old_price == current_price:
+            old_price = None
+        return current_price, old_price
+
+    return all_prices[0], None
+
+
+def extract_price(text: str) -> str | None:
+    current_price, _old_price = extract_prices(text)
+    return current_price
 
 def extract_availability(text: str) -> str:
     lower = clean(text).lower()
@@ -134,7 +150,12 @@ def parse_product_page(html: str, source_url: str, listing_payload: dict[str, An
     genre = extract_detail_field(text, "Genre")
     extra = extract_detail_field(text, "Extra")
 
-    price = extract_price(text) or clean(listing_payload.get("price") or listing_payload.get("price_current")) or None
+    price, price_old = extract_prices(text)
+    if not price:
+        price = clean(listing_payload.get("price") or listing_payload.get("price_current")) or None
+    if not price_old:
+        price_old = clean(listing_payload.get("price_old")) or None
+
     availability = extract_availability(text)
     if availability == "unknown":
         availability = clean(listing_payload.get("availability")) or "unknown"
@@ -153,6 +174,8 @@ def parse_product_page(html: str, source_url: str, listing_payload: dict[str, An
         "ean_normalized": barcode,
         "ean_source": "detail_barcode_text" if barcode else None,
         "price_current": price,
+        "price_old": price_old,
+        "is_sale": bool(price_old and price_old != price),
         "currency": "EUR" if price else None,
         "availability": availability,
         "availability_text": availability,

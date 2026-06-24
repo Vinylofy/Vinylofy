@@ -85,21 +85,39 @@ def source_product_id_from_url(url: str) -> str | None:
     return path.rsplit("/products/", 1)[-1] or None
 
 
-def extract_price(text: str) -> str | None:
+def extract_prices(text: str) -> tuple[str | None, str | None]:
     text = clean(text)
+
     sale_matches = re.findall(r"Sale price\s*€\s*([0-9]+(?:[.,][0-9]{1,2})?)", text, flags=re.I)
-    if sale_matches:
-        return sale_matches[-1].replace(",", ".")
-
     regular_matches = re.findall(r"Regular price\s*€\s*([0-9]+(?:[.,][0-9]{1,2})?)", text, flags=re.I)
-    if regular_matches:
-        return regular_matches[0].replace(",", ".")
 
-    matches = PRICE_RE.findall(text)
-    if matches:
-        return matches[-1].replace(",", ".")
+    if sale_matches:
+        current_price = sale_matches[-1].replace(",", ".")
+        old_price = regular_matches[0].replace(",", ".") if regular_matches else None
+        if old_price == current_price:
+            old_price = None
+        return current_price, old_price
 
-    return None
+    all_prices = [price.replace(",", ".") for price in PRICE_RE.findall(text)]
+
+    if not all_prices:
+        return None, None
+
+    # Sounds Haarlem sale cards can render as:
+    # old strikethrough price first, current sale price second.
+    if len(all_prices) >= 2:
+        current_price = all_prices[-1]
+        old_price = all_prices[0]
+        if old_price == current_price:
+            old_price = None
+        return current_price, old_price
+
+    return all_prices[0], None
+
+
+def extract_price(text: str) -> str | None:
+    current_price, _old_price = extract_prices(text)
+    return current_price
 
 
 def extract_availability(text: str) -> str:
@@ -198,12 +216,13 @@ def parse_collection_page(
         if not is_vinyl_product(title, card_text):
             continue
 
-        price = extract_price(card_text)
+        price, price_old = extract_prices(card_text)
         if not price:
             continue
 
         availability = extract_availability(card_text)
         format_label = extract_format(f"{title} {card_text}")
+        is_sale = bool(price_old and price_old != price)
 
         payload = {
             "discovery_source": "soundshaarlem_shopify_collection",
@@ -218,7 +237,9 @@ def parse_collection_page(
             "price": price,
             "prijs": price,
             "price_current": price,
-            "price_source": "listing",
+            "price_old": price_old,
+            "is_sale": is_sale,
+            "price_source": "listing_sale" if is_sale else "listing",
             "availability": availability,
             "availability_text": availability,
             "listing_seen_at": seen_at.isoformat(),
