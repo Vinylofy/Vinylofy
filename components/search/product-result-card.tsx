@@ -50,9 +50,6 @@ export function ProductResultCard({ item }: ProductResultCardProps) {
                   >
                     {shop.name}
                   </a>
-                  {shop.availability === "unknown" ? (
-                    <p className="mt-0.5 text-[11px] text-neutral-500">beschikbaarheid onbekend</p>
-                  ) : null}
                 </div>
 
                 <a
