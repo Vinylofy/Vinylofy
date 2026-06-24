@@ -38,12 +38,12 @@ export function HomeActionCards() {
           aria-label={label}
           className="group flex flex-col items-center justify-start text-center"
         >
-          <div className="flex h-[112px] items-center justify-center md:h-[128px]">
+          <div className="flex h-[128px] items-center justify-center md:h-[144px]">
             <Image
               src={imageSrc}
               alt=""
-              width={320}
-              height={320}
+              width={360}
+              height={360}
               className="h-full w-auto object-contain transition group-hover:scale-[1.02]"
             />
           </div>
