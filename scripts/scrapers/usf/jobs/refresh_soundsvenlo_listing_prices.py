@@ -368,6 +368,66 @@ def parse_listing_page(
     return list(links_by_url.values()), list(offers_by_url.values())
 
 
+
+def fetch_html_with_playwright(url: str, *, referer: str | None = None, timeout_ms: int = 45000) -> str:
+    """Fetch listing HTML through Chromium.
+
+    Sounds Venlo returns 403 for requests/curl from hosted environments,
+    but allows a real browser context. This keeps only the transport layer
+    browser-based; the USF flow remains listing-first.
+    """
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        try:
+            page = browser.new_page(
+                user_agent=DEFAULT_USER_AGENT,
+                locale="nl-NL",
+                extra_http_headers={
+                    "Accept-Language": "nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7",
+                    **({"Referer": referer} if referer else {}),
+                },
+            )
+            response = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            status = response.status if response else None
+            html = page.content()
+
+            if status and status >= 400:
+                raise RuntimeError(f"Playwright fetch failed status={status} url={url}")
+
+            return html
+        finally:
+            browser.close()
+
+
+def fetch_listing_html(session: requests.Session, url: str, *, referer: str | None = None) -> str:
+    """Fetch listing HTML, falling back to Playwright on 403."""
+    try:
+        response = session.get(
+            url,
+            timeout=30,
+            headers={"Referer": referer} if referer else None,
+        )
+        if response.status_code != 403:
+            response.raise_for_status()
+            return response.text
+
+        print(
+            "[LISTING-REFRESH][WARN] requests returned 403; using Playwright",
+            {"url": url},
+            flush=True,
+        )
+    except requests.RequestException as exc:
+        print(
+            "[LISTING-REFRESH][WARN] requests fetch failed; using Playwright",
+            {"url": url, "error": str(exc)},
+            flush=True,
+        )
+
+    return fetch_html_with_playwright(url, referer=referer)
+
+
 def listing_url_for_page(page: int) -> str:
     if page <= 1:
         return f"{BASE_URL}/vinyl/"
