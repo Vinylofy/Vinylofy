@@ -28,61 +28,39 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 
+
 def get_listing_price(source_url: str) -> str | None:
-    """Listing-first policy: haal current price uit shop_product_links, niet uit detail HTML."""
+    """
+    Listing-first policy:
+    prijs komt uit shop_product_links.payload->>'price', niet uit de detailpagina.
+    """
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         return None
 
-    candidates = ["price", "listing_price", "current_price", "last_price", "price_raw"]
-
     try:
         with psycopg.connect(dsn) as conn:
             with conn.cursor() as cur:
-                cur.execute("""
-                    select column_name
-                    from information_schema.columns
-                    where table_schema = 'public'
-                      and table_name = 'shop_product_links'
-                """)
-                cols = {r[0] for r in cur.fetchall()}
-
-                price_cols = [c for c in candidates if c in cols]
-                if not price_cols:
-                    return None
-
-                url_col = "source_url" if "source_url" in cols else "url" if "url" in cols else None
-                shop_col = "shop_id" if "shop_id" in cols else None
-                if not url_col:
-                    return None
-
-                select_expr = "coalesce(" + ", ".join(price_cols) + ")"
-                if shop_col:
-                    sql = f"""
-                        select {select_expr}
-                        from shop_product_links
-                        where {url_col} = %s
-                          and {shop_col} = %s
-                        limit 1
+                cur.execute(
                     """
-                    cur.execute(sql, (source_url, SHOP_ID))
-                else:
-                    sql = f"""
-                        select {select_expr}
-                        from shop_product_links
-                        where {url_col} = %s
-                        limit 1
-                    """
-                    cur.execute(sql, (source_url,))
-
+                    select payload->>'price'
+                    from shop_product_links
+                    where shop_id = %s
+                      and source_url = %s
+                    limit 1
+                    """,
+                    (SHOP_ID, source_url),
+                )
                 row = cur.fetchone()
-                if not row or row[0] is None:
-                    return None
 
-                return str(row[0]).replace(",", ".")
+        if not row or row[0] in (None, ""):
+            return None
+
+        return str(row[0]).replace(",", ".")
     except Exception as exc:
         print(f"[DETAIL][WARN] listing price lookup failed url={source_url} error={exc}", flush=True)
         return None
+
 
 def extract_title(html: str) -> str | None:
     m = re.search(r"<title>(.*?)</title>", html, flags=re.I | re.S)
@@ -221,7 +199,7 @@ def main() -> int:
         html = response.text
         title = extract_title(html)
         ean_raw = extract_ean(html)
-        price_raw = get_listing_price(url)  # listing-first policy: current price comes from shop_product_links
+        price_raw = get_listing_price(url)  # listing-first policy: current price comes from shop_product_links.payload
         availability_raw = extract_availability(html)
         image_url_raw = extract_image_url(html)
 
