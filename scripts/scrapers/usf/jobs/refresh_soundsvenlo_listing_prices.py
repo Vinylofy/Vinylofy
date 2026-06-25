@@ -11,14 +11,9 @@ import requests
 from bs4 import BeautifulSoup, Tag
 
 from scripts.scrapers.usf.core.db import db_connection
-from scripts.scrapers.usf.core.fast_listing_price_sync import (
-    bulk_update_prices_from_link_registry,
-)
+from scripts.scrapers.usf.core.fast_listing_price_sync import bulk_update_prices_from_link_registry
 from scripts.scrapers.usf.core.link_registry import upsert_discovered_links
-from scripts.scrapers.usf.core.listing_price_sync import (
-    ListingOffer,
-    sync_listing_offers,
-)
+from scripts.scrapers.usf.core.listing_price_sync import ListingOffer, sync_listing_offers
 from scripts.scrapers.usf.core.models import DiscoveredLink
 
 
@@ -71,6 +66,12 @@ PRODUCT_PATH_EXCLUDES = {
     "record-store-day",
     "live-on-stage",
     "winkelwagen",
+    "account",
+    "zoeken",
+    "search",
+    "contact",
+    "privacy",
+    "algemene-voorwaarden",
 }
 
 
@@ -87,29 +88,27 @@ def normalize_price(value: str | None) -> str | None:
     text = clean(value)
     if not text:
         return None
+
     text = text.replace("€", "").replace("EUR", "").strip()
     if "," in text and "." in text:
         text = text.replace(".", "").replace(",", ".")
     else:
         text = text.replace(",", ".")
+
     match = re.search(r"([0-9]+(?:\.[0-9]{1,2})?)", text)
     if not match:
         return None
+
     euros = match.group(1)
     if "." not in euros:
         return f"{euros}.00"
+
     whole, cents = euros.split(".", 1)
     return f"{whole}.{cents[:2].ljust(2, '0')}"
 
 
 def extract_price(text: str) -> str | None:
-    """Return the current visible sale/listing price.
-
-    If sale wording is present, the sale/current price wins over any old
-    crossed-out price. If the page only exposes multiple amounts without
-    semantic labels, the last visible amount wins; this matches the existing
-    Sounds Delft listing-first guardrail.
-    """
+    """Return current visible listing price. Sale/current price wins if labelled."""
     text = clean(text)
     if not text:
         return None
@@ -130,15 +129,19 @@ def extract_price(text: str) -> str | None:
     )
     if not amounts:
         amounts = re.findall(r"\b([0-9]+[.,][0-9]{2})\b", text)
+
     if amounts:
         return normalize_price(amounts[-1])
+
     return None
 
 
 def extract_availability(text: str) -> str:
     lower = clean(text).lower()
+
     if any(marker in lower for marker in ("pre-order", "preorder", "verwacht")):
         return "preorder"
+
     if any(
         marker in lower
         for marker in (
@@ -151,6 +154,7 @@ def extract_availability(text: str) -> str:
         )
     ):
         return "out_of_stock"
+
     if any(
         marker in lower
         for marker in (
@@ -162,14 +166,13 @@ def extract_availability(text: str) -> str:
         )
     ):
         return "in_stock"
+
     return "unknown"
 
 
 def likely_product_url(url: str) -> bool:
     parsed = urlparse(url)
 
-    # Only real Sounds Venlo HTTP(S) product pages.
-    # Prevent footer/contact links like mailto:, tel:, javascript: and anchors.
     if parsed.scheme and parsed.scheme not in {"http", "https"}:
         return False
     if parsed.netloc and parsed.netloc != SHOP_DOMAIN:
@@ -180,46 +183,18 @@ def likely_product_url(url: str) -> bool:
 
     if not path:
         return False
-
-    if lower_path.startswith((
-        "vinyl",
-        "cd",
-        "dvd",
-        "blu-ray",
-        "merchandise",
-        "accessoires",
-        "contact",
-        "klantenservice",
-        "winkelwagen",
-        "account",
-        "zoeken",
-        "search",
-        "privacy",
-        "algemene-voorwaarden",
-        "retour",
-    )):
-        return False
-
-    if any(marker in lower_path for marker in (
-        "mailto:",
-        "tel:",
-        "javascript:",
-        "?",
-        "#",
-    )):
-        return False
-
-    # Sounds Venlo product pages are usually single slug pages ending in slash,
-    # often with an EAN or internal product id in the slug.
-    # Category/listing pages contain deeper paths such as /world-3/p8/.
     if "/" in path:
         return False
-
-    # Avoid obvious non-product static/site pages.
-    if "." in lower_path and not lower_path.endswith(".html"):
+    if lower_path in PRODUCT_PATH_EXCLUDES:
+        return False
+    if lower_path.startswith(("p", "page", "cart", "checkout", "account")) and lower_path[1:].isdigit():
+        return False
+    if lower_path.startswith(("mailto:", "tel:", "javascript:")):
         return False
 
     return True
+
+
 def source_product_id_from_url(url: str) -> str | None:
     slug = urlparse(url).path.strip("/").split("/")[-1]
     if not slug:
@@ -227,94 +202,74 @@ def source_product_id_from_url(url: str) -> str | None:
     return slug[:240]
 
 
-def product_container_for(anchor: Tag) -> Tag | None:
-    node: Tag | None = anchor
+def listing_url_for_page(page: int) -> str:
+    if page <= 1:
+        return f"{BASE_URL}/vinyl/"
+    return f"{BASE_URL}/vinyl/p{page}/"
 
-    # Walk up from the product anchor, but never allow page-level wrappers
-    # such as body/footer/header/nav to become a product card.
-    for _ in range(24):
-        if node is None or not isinstance(node, Tag):
-            break
 
-        if node.name in {"body", "html", "footer", "header", "nav"}:
-            break
+def has_group_class(tag: Tag) -> bool:
+    classes = tag.get("class", [])
+    return isinstance(classes, list) and "group" in classes
 
-        text = clean(node.get_text(" ", strip=True))
-        lower = text.lower()
 
-        has_price = extract_price(text) is not None
-        has_stock_signal = any(
-            marker in lower
-            for marker in (
-                "op voorraad",
-                "niet leverbaar",
-                "uitverkocht",
-                "pre-order",
-                "preorder",
-                "verwacht",
-                "1-2 werkdagen",
+def fetch_html_with_playwright(url: str, *, referer: str | None = None, timeout_ms: int = 45000) -> str:
+    """Fetch listing HTML through Chromium.
+
+    Sounds Venlo returns 403 for requests/curl from hosted environments,
+    but allows a real browser context. Keep this isolated to transport.
+    """
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        try:
+            page = browser.new_page(
+                user_agent=DEFAULT_USER_AGENT,
+                locale="nl-NL",
+                extra_http_headers={
+                    "Accept-Language": "nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7",
+                    **({"Referer": referer} if referer else {}),
+                },
             )
+            response = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            status = response.status if response else None
+            html = page.content()
+
+            if status and status >= 400:
+                raise RuntimeError(f"Playwright fetch failed status={status} url={url}")
+
+            return html
+        finally:
+            browser.close()
+
+
+def fetch_listing_html(session: requests.Session, url: str, *, referer: str | None = None) -> str:
+    """Fast requests first; Playwright fallback on 403 or request failure."""
+    try:
+        response = session.get(
+            url,
+            timeout=30,
+            headers={"Referer": referer} if referer else None,
         )
 
-        if has_price and has_stock_signal:
-            return node
+        if response.status_code != 403:
+            response.raise_for_status()
+            return response.text
 
-        node = node.parent if isinstance(node.parent, Tag) else None
+        print(
+            "[LISTING-REFRESH][WARN] requests returned 403; using Playwright",
+            {"url": url},
+            flush=True,
+        )
+    except requests.RequestException as exc:
+        print(
+            "[LISTING-REFRESH][WARN] requests fetch failed; using Playwright",
+            {"url": url, "error": str(exc)},
+            flush=True,
+        )
 
-    return None
-def first_product_title_anchor(container: Tag, source_url: str) -> Tag | None:
-    for candidate in container.select("a[href]"):
-        href = clean(candidate.get("href"))
-        if not href:
-            continue
-        if normalize_product_url(href) != source_url:
-            continue
-        text = clean(candidate.get_text(" ", strip=True))
-        if not text:
-            continue
-        if text.lower() in {"image", "afbeelding", "meer info"}:
-            continue
-        return candidate
-    return None
-
-
-def extract_artist_title_format(
-    container: Tag,
-    source_url: str,
-) -> tuple[str | None, str | None, str | None]:
-    title_anchor = first_product_title_anchor(container, source_url)
-    title = clean(title_anchor.get_text(" ", strip=True)) if title_anchor else None
-
-    lines = [
-        clean(line)
-        for line in container.get_text("\n", strip=True).splitlines()
-        if clean(line)
-    ]
-
-    artist: str | None = None
-    if title and title in lines:
-        title_index = lines.index(title)
-        before_title = [
-            line
-            for line in lines[:title_index]
-            if line.lower() not in {"image", "afbeelding"}
-            and "placeholder" not in line.lower()
-        ]
-        if before_title:
-            artist = before_title[-1]
-
-    text = clean(container.get_text(" ", strip=True))
-    format_label: str | None = None
-    match = re.search(
-        r"\b((?:\d+\s*[-]?\s*)?(?:LP|CD|DVD|Blu-ray|7\s*(?:inch|\")|10\s*(?:inch|\")|12\s*(?:inch|\")))\b\s*€",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if match:
-        format_label = clean(match.group(1)).replace(" ", "").upper()
-        format_label = format_label.replace("-", "-")
-
-    return artist, title, format_label
+    return fetch_html_with_playwright(url, referer=referer)
 
 
 def parse_listing_page(
@@ -325,12 +280,12 @@ def parse_listing_page(
     seen_at: datetime,
     debug: bool,
 ) -> tuple[list[DiscoveredLink], list[ListingOffer]]:
-    """Parse Sounds Venlo listing cards.
+    """Parse Sounds Venlo product cards via a.full-click.
 
-    Product cards use:
-      a.full-click      = product URL + title
-      previous span     = artist
-      following p       = format + price + availability
+    Observed card structure:
+      span                = artist
+      a.full-click[href]  = product URL + title
+      p                   = format + price + availability
     """
     soup = BeautifulSoup(html, "html.parser")
 
@@ -339,6 +294,7 @@ def parse_listing_page(
     position = 0
 
     anchors = soup.select("a.full-click[href]")
+
     if debug:
         print("[LISTING-DEBUG] full_click_anchors", {"count": len(anchors)}, flush=True)
 
@@ -357,9 +313,8 @@ def parse_listing_page(
         if not title or title.lower() in {"image", "afbeelding", "meer info"}:
             continue
 
-        card = anchor.find_parent("div", class_=lambda value: value and "group" in str(value).split())
+        card = anchor.find_parent(lambda tag: isinstance(tag, Tag) and tag.name == "div" and has_group_class(tag))
         if card is None:
-            # fallback: this site usually has the title in a div.mt-3 inside the product card
             title_block = anchor.find_parent("div")
             card = title_block.find_parent("div") if isinstance(title_block, Tag) else None
 
@@ -373,11 +328,9 @@ def parse_listing_page(
 
         availability = extract_availability(card_text)
         if availability == "unknown":
-            # Prevent accidental non-product matches.
             continue
 
         artist: str | None = None
-        # In the observed HTML the artist is the first bold span in the text block above the title.
         title_parent = anchor.parent if isinstance(anchor.parent, Tag) else None
         if isinstance(title_parent, Tag):
             artist_span = title_parent.find("span")
@@ -385,14 +338,13 @@ def parse_listing_page(
                 artist = clean(artist_span.get_text(" ", strip=True))
 
         if not artist:
-            # Fallback to first span in card.
             artist_span = card.find("span")
             if isinstance(artist_span, Tag):
                 artist = clean(artist_span.get_text(" ", strip=True))
 
         format_label: str | None = None
         format_match = re.search(
-            r"\b((?:\\d+\\s*[-]?\\s*)?(?:LP|CD|DVD|Blu-ray|7\\s*(?:inch|\")|10\\s*(?:inch|\")|12\\s*(?:inch|\")))\\b",
+            r"\b((?:\d+\s*[-]?\s*)?(?:LP|CD|DVD|Blu-ray|7\s*(?:inch|\")|10\s*(?:inch|\")|12\s*(?:inch|\")))\b",
             card_text,
             flags=re.IGNORECASE,
         )
@@ -451,69 +403,6 @@ def parse_listing_page(
             )
 
     return list(links_by_url.values()), list(offers_by_url.values())
-def fetch_html_with_playwright(url: str, *, referer: str | None = None, timeout_ms: int = 45000) -> str:
-    """Fetch listing HTML through Chromium.
-
-    Sounds Venlo returns 403 for requests/curl from hosted environments,
-    but allows a real browser context. This keeps only the transport layer
-    browser-based; the USF flow remains listing-first.
-    """
-    from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        try:
-            page = browser.new_page(
-                user_agent=DEFAULT_USER_AGENT,
-                locale="nl-NL",
-                extra_http_headers={
-                    "Accept-Language": "nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7",
-                    **({"Referer": referer} if referer else {}),
-                },
-            )
-            response = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-            status = response.status if response else None
-            html = page.content()
-
-            if status and status >= 400:
-                raise RuntimeError(f"Playwright fetch failed status={status} url={url}")
-
-            return html
-        finally:
-            browser.close()
-
-
-def fetch_listing_html(session: requests.Session, url: str, *, referer: str | None = None) -> str:
-    """Fetch listing HTML, falling back to Playwright on 403."""
-    try:
-        response = session.get(
-            url,
-            timeout=30,
-            headers={"Referer": referer} if referer else None,
-        )
-        if response.status_code != 403:
-            response.raise_for_status()
-            return response.text
-
-        print(
-            "[LISTING-REFRESH][WARN] requests returned 403; using Playwright",
-            {"url": url},
-            flush=True,
-        )
-    except requests.RequestException as exc:
-        print(
-            "[LISTING-REFRESH][WARN] requests fetch failed; using Playwright",
-            {"url": url, "error": str(exc)},
-            flush=True,
-        )
-
-    return fetch_html_with_playwright(url, referer=referer)
-
-
-def listing_url_for_page(page: int) -> str:
-    if page <= 1:
-        return f"{BASE_URL}/vinyl/"
-    return f"{BASE_URL}/vinyl/p{page}/"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -549,11 +438,12 @@ def main() -> int:
 
     session = requests.Session()
     session.headers.update(DEFAULT_HEADERS)
-    seen_at = datetime.now(timezone.utc)
 
+    seen_at = datetime.now(timezone.utc)
     all_links: list[DiscoveredLink] = []
     all_offers: list[ListingOffer] = []
     seen_page_signatures: set[tuple[str, ...]] = set()
+
     page = args.start_page
     pages_done = 0
     consecutive_failures = 0
@@ -566,19 +456,17 @@ def main() -> int:
             flush=True,
         )
 
+        referer = f"{BASE_URL}/vinyl/" if page <= 1 else listing_url_for_page(page - 1)
+
         try:
-            referer = f"{BASE_URL}/vinyl/" if page <= 1 else listing_url_for_page(page - 1)
-            response = session.get(
-                listing_url,
-                timeout=30,
-                headers={"Referer": referer},
-            )
-        except requests.RequestException as exc:
+            html = fetch_listing_html(session, listing_url, referer=referer)
+        except Exception as exc:
             consecutive_failures += 1
             print(
-                "[LISTING-REFRESH][WARN] request failed",
+                "[LISTING-REFRESH][WARN] fetch failed",
                 {
                     "page": page,
+                    "url": listing_url,
                     "error": str(exc),
                     "consecutive_failures": consecutive_failures,
                 },
@@ -591,42 +479,6 @@ def main() -> int:
             time.sleep(args.sleep)
             continue
 
-        if response.status_code == 429:
-            print("[LISTING-REFRESH][WARN] HTTP 429, stopping safely.", flush=True)
-            break
-
-        if response.status_code in (404, 410):
-            print(
-                "[LISTING-REFRESH] end reached",
-                {"page": page, "status": response.status_code},
-                flush=True,
-            )
-            break
-
-        if response.status_code >= 500:
-            consecutive_failures += 1
-            print(
-                "[LISTING-REFRESH][WARN] server error",
-                {
-                    "page": page,
-                    "status": response.status_code,
-                    "consecutive_failures": consecutive_failures,
-                },
-                flush=True,
-            )
-            if consecutive_failures >= args.max_page_failures:
-                break
-            page += 1
-            pages_done += 1
-            time.sleep(args.sleep)
-            continue
-
-        if response.status_code == 403:
-            print("[LISTING-REFRESH][WARN] requests returned 403; using Playwright", {"url": listing_url}, flush=True)
-            html = fetch_html_with_playwright(listing_url, referer=referer)
-        else:
-            response.raise_for_status()
-            html = response.text
         consecutive_failures = 0
 
         links, offers = parse_listing_page(
@@ -650,6 +502,7 @@ def main() -> int:
                 flush=True,
             )
             break
+
         if page_signature:
             seen_page_signatures.add(page_signature)
 
@@ -677,6 +530,7 @@ def main() -> int:
 
         pages_done += 1
         page += 1
+
         if args.max_pages == 0 or pages_done < args.max_pages:
             time.sleep(args.sleep)
 
@@ -690,6 +544,7 @@ def main() -> int:
         },
         flush=True,
     )
+
     for offer in all_offers[:5]:
         print(
             "[LISTING-SAMPLE]",
@@ -703,6 +558,7 @@ def main() -> int:
 
     if not all_links:
         raise SystemExit("[ERROR] Sounds Venlo listing refresh leverde geen links op.")
+
     if args.write and not all_offers:
         raise SystemExit("[ERROR] Sounds Venlo listing refresh vond geen prijzen; schrijf niets weg.")
 
