@@ -34,25 +34,27 @@ def normalize_product_url(href: str) -> str:
 
 def extract_price(text: str) -> str | None:
     """
-    Sounds cards can contain both:
-    'Standaard prijs €39.95 aanbiedingsprijs €15.95'.
-
-    In that case, use the active sale price, not the strike-through compare-at price.
+    Sounds listing-first price parser.
+    Pakt aanbiedingsprijs als die aanwezig is; anders de zichtbare actuele prijs.
+    Ondersteunt o.a. €34,99, 34,99, EUR 34.99 en 'voor 34,99'.
     """
+    text = clean(text)
+    if not text:
+        return None
+
     sale_patterns = [
-        r"(?:aanbiedingsprijs|sale\s*price)\s*[:]?\s*€\s*([0-9]+(?:[.,][0-9]{1,2})?)",
-        r"(?:aanbiedingsprijs|sale\s*price)\s*[:]?\s*EUR\s*([0-9]+(?:[.,][0-9]{1,2})?)",
+        r"(?:aanbiedingsprijs|actieprijs|sale\s*price|special\s*price|nu\s*voor|voor)\s*:?\s*(?:€|EUR)?\s*([0-9]+(?:[.,][0-9]{1,2})?)",
+        r"(?:nu|now)\s*:?\s*(?:€|EUR)?\s*([0-9]+(?:[.,][0-9]{1,2})?)",
     ]
 
-    fallback_patterns = [
-        r"€\s*([0-9]+(?:[.,][0-9]{1,2})?)",
-        r"EUR\s*([0-9]+(?:[.,][0-9]{1,2})?)",
-    ]
-
-    for pattern in sale_patterns + fallback_patterns:
+    for pattern in sale_patterns:
         match = re.search(pattern, text, flags=re.I)
         if match:
             return match.group(1).replace(",", ".")
+
+    amounts = re.findall(r"(?:€|EUR)?\s*([0-9]+(?:[.,][0-9]{2}))", text, flags=re.I)
+    if amounts:
+        return amounts[-1].replace(",", ".")
 
     return None
 
