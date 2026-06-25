@@ -129,18 +129,10 @@ def main() -> int:
         )
 
     if not args.skip_promote:
-        promote_command = [
-            sys.executable,
-            "-m",
-            "scripts.scrapers.usf.jobs.promote_staged_offers",
-            "--limit",
-            str(args.promote_limit),
-        ]
-
-        if args.write:
-            promote_command.append("--write")
-
-        run_step("promote_staged_offers", promote_command)
+        print(
+            "[PIPELINE][WARN] promote_staged_offers is not shop-aware yet; skipping Sounds promote safely.",
+            flush=True,
+        )
 
     if not args.skip_quarantine:
         quarantine_command = [
