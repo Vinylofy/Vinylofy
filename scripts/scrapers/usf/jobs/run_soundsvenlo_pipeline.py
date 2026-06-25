@@ -7,6 +7,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from scripts.scrapers.usf.core.db import db_connection
+from scripts.scrapers.usf.core.fast_listing_price_sync import bulk_update_prices_from_link_registry
+
 
 def load_env() -> None:
     for env_file in (".env.local", ".env"):
@@ -29,6 +32,21 @@ def run_step(label: str, command: list[str]) -> None:
     print("[PIPELINE] CMD", " ".join(command), flush=True)
     subprocess.run(command, check=True)
     print(f"[PIPELINE] DONE {label}", flush=True)
+
+
+
+def run_existing_listing_price_sync(*, write: bool) -> None:
+    print("\n[PIPELINE] START fast_listing_price_sync_existing_registry", flush=True)
+    with db_connection() as conn:
+        stats = bulk_update_prices_from_link_registry(
+            conn,
+            shop_registry_id="soundsvenlo",
+            shop_domain="sounds-venlo.nl",
+            write=write,
+            currency="EUR",
+        )
+    print("[PIPELINE] fast_listing_price_sync_existing_registry", vars(stats), flush=True)
+    print("[PIPELINE] DONE fast_listing_price_sync_existing_registry", flush=True)
 
 
 def build_listing_command(args: argparse.Namespace) -> list[str]:
@@ -63,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--listing-sleep", type=float, default=0.35)
     parser.add_argument("--max-page-failures", type=int, default=3)
     parser.add_argument("--debug-listing", action="store_true")
+    parser.add_argument("--skip-listing", action="store_true")
     parser.add_argument("--fast-price-sync", action="store_true")
     parser.add_argument("--run-detail", action="store_true")
     parser.add_argument("--detail-limit", type=int, default=500)
@@ -108,6 +127,7 @@ def main() -> int:
             "listing_start_page": args.listing_start_page,
             "listing_max_pages": args.listing_max_pages,
             "fast_price_sync": args.fast_price_sync,
+            "skip_listing": args.skip_listing,
             "run_detail": args.run_detail,
             "detail_limit": args.detail_limit,
             "stage_limit": args.stage_limit,
@@ -118,7 +138,16 @@ def main() -> int:
         flush=True,
     )
 
-    run_step("refresh_soundsvenlo_listing_prices", build_listing_command(args))
+    if args.skip_listing:
+        print(
+            "[PIPELINE] SKIP refresh_soundsvenlo_listing_prices",
+            {"reason": "skip_listing=true"},
+            flush=True,
+        )
+        if args.fast_price_sync:
+            run_existing_listing_price_sync(write=args.write)
+    else:
+        run_step("refresh_soundsvenlo_listing_prices", build_listing_command(args))
 
     if args.run_detail:
         detail_command = [

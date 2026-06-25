@@ -1,12 +1,13 @@
 name: USF - Sounds Venlo
 
 on:
-  schedule:
-    # Daily listing-first price refresh.
-    - cron: "15 3 * * *"
-
   workflow_dispatch:
     inputs:
+      skip_listing:
+        description: "Skip live listing fetch; use existing shop_product_links payload prices"
+        required: true
+        default: true
+        type: boolean
       listing_max_pages:
         description: "Listing pages; 0 = all pages"
         required: true
@@ -30,7 +31,7 @@ on:
       write:
         description: "Write to database"
         required: true
-        default: true
+        default: false
         type: boolean
 
 permissions:
@@ -133,6 +134,7 @@ jobs:
           mkdir -p output/usf-soundsvenlo
 
           if [ "${{ github.event_name }}" = "schedule" ]; then
+            SKIP_LISTING="true"
             LISTING_MAX_PAGES="0"
             DETAIL_LIMIT="500"
             FAST_PRICE_SYNC="true"
@@ -147,6 +149,7 @@ jobs:
               RUN_DETAIL="false"
             fi
           else
+            SKIP_LISTING="${{ inputs.skip_listing }}"
             LISTING_MAX_PAGES="${{ inputs.listing_max_pages }}"
             RUN_DETAIL="${{ inputs.run_detail }}"
             DETAIL_LIMIT="${{ inputs.detail_limit }}"
@@ -168,6 +171,9 @@ jobs:
             --quarantine-limit 100
           )
 
+          if [ "$SKIP_LISTING" = "true" ]; then
+            COMMAND+=(--skip-listing)
+          fi
           if [ "$FAST_PRICE_SYNC" = "true" ]; then
             COMMAND+=(--fast-price-sync)
           fi
