@@ -1,0 +1,109 @@
+name: USF - Sounds
+
+on:
+  schedule:
+    # Daily fast listing price update
+    - cron: "33 2 * * *"
+    # Detail enrichment twice per week: Wednesday + Sunday
+    - cron: "12 4 * * 0,3"
+
+  workflow_dispatch:
+    inputs:
+      listing_max_pages:
+        description: "Listing pages; 0 = all pages"
+        required: true
+        default: "0"
+        type: string
+      price_only:
+        description: "Only fast listing price update"
+        required: true
+        default: true
+        type: boolean
+      detail_limit:
+        description: "Max detail pages for missing EAN/info"
+        required: true
+        default: "500"
+        type: string
+      write:
+        description: "Write to database"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usf-sounds-production
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          [ -f requirements.txt ] && pip install -r requirements.txt
+          [ -f requirements-scrapers.txt ] && pip install -r requirements-scrapers.txt
+          pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+
+      - name: Run Sounds pipeline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            LISTING_MAX_PAGES="0"
+            DETAIL_LIMIT="500"
+            WRITE="true"
+
+            # 04:12 UTC = detail enrichment run, otherwise price-only
+            if [ "$(date -u +%H%M)" = "0412" ]; then
+              PRICE_ONLY="false"
+            else
+              PRICE_ONLY="true"
+            fi
+          else
+            LISTING_MAX_PAGES="${{ inputs.listing_max_pages }}"
+            DETAIL_LIMIT="${{ inputs.detail_limit }}"
+            WRITE="${{ inputs.write }}"
+            PRICE_ONLY="${{ inputs.price_only }}"
+          fi
+
+          COMMAND=(python -u -m scripts.scrapers.usf.jobs.run_sounds_pipeline
+            --listing-start-page 1
+            --listing-max-pages "$LISTING_MAX_PAGES"
+            --listing-sleep 0.20
+            --fast-price-sync
+            --detail-limit "$DETAIL_LIMIT"
+            --stage-limit "$DETAIL_LIMIT"
+            --promote-limit "$DETAIL_LIMIT"
+            --quarantine-limit 100
+          )
+
+          if [ "$PRICE_ONLY" = "true" ]; then
+            COMMAND+=(--skip-detail --skip-stage --skip-promote --skip-quarantine)
+          fi
+
+          if [ "$WRITE" = "true" ]; then
+            COMMAND+=(--write)
+          fi
+
+          printf '[WORKFLOW] Command:'
+          printf ' %q' "${COMMAND[@]}"
+          printf '\n'
+
+          "${COMMAND[@]}"
