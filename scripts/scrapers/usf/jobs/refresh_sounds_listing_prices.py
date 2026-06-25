@@ -73,15 +73,20 @@ def extract_availability(text: str) -> str:
 def likely_product_container(anchor):
     node = anchor
 
-    for _ in range(8):
+    for _ in range(12):
         if node is None:
             break
 
         classes = " ".join(node.get("class", [])).lower() if hasattr(node, "get") else ""
 
+        # Sounds prijs staat in dezelfde product-details container als de titel/link.
+        if "product-details" in classes:
+            return node
+
         if any(
             token in classes
             for token in [
+                "product-buy",
                 "grid__item",
                 "card-wrapper",
                 "product-card",
@@ -94,7 +99,6 @@ def likely_product_container(anchor):
         node = node.parent
 
     return anchor.parent or anchor
-
 
 def parse_listing_page(
     html: str,
