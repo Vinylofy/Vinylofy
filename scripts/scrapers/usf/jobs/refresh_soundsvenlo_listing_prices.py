@@ -325,39 +325,110 @@ def parse_listing_page(
     seen_at: datetime,
     debug: bool,
 ) -> tuple[list[DiscoveredLink], list[ListingOffer]]:
+    """Parse Sounds Venlo listing from rendered text order.
+
+    The rendered listing follows this pattern:
+      artist -> product title link -> format/price/availability
+
+    DOM card detection is unreliable on this site because title/image/price
+    blocks are not always contained in a compact product-card ancestor.
+    """
     soup = BeautifulSoup(html, "html.parser")
+
+    text_nodes: list[dict[str, object]] = []
+
+    for node in soup.find_all(string=True):
+        value = clean(node)
+        if not value:
+            continue
+
+        parent = node.parent if isinstance(node.parent, Tag) else None
+        anchor = parent.find_parent("a") if parent else None
+        if parent and parent.name == "a":
+            anchor = parent
+
+        anchor_url = None
+        if isinstance(anchor, Tag):
+            href = clean(anchor.get("href"))
+            if href and not href.lower().startswith(("mailto:", "tel:", "javascript:", "#")):
+                normalized = normalize_product_url(href)
+                if likely_product_url(normalized):
+                    anchor_url = normalized
+
+        text_nodes.append({"text": value, "anchor_url": anchor_url})
+
     links_by_url: dict[str, DiscoveredLink] = {}
     offers_by_url: dict[str, ListingOffer] = {}
-
-    anchors = soup.select("a[href]")
     position = 0
 
-    for anchor in anchors:
-        href = clean(anchor.get("href"))
-        if not href:
+    ignored_previous = {
+        "image",
+        "afbeelding",
+        "filters",
+        "sluiten",
+        "vinyl",
+        "alle resultaten voor \"\"",
+        "onderstaande releases zijn uit voorraad leverbaar",
+    }
+
+    for idx, item in enumerate(text_nodes):
+        source_url = item.get("anchor_url")
+        if not isinstance(source_url, str) or not source_url:
             continue
 
-        source_url = normalize_product_url(href)
-        if not likely_product_url(source_url):
+        title = clean(item.get("text"))
+        if not title:
             continue
 
-        container = product_container_for(anchor)
-        if container is None:
+        lower_title = title.lower()
+        if lower_title in {"image", "afbeelding", "meer info"}:
+            continue
+        if "placeholder" in lower_title:
             continue
 
-        text = clean(container.get_text(" ", strip=True))
-        price = extract_price(text)
+        # Product info is normally immediately after the linked title.
+        forward_text = clean(" ".join(
+            str(part["text"])
+            for part in text_nodes[idx: idx + 10]
+            if part.get("text")
+        ))
+
+        price = extract_price(forward_text)
         if not price:
-            # Critical guardrail: never let a no-price anchor overwrite a
-            # previously stored payload that did have a listing price.
             continue
+
+        availability = extract_availability(forward_text)
+        if availability == "unknown":
+            # Prevent accidental menu/footer matches.
+            continue
+
+        format_label: str | None = None
+        match = re.search(
+            r"\b((?:\\d+\\s*[-]?\\s*)?(?:LP|CD|DVD|Blu-ray|7\\s*(?:inch|\")|10\\s*(?:inch|\")|12\\s*(?:inch|\")))\\b\\s*(?:€|EUR)",
+            forward_text,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            format_label = clean(match.group(1)).replace(" ", "").upper()
+
+        artist: str | None = None
+        for prev in reversed(text_nodes[max(0, idx - 8): idx]):
+            candidate = clean(prev.get("text"))
+            if not candidate:
+                continue
+            lower = candidate.lower()
+            if lower in ignored_previous:
+                continue
+            if lower.startswith(("€", "lp €", "cd €")):
+                continue
+            if "op voorraad" in lower or "niet leverbaar" in lower:
+                continue
+            if len(candidate) > 120:
+                continue
+            artist = candidate
+            break
 
         position += 1
-        artist, title, format_label = extract_artist_title_format(
-            container,
-            source_url,
-        )
-        availability = extract_availability(text)
         source_product_id = source_product_id_from_url(source_url)
 
         payload = {
@@ -374,21 +445,12 @@ def parse_listing_page(
             "listing_seen_at": seen_at.isoformat(),
         }
 
-        existing_link = links_by_url.get(source_url)
-        existing_price = None
-        if existing_link and isinstance(existing_link.payload, dict):
-            existing_price = existing_link.payload.get("price")
-
-        # Duplicate-anchor guardrail:
-        # a richer/priced payload always wins over later image/navigation anchors.
-        if existing_link is None or (not existing_price and price):
-            links_by_url[source_url] = DiscoveredLink(
-                shop_id=SHOP_ID,
-                source_url=source_url,
-                source_product_id=source_product_id,
-                payload=payload,
-            )
-
+        links_by_url[source_url] = DiscoveredLink(
+            shop_id=SHOP_ID,
+            source_url=source_url,
+            source_product_id=source_product_id,
+            payload=payload,
+        )
         offers_by_url[source_url] = ListingOffer(
             shop_name=SHOP_NAME,
             shop_domain=SHOP_DOMAIN,
@@ -401,7 +463,7 @@ def parse_listing_page(
             raw=payload,
         )
 
-        if debug and position <= 10:
+        if debug and position <= 20:
             print(
                 "[LISTING-DEBUG]",
                 {
@@ -418,9 +480,6 @@ def parse_listing_page(
             )
 
     return list(links_by_url.values()), list(offers_by_url.values())
-
-
-
 def fetch_html_with_playwright(url: str, *, referer: str | None = None, timeout_ms: int = 45000) -> str:
     """Fetch listing HTML through Chromium.
 
