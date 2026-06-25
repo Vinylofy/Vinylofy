@@ -26,7 +26,7 @@ from scripts.importers.common import (
 
 
 SHOP_ID = "sounds"
-SHOP_NAME = "Sounds"
+SHOP_NAME = "Sounds Delft"
 SHOP_DOMAIN = "sounds.nl"
 SHOP_COUNTRY = "NL"
 
@@ -116,7 +116,18 @@ def staged_row_to_record(row: dict[str, Any], line_number: int) -> CanonicalReco
         raise ValueError(f"missing usable EAN for staged_offer_id={row.get('staged_offer_id')}")
 
     title_raw = clean_title_raw(row.get("title_raw")) or normalize_text(row.get("title_normalized"))
-    artist, title = infer_artist_title(None, title_raw)
+
+    # Sounds detail titles can look like:
+    # "Metallica | Master Of Puppets | 1 LP | 0858978005219"
+    # Keep artist/title clean and do not publish format/EAN fragments as title text.
+    parts = [normalize_text(part) for part in str(title_raw or "").split("|")]
+    parts = [part for part in parts if part]
+
+    if len(parts) >= 2:
+        artist = parts[0]
+        title = parts[1]
+    else:
+        artist, title = infer_artist_title(None, title_raw)
 
     if not title:
         title = normalize_text(row.get("title_normalized"))
