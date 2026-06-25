@@ -132,6 +132,19 @@ def parse_listing_page(
         price = extract_price(text)
         availability = extract_availability(text)
 
+        if position <= 10:
+            print(
+                "[LISTING-DEBUG]",
+                {
+                    "page": page,
+                    "position": position,
+                    "url": source_url,
+                    "price": price,
+                    "text_sample": text[:250],
+                },
+                flush=True,
+            )
+
         payload = {
             "discovery_source": "sounds_collection_listing",
             "discovery_url": listing_url,
