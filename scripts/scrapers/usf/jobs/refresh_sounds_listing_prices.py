@@ -133,7 +133,9 @@ def parse_listing_page(
             else clean(anchor.get_text(" ", strip=True))
         )
 
-        price = extract_price(text)
+        price_node = container.select_one("span.product-price") if container else None
+        price_text = clean(price_node.get_text(" ", strip=True)) if price_node else text
+        price = extract_price(price_text)
         availability = extract_availability(text)
 
         if position <= 10:
