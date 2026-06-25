@@ -6,25 +6,25 @@ on:
       skip_listing:
         description: "Skip live listing fetch; use existing shop_product_links payload prices"
         required: true
-        default: true
+        default: false
         type: boolean
       listing_max_pages:
         description: "Listing pages; 0 = all pages"
         required: true
-        default: "0"
+        default: "1"
         type: string
       run_detail:
-        description: "Run detail enrichment + stage + promote + quarantine"
+        description: "Also run detail, stage, promote and quarantine"
         required: true
         default: false
         type: boolean
       detail_limit:
-        description: "Max detail pages for missing EAN/enrichment"
+        description: "Detail/stage/promote limit"
         required: true
-        default: "500"
+        default: "1"
         type: string
       fast_price_sync:
-        description: "Use fast listing price sync"
+        description: "Run fast listing price sync"
         required: true
         default: true
         type: boolean
@@ -36,63 +36,15 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: usf-soundsvenlo-production
   cancel-in-progress: false
 
 jobs:
-  validate:
-    name: Validate Sounds Venlo USF modules
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
-          pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
-
-      - name: Compile Sounds Venlo USF modules
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m py_compile \
-            scripts/scrapers/usf/jobs/refresh_soundsvenlo_listing_prices.py \
-            scripts/scrapers/usf/jobs/detail_soundsvenlo.py \
-            scripts/scrapers/usf/jobs/stage_soundsvenlo.py \
-            scripts/scrapers/usf/jobs/promote_soundsvenlo.py \
-            scripts/scrapers/usf/jobs/quarantine_soundsvenlo.py \
-            scripts/scrapers/usf/jobs/run_soundsvenlo_pipeline.py \
-            scripts/scrapers/usf/jobs/bootstrap_soundsvenlo_from_csv.py
-
-      - name: Validate command-line interfaces
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m scripts.scrapers.usf.jobs.refresh_soundsvenlo_listing_prices --help >/dev/null
-          python -m scripts.scrapers.usf.jobs.detail_soundsvenlo --help >/dev/null
-          python -m scripts.scrapers.usf.jobs.stage_soundsvenlo --help >/dev/null
-          python -m scripts.scrapers.usf.jobs.promote_soundsvenlo --help >/dev/null
-          python -m scripts.scrapers.usf.jobs.quarantine_soundsvenlo --help >/dev/null
-          python -m scripts.scrapers.usf.jobs.run_soundsvenlo_pipeline --help >/dev/null
-          python -m scripts.scrapers.usf.jobs.bootstrap_soundsvenlo_from_csv --help >/dev/null
-
   run:
-    name: Run Sounds Venlo USF pipeline
-    needs: validate
+    name: Run Sounds Venlo USF
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -108,79 +60,59 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        shell: bash
+      - name: Install Python dependencies
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
-          pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+          python -m pip install requests beautifulsoup4 psycopg[binary] python-dotenv playwright
 
-      - name: Validate configuration
-        shell: bash
+      - name: Install Playwright Chromium
         run: |
           set -euo pipefail
-          if [ -z "${DATABASE_URL:-}" ]; then
-            echo "[ERROR] DATABASE_URL secret ontbreekt"
-            exit 1
-          fi
-          echo "[CONFIG] DATABASE_URL is ingesteld"
+          python -m playwright install --with-deps chromium
 
-      - name: Run Sounds Venlo USF pipeline
+      - name: Compile Sounds Venlo modules
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/scrapers/usf/jobs/refresh_soundsvenlo_listing_prices.py \
+            scripts/scrapers/usf/jobs/detail_soundsvenlo.py \
+            scripts/scrapers/usf/jobs/stage_soundsvenlo.py \
+            scripts/scrapers/usf/jobs/promote_soundsvenlo.py \
+            scripts/scrapers/usf/jobs/quarantine_soundsvenlo.py \
+            scripts/scrapers/usf/jobs/run_soundsvenlo_pipeline.py \
+            scripts/scrapers/usf/jobs/bootstrap_soundsvenlo_from_csv.py
+
+      - name: Run Sounds Venlo pipeline
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p output/usf-soundsvenlo
 
-          if [ "${{ github.event_name }}" = "schedule" ]; then
-            SKIP_LISTING="true"
-            LISTING_MAX_PAGES="0"
-            DETAIL_LIMIT="500"
-            FAST_PRICE_SYNC="true"
-            WRITE="true"
-
-            # Large-catalog policy: detail enrichment twice per week.
-            # 1 = Monday, 4 = Thursday.
-            DAY_OF_WEEK="$(date -u +%u)"
-            if [ "$DAY_OF_WEEK" = "1" ] || [ "$DAY_OF_WEEK" = "4" ]; then
-              RUN_DETAIL="true"
-            else
-              RUN_DETAIL="false"
-            fi
-          else
-            SKIP_LISTING="${{ inputs.skip_listing }}"
-            LISTING_MAX_PAGES="${{ inputs.listing_max_pages }}"
-            RUN_DETAIL="${{ inputs.run_detail }}"
-            DETAIL_LIMIT="${{ inputs.detail_limit }}"
-            FAST_PRICE_SYNC="${{ inputs.fast_price_sync }}"
-            WRITE="${{ inputs.write }}"
-          fi
-
           COMMAND=(
             python -u -m scripts.scrapers.usf.jobs.run_soundsvenlo_pipeline
             --listing-start-page 1
-            --listing-max-pages "$LISTING_MAX_PAGES"
+            --listing-max-pages "${{ inputs.listing_max_pages }}"
             --listing-sleep 0.35
             --max-page-failures 3
-            --detail-limit "$DETAIL_LIMIT"
+            --detail-limit "${{ inputs.detail_limit }}"
             --detail-sleep 0.50
             --detail-retry-days 30
-            --stage-limit "$DETAIL_LIMIT"
-            --promote-limit "$DETAIL_LIMIT"
+            --stage-limit "${{ inputs.detail_limit }}"
+            --promote-limit "${{ inputs.detail_limit }}"
             --quarantine-limit 100
           )
 
-          if [ "$SKIP_LISTING" = "true" ]; then
+          if [ "${{ inputs.skip_listing }}" = "true" ]; then
             COMMAND+=(--skip-listing)
           fi
-          if [ "$FAST_PRICE_SYNC" = "true" ]; then
+          if [ "${{ inputs.fast_price_sync }}" = "true" ]; then
             COMMAND+=(--fast-price-sync)
           fi
-          if [ "$RUN_DETAIL" = "true" ]; then
+          if [ "${{ inputs.run_detail }}" = "true" ]; then
             COMMAND+=(--run-detail)
           fi
-          if [ "$WRITE" = "true" ]; then
+          if [ "${{ inputs.write }}" = "true" ]; then
             COMMAND+=(--write)
           fi
 
@@ -190,11 +122,9 @@ jobs:
 
           "${COMMAND[@]}" 2>&1 | tee output/usf-soundsvenlo/pipeline.log
 
-      - name: Upload pipeline log
+      - name: Upload log artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: usf-soundsvenlo-${{ github.run_id }}
-          path: output/usf-soundsvenlo/**
-          if-no-files-found: warn
-          retention-days: 14
+          name: usf-soundsvenlo-log
+          path: output/usf-soundsvenlo

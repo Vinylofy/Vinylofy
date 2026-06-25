@@ -539,11 +539,16 @@ def main() -> int:
             time.sleep(args.sleep)
             continue
 
-        response.raise_for_status()
+        if response.status_code == 403:
+            print("[LISTING-REFRESH][WARN] requests returned 403; using Playwright", {"url": listing_url}, flush=True)
+            html = fetch_html_with_playwright(listing_url, referer=referer)
+        else:
+            response.raise_for_status()
+            html = response.text
         consecutive_failures = 0
 
         links, offers = parse_listing_page(
-            response.text,
+            html,
             page=page,
             listing_url=listing_url,
             seen_at=seen_at,
