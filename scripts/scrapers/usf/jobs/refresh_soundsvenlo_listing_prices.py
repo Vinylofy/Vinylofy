@@ -20,6 +20,7 @@ from scripts.scrapers.usf.core.models import DiscoveredLink
 SHOP_ID = "soundsvenlo"
 SHOP_NAME = "Sounds Venlo"
 SHOP_DOMAIN = "sounds-venlo.nl"
+SHOP_NETLOCS = {"sounds-venlo.nl", "www.sounds-venlo.nl"}
 SHOP_COUNTRY = "NL"
 BASE_URL = "https://www.sounds-venlo.nl"
 
@@ -175,7 +176,7 @@ def likely_product_url(url: str) -> bool:
 
     if parsed.scheme and parsed.scheme not in {"http", "https"}:
         return False
-    if parsed.netloc and parsed.netloc != SHOP_DOMAIN:
+    if parsed.netloc and parsed.netloc not in SHOP_NETLOCS:
         return False
 
     path = parsed.path.strip("/")
