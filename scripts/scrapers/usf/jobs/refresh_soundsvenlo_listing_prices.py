@@ -167,21 +167,59 @@ def extract_availability(text: str) -> str:
 
 def likely_product_url(url: str) -> bool:
     parsed = urlparse(url)
+
+    # Only real Sounds Venlo HTTP(S) product pages.
+    # Prevent footer/contact links like mailto:, tel:, javascript: and anchors.
+    if parsed.scheme and parsed.scheme not in {"http", "https"}:
+        return False
     if parsed.netloc and parsed.netloc != SHOP_DOMAIN:
         return False
 
     path = parsed.path.strip("/")
-    if not path or "/" in path:
+    lower_path = path.lower()
+
+    if not path:
         return False
-    if path.startswith("p") and path[1:].isdigit():
+
+    if lower_path.startswith((
+        "vinyl",
+        "cd",
+        "dvd",
+        "blu-ray",
+        "merchandise",
+        "accessoires",
+        "contact",
+        "klantenservice",
+        "winkelwagen",
+        "account",
+        "zoeken",
+        "search",
+        "privacy",
+        "algemene-voorwaarden",
+        "retour",
+    )):
         return False
-    if path.lower() in PRODUCT_PATH_EXCLUDES:
+
+    if any(marker in lower_path for marker in (
+        "mailto:",
+        "tel:",
+        "javascript:",
+        "?",
+        "#",
+    )):
         return False
-    if path.lower().startswith(("page/", "cart", "checkout", "account")):
+
+    # Sounds Venlo product pages are usually single slug pages ending in slash,
+    # often with an EAN or internal product id in the slug.
+    # Category/listing pages contain deeper paths such as /world-3/p8/.
+    if "/" in path:
         return False
+
+    # Avoid obvious non-product static/site pages.
+    if "." in lower_path and not lower_path.endswith(".html"):
+        return False
+
     return True
-
-
 def source_product_id_from_url(url: str) -> str | None:
     slug = urlparse(url).path.strip("/").split("/")[-1]
     if not slug:
@@ -191,25 +229,39 @@ def source_product_id_from_url(url: str) -> str | None:
 
 def product_container_for(anchor: Tag) -> Tag | None:
     node: Tag | None = anchor
-    best: Tag | None = None
 
-    for _ in range(10):
+    # Walk up from the product anchor, but never allow page-level wrappers
+    # such as body/footer/header/nav to become a product card.
+    for _ in range(24):
         if node is None or not isinstance(node, Tag):
             break
+
+        if node.name in {"body", "html", "footer", "header", "nav"}:
+            break
+
         text = clean(node.get_text(" ", strip=True))
+        lower = text.lower()
+
         has_price = extract_price(text) is not None
         has_stock_signal = any(
-            marker in text.lower()
-            for marker in ("op voorraad", "niet leverbaar", "uitverkocht", "pre-order", "preorder")
+            marker in lower
+            for marker in (
+                "op voorraad",
+                "niet leverbaar",
+                "uitverkocht",
+                "pre-order",
+                "preorder",
+                "verwacht",
+                "1-2 werkdagen",
+            )
         )
+
         if has_price and has_stock_signal:
-            best = node
-            break
+            return node
+
         node = node.parent if isinstance(node.parent, Tag) else None
 
-    return best
-
-
+    return None
 def first_product_title_anchor(container: Tag, source_url: str) -> Tag | None:
     for candidate in container.select("a[href]"):
         href = clean(candidate.get("href"))
