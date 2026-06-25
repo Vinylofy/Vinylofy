@@ -162,12 +162,21 @@ def parse_listing_page(
             "listing_seen_at": seen_at.isoformat(),
         }
 
-        links_by_url[source_url] = DiscoveredLink(
-            shop_id=SHOP_ID,
-            source_url=source_url,
-            source_product_id=handle,
-            payload=payload,
-        )
+        existing_link = links_by_url.get(source_url)
+        existing_price = None
+        if existing_link and isinstance(existing_link.payload, dict):
+            existing_price = existing_link.payload.get("price")
+
+        # Sounds heeft meerdere anchors per product. Bewaar de rijkste versie:
+        # een bestaande payload met prijs mag niet worden overschreven door
+        # latere "Meer info" / rangnummer anchors zonder prijs.
+        if existing_link is None or (not existing_price and price):
+            links_by_url[source_url] = DiscoveredLink(
+                shop_id=SHOP_ID,
+                source_url=source_url,
+                source_product_id=handle,
+                payload=payload,
+            )
 
         if price:
             offers_by_url[source_url] = ListingOffer(
