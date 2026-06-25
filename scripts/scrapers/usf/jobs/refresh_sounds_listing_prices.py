@@ -208,148 +208,128 @@ def main() -> int:
 
     all_links: list[DiscoveredLink] = []
     all_offers: list[ListingOffer] = []
-    seen_page_signatures: set[tuple[str, ...]] = set()
 
-    page = args.start_page
-    pages_done = 0
-    consecutive_page_failures = 0
-    failed_pages: list[int] = []
+    for section in ("bestsellers", "nieuw"):
+        page = args.start_page
+        pages_done = 0
+        consecutive_page_failures = 0
+        failed_pages: list[int] = []
+        seen_page_signatures: set[tuple[str, ...]] = set()
 
-    while args.max_pages == 0 or pages_done < args.max_pages:
-        listing_url = f"{BASE_URL}/bestsellers/{page}/lp/all"
+        print(f"[LISTING-REFRESH] section={section} start", flush=True)
 
-        print(f"[LISTING-REFRESH] page={page} url={listing_url}", flush=True)
+        while args.max_pages == 0 or pages_done < args.max_pages:
+            listing_url = f"{BASE_URL}/{section}/{page}/lp/all"
 
-        try:
-            response = session.get(listing_url, timeout=30)
-        except requests.RequestException as exc:
-            consecutive_page_failures += 1
-            failed_pages.append(page)
-            print(
-                "[LISTING-REFRESH][WARN] request failed; skipping page",
-                {
+            print(f"[LISTING-REFRESH] section={section} page={page} url={listing_url}", flush=True)
+
+            try:
+                response = session.get(listing_url, timeout=30)
+            except requests.RequestException as exc:
+                consecutive_page_failures += 1
+                failed_pages.append(page)
+                print("[LISTING-REFRESH][WARN] request failed; skipping page", {
+                    "section": section,
                     "page": page,
                     "failure": str(exc),
                     "consecutive_page_failures": consecutive_page_failures,
                     "max_page_failures": args.max_page_failures,
-                },
-                flush=True,
-            )
-            if consecutive_page_failures >= args.max_page_failures:
-                print(
-                    "[LISTING-REFRESH][WARN] max consecutive page failures reached; stopping safely.",
-                    {"failed_pages": failed_pages[-args.max_page_failures:]},
-                    flush=True,
-                )
+                }, flush=True)
+                if consecutive_page_failures >= args.max_page_failures:
+                    print("[LISTING-REFRESH][WARN] max consecutive page failures reached; stopping section.", {
+                        "section": section,
+                        "failed_pages": failed_pages[-args.max_page_failures:],
+                    }, flush=True)
+                    break
+                pages_done += 1
+                page += 1
+                if args.max_pages == 0 or pages_done < args.max_pages:
+                    time.sleep(args.sleep)
+                continue
+
+            if response.status_code == 429:
+                print("[LISTING-REFRESH][WARN] HTTP 429, stopping safely.", flush=True)
                 break
-            pages_done += 1
-            page += 1
-            if args.max_pages == 0 or pages_done < args.max_pages:
-                time.sleep(args.sleep)
-            continue
 
-        if response.status_code == 429:
-            print("[LISTING-REFRESH][WARN] HTTP 429, stopping safely.", flush=True)
-            break
-
-        if response.status_code >= 500:
-            consecutive_page_failures += 1
-            failed_pages.append(page)
-            print(
-                "[LISTING-REFRESH][WARN] server error; skipping page",
-                {
+            if response.status_code >= 500:
+                consecutive_page_failures += 1
+                failed_pages.append(page)
+                print("[LISTING-REFRESH][WARN] server error; skipping page", {
+                    "section": section,
                     "page": page,
                     "status_code": response.status_code,
                     "consecutive_page_failures": consecutive_page_failures,
                     "max_page_failures": args.max_page_failures,
-                },
-                flush=True,
+                }, flush=True)
+                if consecutive_page_failures >= args.max_page_failures:
+                    print("[LISTING-REFRESH][WARN] max consecutive server errors reached; stopping section.", {
+                        "section": section,
+                        "failed_pages": failed_pages[-args.max_page_failures:],
+                    }, flush=True)
+                    break
+                pages_done += 1
+                page += 1
+                if args.max_pages == 0 or pages_done < args.max_pages:
+                    time.sleep(args.sleep)
+                continue
+
+            response.raise_for_status()
+            consecutive_page_failures = 0
+
+            links, offers = parse_listing_page(
+                response.text,
+                page=page,
+                listing_url=listing_url,
+                seen_at=seen_at,
             )
-            if consecutive_page_failures >= args.max_page_failures:
-                print(
-                    "[LISTING-REFRESH][WARN] max consecutive server errors reached; stopping safely.",
-                    {"failed_pages": failed_pages[-args.max_page_failures:]},
-                    flush=True,
-                )
-                break
-            pages_done += 1
-            page += 1
-            if args.max_pages == 0 or pages_done < args.max_pages:
-                time.sleep(args.sleep)
-            continue
 
-        response.raise_for_status()
-        consecutive_page_failures = 0
-
-        links, offers = parse_listing_page(
-            response.text,
-            page=page,
-            listing_url=listing_url,
-            seen_at=seen_at,
-        )
-
-        page_signature = tuple(link.source_url for link in links)
-        if page_signature and page_signature in seen_page_signatures:
-            print(
-                "[LISTING-REFRESH][WARN] duplicate listing page detected; stopping safely.",
-                {
+            page_signature = tuple(link.source_url for link in links)
+            if page_signature and page_signature in seen_page_signatures:
+                print("[LISTING-REFRESH][WARN] duplicate listing page detected; stopping section.", {
+                    "section": section,
                     "page": page,
                     "links": len(links),
                     "first_link": page_signature[0],
                     "last_link": page_signature[-1],
-                },
-                flush=True,
-            )
-            break
-        if page_signature:
-            seen_page_signatures.add(page_signature)
+                }, flush=True)
+                break
+            if page_signature:
+                seen_page_signatures.add(page_signature)
 
-
-        print(
-            "[LISTING-REFRESH-PAGE]",
-            {
+            print("[LISTING-REFRESH-PAGE]", {
+                "section": section,
                 "page": page,
                 "links": len(links),
                 "offers_with_price": len(offers),
                 "write": args.write,
-            },
-            flush=True,
-        )
+            }, flush=True)
 
-        if not links:
-            print(f"[LISTING-REFRESH] page={page} no links, stopping.", flush=True)
-            break
+            if not links:
+                print(f"[LISTING-REFRESH] section={section} page={page} no links, stopping section.", flush=True)
+                break
 
-        all_links.extend(links)
-        all_offers.extend(offers)
+            all_links.extend(links)
+            all_offers.extend(offers)
 
-        pages_done += 1
-        page += 1
+            pages_done += 1
+            page += 1
 
-        if args.max_pages == 0 or pages_done < args.max_pages:
-            time.sleep(args.sleep)
+            if args.max_pages == 0 or pages_done < args.max_pages:
+                time.sleep(args.sleep)
 
-    print(
-        "[LISTING-REFRESH]",
-        {
-            "shop": SHOP_ID,
-            "links": len(all_links),
-            "offers_with_price": len(all_offers),
-            "write": args.write,
-        },
-        flush=True,
-    )
+    print("[LISTING-REFRESH]", {
+        "shop": SHOP_ID,
+        "links": len(all_links),
+        "offers_with_price": len(all_offers),
+        "write": args.write,
+    }, flush=True)
 
     for offer in all_offers[:5]:
-        print(
-            "[LISTING-SAMPLE]",
-            {
-                "source_url": offer.source_url,
-                "price": str(offer.price),
-                "availability": offer.availability,
-            },
-            flush=True,
-        )
+        print("[LISTING-SAMPLE]", {
+            "source_url": offer.source_url,
+            "price": str(offer.price),
+            "availability": offer.availability,
+        }, flush=True)
 
     if not all_links:
         raise SystemExit("[ERROR] Sounds listing refresh leverde geen links op.")
@@ -362,15 +342,11 @@ def main() -> int:
         return 0
 
     result = upsert_discovered_links(all_links)
-    print(
-        "[LISTING-REFRESH] registry",
-        {
-            "inserted": result.inserted,
-            "updated": result.updated,
-            "total": result.total,
-        },
-        flush=True,
-    )
+    print("[LISTING-REFRESH] registry", {
+        "inserted": result.inserted,
+        "updated": result.updated,
+        "total": result.total,
+    }, flush=True)
 
     with db_connection() as conn:
         if args.fast_price_sync:
@@ -387,7 +363,6 @@ def main() -> int:
             print("[LISTING-REFRESH] price_sync", vars(stats), flush=True)
 
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
