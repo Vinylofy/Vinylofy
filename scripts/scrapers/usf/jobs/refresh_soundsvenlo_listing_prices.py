@@ -325,108 +325,79 @@ def parse_listing_page(
     seen_at: datetime,
     debug: bool,
 ) -> tuple[list[DiscoveredLink], list[ListingOffer]]:
-    """Parse Sounds Venlo listing from rendered text order.
+    """Parse Sounds Venlo listing cards.
 
-    The rendered listing follows this pattern:
-      artist -> product title link -> format/price/availability
-
-    DOM card detection is unreliable on this site because title/image/price
-    blocks are not always contained in a compact product-card ancestor.
+    Product cards use:
+      a.full-click      = product URL + title
+      previous span     = artist
+      following p       = format + price + availability
     """
     soup = BeautifulSoup(html, "html.parser")
-
-    text_nodes: list[dict[str, object]] = []
-
-    for node in soup.find_all(string=True):
-        value = clean(node)
-        if not value:
-            continue
-
-        parent = node.parent if isinstance(node.parent, Tag) else None
-        anchor = parent.find_parent("a") if parent else None
-        if parent and parent.name == "a":
-            anchor = parent
-
-        anchor_url = None
-        if isinstance(anchor, Tag):
-            href = clean(anchor.get("href"))
-            if href and not href.lower().startswith(("mailto:", "tel:", "javascript:", "#")):
-                normalized = normalize_product_url(href)
-                if likely_product_url(normalized):
-                    anchor_url = normalized
-
-        text_nodes.append({"text": value, "anchor_url": anchor_url})
 
     links_by_url: dict[str, DiscoveredLink] = {}
     offers_by_url: dict[str, ListingOffer] = {}
     position = 0
 
-    ignored_previous = {
-        "image",
-        "afbeelding",
-        "filters",
-        "sluiten",
-        "vinyl",
-        "alle resultaten voor \"\"",
-        "onderstaande releases zijn uit voorraad leverbaar",
-    }
+    anchors = soup.select("a.full-click[href]")
+    if debug:
+        print("[LISTING-DEBUG] full_click_anchors", {"count": len(anchors)}, flush=True)
 
-    for idx, item in enumerate(text_nodes):
-        source_url = item.get("anchor_url")
-        if not isinstance(source_url, str) or not source_url:
+    for anchor in anchors:
+        href = clean(anchor.get("href"))
+        if not href:
+            continue
+        if href.lower().startswith(("mailto:", "tel:", "javascript:", "#")):
             continue
 
-        title = clean(item.get("text"))
-        if not title:
+        source_url = normalize_product_url(href)
+        if not likely_product_url(source_url):
             continue
 
-        lower_title = title.lower()
-        if lower_title in {"image", "afbeelding", "meer info"}:
-            continue
-        if "placeholder" in lower_title:
+        title = clean(anchor.get_text(" ", strip=True))
+        if not title or title.lower() in {"image", "afbeelding", "meer info"}:
             continue
 
-        # Product info is normally immediately after the linked title.
-        forward_text = clean(" ".join(
-            str(part["text"])
-            for part in text_nodes[idx: idx + 10]
-            if part.get("text")
-        ))
+        card = anchor.find_parent("div", class_=lambda value: value and "group" in str(value).split())
+        if card is None:
+            # fallback: this site usually has the title in a div.mt-3 inside the product card
+            title_block = anchor.find_parent("div")
+            card = title_block.find_parent("div") if isinstance(title_block, Tag) else None
 
-        price = extract_price(forward_text)
+        if card is None or not isinstance(card, Tag):
+            continue
+
+        card_text = clean(card.get_text(" ", strip=True))
+        price = extract_price(card_text)
         if not price:
             continue
 
-        availability = extract_availability(forward_text)
+        availability = extract_availability(card_text)
         if availability == "unknown":
-            # Prevent accidental menu/footer matches.
+            # Prevent accidental non-product matches.
             continue
 
+        artist: str | None = None
+        # In the observed HTML the artist is the first bold span in the text block above the title.
+        title_parent = anchor.parent if isinstance(anchor.parent, Tag) else None
+        if isinstance(title_parent, Tag):
+            artist_span = title_parent.find("span")
+            if isinstance(artist_span, Tag):
+                artist = clean(artist_span.get_text(" ", strip=True))
+
+        if not artist:
+            # Fallback to first span in card.
+            artist_span = card.find("span")
+            if isinstance(artist_span, Tag):
+                artist = clean(artist_span.get_text(" ", strip=True))
+
         format_label: str | None = None
-        match = re.search(
-            r"\b((?:\\d+\\s*[-]?\\s*)?(?:LP|CD|DVD|Blu-ray|7\\s*(?:inch|\")|10\\s*(?:inch|\")|12\\s*(?:inch|\")))\\b\\s*(?:€|EUR)",
-            forward_text,
+        format_match = re.search(
+            r"\b((?:\\d+\\s*[-]?\\s*)?(?:LP|CD|DVD|Blu-ray|7\\s*(?:inch|\")|10\\s*(?:inch|\")|12\\s*(?:inch|\")))\\b",
+            card_text,
             flags=re.IGNORECASE,
         )
-        if match:
-            format_label = clean(match.group(1)).replace(" ", "").upper()
-
-        artist: str | None = None
-        for prev in reversed(text_nodes[max(0, idx - 8): idx]):
-            candidate = clean(prev.get("text"))
-            if not candidate:
-                continue
-            lower = candidate.lower()
-            if lower in ignored_previous:
-                continue
-            if lower.startswith(("€", "lp €", "cd €")):
-                continue
-            if "op voorraad" in lower or "niet leverbaar" in lower:
-                continue
-            if len(candidate) > 120:
-                continue
-            artist = candidate
-            break
+        if format_match:
+            format_label = clean(format_match.group(1)).upper().replace(" ", "")
 
         position += 1
         source_product_id = source_product_id_from_url(source_url)
