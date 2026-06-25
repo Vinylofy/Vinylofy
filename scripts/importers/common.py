@@ -51,6 +51,15 @@ def normalize_text(value: str | None) -> str:
     return normalize_whitespace(value)
 
 
+
+def _row_at(row, index: int):
+    """Return a column by ordinal for both tuple_row and dict_row psycopg cursors."""
+    if row is None:
+        raise KeyError(f"Expected database row, got None at index {index}")
+    if isinstance(row, dict):
+        return list(row.values())[index]
+    return row[index]
+
 def normalize_ean(value: str | None) -> str | None:
     value = "" if value is None else str(value).strip()
     value = re.sub(r"\.0$", "", value)
@@ -390,7 +399,7 @@ def ensure_shop(cur, config: ImportConfig) -> str:
         """,
         (config.shop_name, config.shop_domain, config.shop_country),
     )
-    return str(cur.fetchone()[0])
+    return str(_row_at(cur.fetchone(), 0))
 
 
 def get_existing_product_state(
@@ -783,7 +792,7 @@ def _insert_product(cur, record: CanonicalRecord) -> str:
         ),
     )
 
-    return str(cur.fetchone()[0])
+    return str(_row_at(cur.fetchone(), 0))
 
 def upsert_product(cur, record: CanonicalRecord) -> tuple[str, bool]:
     """
