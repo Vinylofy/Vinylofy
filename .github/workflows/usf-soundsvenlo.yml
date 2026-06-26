@@ -1,6 +1,8 @@
 name: USF - Sounds Venlo
 
 on:
+  schedule:
+    - cron: "35 2 * * *"
   workflow_dispatch:
     inputs:
       skip_listing:
@@ -14,14 +16,29 @@ on:
         default: "1"
         type: string
       run_detail:
-        description: "Also run detail, stage, promote and quarantine"
+        description: "Also run detail enrichment"
         required: true
         default: false
         type: boolean
-      detail_limit:
-        description: "Detail/stage/promote limit"
+      run_stage_promote:
+        description: "Run stage and promote"
         required: true
-        default: "1"
+        default: true
+        type: boolean
+      detail_limit:
+        description: "Detail limit"
+        required: true
+        default: "500"
+        type: string
+      stage_limit:
+        description: "Stage limit"
+        required: true
+        default: "10000"
+        type: string
+      promote_limit:
+        description: "Promote limit"
+        required: true
+        default: "10000"
         type: string
       fast_price_sync:
         description: "Run fast listing price sync"
@@ -104,30 +121,63 @@ jobs:
           set -euo pipefail
           mkdir -p output/usf-soundsvenlo
 
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            SKIP_LISTING="false"
+            LISTING_MAX_PAGES="0"
+            FAST_PRICE_SYNC="true"
+            WRITE="true"
+            RUN_STAGE_PROMOTE="true"
+            DETAIL_LIMIT="500"
+            STAGE_LIMIT="10000"
+            PROMOTE_LIMIT="10000"
+
+            # Large-catalog policy: detail enrichment twice per week.
+            # 1 = Monday, 4 = Thursday.
+            DAY_OF_WEEK="$(date -u +%u)"
+            if [ "$DAY_OF_WEEK" = "1" ] || [ "$DAY_OF_WEEK" = "4" ]; then
+              RUN_DETAIL="true"
+            else
+              RUN_DETAIL="false"
+            fi
+          else
+            SKIP_LISTING="${{ inputs.skip_listing }}"
+            LISTING_MAX_PAGES="${{ inputs.listing_max_pages }}"
+            RUN_DETAIL="${{ inputs.run_detail }}"
+            RUN_STAGE_PROMOTE="${{ inputs.run_stage_promote }}"
+            DETAIL_LIMIT="${{ inputs.detail_limit }}"
+            STAGE_LIMIT="${{ inputs.stage_limit }}"
+            PROMOTE_LIMIT="${{ inputs.promote_limit }}"
+            FAST_PRICE_SYNC="${{ inputs.fast_price_sync }}"
+            WRITE="${{ inputs.write }}"
+          fi
+
           COMMAND=(
             python -u -m scripts.scrapers.usf.jobs.run_soundsvenlo_pipeline
             --listing-start-page 1
-            --listing-max-pages "${{ inputs.listing_max_pages }}"
+            --listing-max-pages "$LISTING_MAX_PAGES"
             --listing-sleep 0.35
             --max-page-failures 3
-            --detail-limit "${{ inputs.detail_limit }}"
+            --detail-limit "$DETAIL_LIMIT"
             --detail-sleep 0.50
             --detail-retry-days 30
-            --stage-limit "${{ inputs.detail_limit }}"
-            --promote-limit "${{ inputs.detail_limit }}"
+            --stage-limit "$STAGE_LIMIT"
+            --promote-limit "$PROMOTE_LIMIT"
             --quarantine-limit 100
           )
 
-          if [ "${{ inputs.skip_listing }}" = "true" ]; then
+          if [ "$SKIP_LISTING" = "true" ]; then
             COMMAND+=(--skip-listing)
           fi
-          if [ "${{ inputs.fast_price_sync }}" = "true" ]; then
+          if [ "$FAST_PRICE_SYNC" = "true" ]; then
             COMMAND+=(--fast-price-sync)
           fi
-          if [ "${{ inputs.run_detail }}" = "true" ]; then
+          if [ "$RUN_DETAIL" = "true" ]; then
             COMMAND+=(--run-detail)
           fi
-          if [ "${{ inputs.write }}" = "true" ]; then
+          if [ "$RUN_STAGE_PROMOTE" = "true" ]; then
+            COMMAND+=(--run-stage-promote)
+          fi
+          if [ "$WRITE" = "true" ]; then
             COMMAND+=(--write)
           fi
 

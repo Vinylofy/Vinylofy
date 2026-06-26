@@ -84,6 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-listing", action="store_true")
     parser.add_argument("--fast-price-sync", action="store_true")
     parser.add_argument("--run-detail", action="store_true")
+    parser.add_argument("--run-stage-promote", action="store_true")
     parser.add_argument("--detail-limit", type=int, default=500)
     parser.add_argument("--detail-sleep", type=float, default=0.50)
     parser.add_argument("--detail-retry-days", type=int, default=30)
@@ -129,6 +130,7 @@ def main() -> int:
             "fast_price_sync": args.fast_price_sync,
             "skip_listing": args.skip_listing,
             "run_detail": args.run_detail,
+            "run_stage_promote": args.run_stage_promote,
             "detail_limit": args.detail_limit,
             "stage_limit": args.stage_limit,
             "promote_limit": args.promote_limit,
@@ -165,6 +167,7 @@ def main() -> int:
             detail_command.append("--write")
         run_step("detail_soundsvenlo", detail_command)
 
+    if args.run_detail or args.run_stage_promote:
         if not args.skip_stage:
             stage_command = [
                 sys.executable,
@@ -189,17 +192,17 @@ def main() -> int:
                 promote_command.append("--write")
             run_step("promote_soundsvenlo", promote_command)
 
-        if not args.skip_quarantine:
-            quarantine_command = [
-                sys.executable,
-                "-m",
-                "scripts.scrapers.usf.jobs.quarantine_soundsvenlo",
-                "--limit",
-                str(args.quarantine_limit),
-            ]
-            if args.write:
-                quarantine_command.append("--write")
-            run_step("quarantine_soundsvenlo", quarantine_command)
+    if args.run_detail and not args.skip_quarantine:
+        quarantine_command = [
+            sys.executable,
+            "-m",
+            "scripts.scrapers.usf.jobs.quarantine_soundsvenlo",
+            "--limit",
+            str(args.quarantine_limit),
+        ]
+        if args.write:
+            quarantine_command.append("--write")
+        run_step("quarantine_soundsvenlo", quarantine_command)
 
     print("\n[PIPELINE] COMPLETE", flush=True)
     return 0
