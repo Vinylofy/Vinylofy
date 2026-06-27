@@ -1,0 +1,212 @@
+name: USF - iMusic
+
+on:
+  schedule:
+    - cron: "25 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seed_limit:
+        description: "Aantal bestaande Vinylofy EANs om naar iMusic-links te seeden"
+        required: true
+        default: "500"
+        type: string
+      requeue_stale_hours:
+        description: "Minimale ouderdom voor iMusic detailrefresh"
+        required: true
+        default: "24"
+        type: string
+      requeue_limit:
+        description: "Maximaal aantal stale links requeueën"
+        required: true
+        default: "500"
+        type: string
+      requeue_target_queue:
+        description: "Queue maximaal aanvullen tot dit aantal"
+        required: true
+        default: "500"
+        type: string
+      detail_limit:
+        description: "Maximaal aantal iMusic EAN detail-lookups"
+        required: true
+        default: "500"
+        type: string
+      stage_limit:
+        description: "Maximaal aantal raw snapshots naar staged_offers"
+        required: true
+        default: "500"
+        type: string
+      promote_limit:
+        description: "Maximaal aantal staged offers promoveren"
+        required: true
+        default: "500"
+        type: string
+      quarantine_limit:
+        description: "Maximaal aantal promote errors quarantinen"
+        required: true
+        default: "100"
+        type: string
+      write:
+        description: "Werkelijke databasewrites uitvoeren"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usf-imusic-production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate iMusic USF pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
+          pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+
+      - name: Compile iMusic USF modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/scrapers/usf/core/db.py \
+            scripts/scrapers/usf/core/link_registry.py \
+            scripts/scrapers/usf/core/staging.py \
+            scripts/scrapers/usf/core/promotion.py \
+            scripts/scrapers/usf/core/promotion_writer.py \
+            scripts/scrapers/usf/core/quarantine.py \
+            scripts/scrapers/usf/jobs/seed_imusic_ean_links.py \
+            scripts/scrapers/usf/jobs/requeue_stale_links.py \
+            scripts/scrapers/usf/jobs/detail_imusic.py \
+            scripts/scrapers/usf/jobs/stage_imusic.py \
+            scripts/scrapers/usf/jobs/promote_imusic.py \
+            scripts/scrapers/usf/jobs/quarantine_imusic.py \
+            scripts/scrapers/usf/jobs/run_imusic_pipeline.py
+
+      - name: Validate command-line interfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m scripts.scrapers.usf.jobs.seed_imusic_ean_links --help
+          python -m scripts.scrapers.usf.jobs.requeue_stale_links --help
+          python -m scripts.scrapers.usf.jobs.detail_imusic --help
+          python -m scripts.scrapers.usf.jobs.stage_imusic --help
+          python -m scripts.scrapers.usf.jobs.promote_imusic --help
+          python -m scripts.scrapers.usf.jobs.quarantine_imusic --help
+          python -m scripts.scrapers.usf.jobs.run_imusic_pipeline --help
+
+  run:
+    name: Run iMusic USF pipeline
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
+          pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+
+      - name: Validate configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          if not os.environ.get("DATABASE_URL"):
+              raise SystemExit("[ERROR] GitHub secret DATABASE_URL ontbreekt")
+          print("[CONFIG] DATABASE_URL is ingesteld")
+          PY
+
+      - name: Run iMusic USF pipeline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output/usf-imusic
+
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            SEED_LIMIT="1000"
+            REQUEUE_STALE_HOURS="24"
+            REQUEUE_LIMIT="500"
+            REQUEUE_TARGET_QUEUE="500"
+            DETAIL_LIMIT="500"
+            STAGE_LIMIT="500"
+            PROMOTE_LIMIT="500"
+            QUARANTINE_LIMIT="100"
+            WRITE="true"
+          else
+            SEED_LIMIT="${{ inputs.seed_limit }}"
+            REQUEUE_STALE_HOURS="${{ inputs.requeue_stale_hours }}"
+            REQUEUE_LIMIT="${{ inputs.requeue_limit }}"
+            REQUEUE_TARGET_QUEUE="${{ inputs.requeue_target_queue }}"
+            DETAIL_LIMIT="${{ inputs.detail_limit }}"
+            STAGE_LIMIT="${{ inputs.stage_limit }}"
+            PROMOTE_LIMIT="${{ inputs.promote_limit }}"
+            QUARANTINE_LIMIT="${{ inputs.quarantine_limit }}"
+            WRITE="${{ inputs.write }}"
+          fi
+
+          COMMAND=(
+            python -u -m scripts.scrapers.usf.jobs.run_imusic_pipeline
+            --seed-limit "$SEED_LIMIT"
+            --requeue-stale-hours "$REQUEUE_STALE_HOURS"
+            --requeue-limit "$REQUEUE_LIMIT"
+            --requeue-target-queue "$REQUEUE_TARGET_QUEUE"
+            --detail-limit "$DETAIL_LIMIT"
+            --stage-limit "$STAGE_LIMIT"
+            --promote-limit "$PROMOTE_LIMIT"
+            --quarantine-limit "$QUARANTINE_LIMIT"
+          )
+
+          if [ "$WRITE" = "true" ]; then
+            COMMAND+=(--write)
+          fi
+
+          printf '[WORKFLOW] Command:'
+          printf ' %q' "${COMMAND[@]}"
+          printf '\n'
+
+          "${COMMAND[@]}" 2>&1 | tee output/usf-imusic/pipeline.log
+
+      - name: Upload pipeline log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: usf-imusic-${{ github.run_id }}
+          path: output/usf-imusic/**
+          if-no-files-found: warn

@@ -70,13 +70,20 @@ STABLE_SHOPS: dict[str, ShopDefinition] = {
         output_dir="data/raw/variaworld",
         notes="Stable enough for USF orchestration.",
     ),
+    "imusic": ShopDefinition(
+        key="imusic",
+        scraper_module="scripts.scrapers.usf.jobs.detail_imusic",
+        importer_module="scripts.scrapers.usf.jobs.promote_imusic",
+        output_dir="data/raw/imusic",
+        notes="EAN-only USF detail lookup; no catalog discovery.",
+    ),
+
 }
 
 
 EXCLUDED_SHOPS: dict[str, str] = {
     "shop3345": "Explicitly excluded: not stable enough yet.",
     "hhv": "Explicitly excluded: not stable enough yet.",
-    "imusic": "Explicitly excluded: not stable enough yet.",
     "music_on_vinyl": "Explicitly excluded: not stable enough yet.",
 }
 
