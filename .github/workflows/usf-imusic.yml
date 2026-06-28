@@ -14,7 +14,7 @@ on:
       genre_ids:
         description: "Comma-separated iMusic genreIds, bv. 16:Blues,16637:Indie"
         required: true
-        default: "16:Blues"
+        default: "30:Country,44:Electronic,51:Folk,60:Gospel-Christian,66:Metal,73:Industrial,74:Instrumental,76:Jazz,94:Musical,98:New-Age,104:Pop,112:Reggae,115:Rock,128:Soundtrack,132:Spoken-Word,151:World-International,157:Easy-Listening,784:Klassiek,808:Kerstmis,2111:Schlager,2460:Hip-Hop-Rap,3018:K-pop,16415:Singer-songwriter,16619:Soul-RnB,16637:Indie,17888:Punk,33988:Downtempo,34057:Nu-Metal,34657:Eurodance,16:Blues"
         type: string
       genre_max_pages_per_genre:
         description: "Aantal listingpagina's per genre"
@@ -179,7 +179,7 @@ jobs:
 
           if [ "${{ github.event_name }}" = "schedule" ]; then
             GENRE_DISCOVERY="false"
-            GENRE_IDS="16:Blues"
+            GENRE_IDS="30:Country,44:Electronic,51:Folk,60:Gospel-Christian,66:Metal,73:Industrial,74:Instrumental,76:Jazz,94:Musical,98:New-Age,104:Pop,112:Reggae,115:Rock,128:Soundtrack,132:Spoken-Word,151:World-International,157:Easy-Listening,784:Klassiek,808:Kerstmis,2111:Schlager,2460:Hip-Hop-Rap,3018:K-pop,16415:Singer-songwriter,16619:Soul-RnB,16637:Indie,17888:Punk,33988:Downtempo,34057:Nu-Metal,34657:Eurodance,16:Blues"
             GENRE_MAX_PAGES_PER_GENRE="1"
             SEED_LIMIT="1000"
             REQUEUE_STALE_HOURS="24"
