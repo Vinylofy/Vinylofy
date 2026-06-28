@@ -74,6 +74,15 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install validation dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then python -m pip install -r requirements-scrapers.txt; fi
+          python -m pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+
       - name: Compile Groovespin probe
         shell: bash
         run: |
