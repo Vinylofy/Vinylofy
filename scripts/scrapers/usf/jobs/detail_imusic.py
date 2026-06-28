@@ -301,6 +301,45 @@ def expected_ean_from_link(link: dict[str, Any]) -> str | None:
     )
 
 
+def registry_payload_from_link(link: dict[str, Any]) -> dict[str, Any]:
+    payload = link.get("payload") or {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def listing_price_from_payload(payload: dict[str, Any]) -> str | None:
+    value = normalize_text(
+        payload.get("listing_price_raw")
+        or payload.get("listing_price_hint")
+        or payload.get("price_raw")
+    )
+    if value and parse_price(value) is not None:
+        return value
+    return None
+
+
+def listing_availability_from_payload(payload: dict[str, Any]) -> tuple[str | None, str | None]:
+    raw = normalize_text(
+        payload.get("listing_availability_raw")
+        or payload.get("listing_availability_hint")
+        or payload.get("availability_raw")
+    )
+    if not raw:
+        return None, None
+
+    low = raw.lower()
+
+    if any(marker in low for marker in PREORDER_MARKERS):
+        return "preorder", raw
+
+    if any(marker in low for marker in OUT_OF_STOCK_MARKERS):
+        return "out_of_stock", raw
+
+    if any(marker in low for marker in IN_STOCK_MARKERS):
+        return "in_stock", raw
+
+    return None, raw
+
+
 def build_session() -> requests.Session:
     session = requests.Session()
     session.headers.update(
@@ -418,7 +457,20 @@ def main() -> int:
             time.sleep(args.sleep)
             continue
 
-        if not parsed.price_raw:
+        registry_payload = registry_payload_from_link(link)
+        listing_price_raw = listing_price_from_payload(registry_payload)
+        listing_availability, listing_availability_text = listing_availability_from_payload(registry_payload)
+
+        # Listingprijs is leidend als die uit een iMusic listing/verzamelpagina komt
+        # en parsebaar is. Detailprijs blijft fallback voor EAN-only lookups.
+        final_price_raw = listing_price_raw or parsed.price_raw
+        final_price_source = "genre_listing" if listing_price_raw else "detail_page"
+
+        final_availability = listing_availability or parsed.availability
+        final_availability_text = listing_availability_text or parsed.availability_text
+        final_availability_source = "genre_listing" if listing_availability else "detail_page"
+
+        if not final_price_raw:
             stats["skipped"] += 1
             print(
                 "[IMUSIC-DETAIL-SKIP]",
@@ -427,8 +479,10 @@ def main() -> int:
                     "final_url": final_url,
                     "ean": parsed.ean,
                     "reason": "missing_price",
-                    "availability": parsed.availability,
-                    "availability_text": parsed.availability_text,
+                    "listing_price_raw": listing_price_raw,
+                    "detail_price_raw": parsed.price_raw,
+                    "availability": final_availability,
+                    "availability_text": final_availability_text,
                 },
                 flush=True,
             )
@@ -449,8 +503,14 @@ def main() -> int:
             "artist": parsed.artist,
             "title": parsed.title,
             "format": parsed.format_label,
-            "availability_text": parsed.availability_text,
-            "registry_payload": link.get("payload") or {},
+            "price_source": final_price_source,
+            "listing_price_raw": listing_price_raw,
+            "detail_price_raw": parsed.price_raw,
+            "availability_source": final_availability_source,
+            "availability_text": final_availability_text,
+            "detail_availability": parsed.availability,
+            "detail_availability_text": parsed.availability_text,
+            "registry_payload": registry_payload,
         }
 
         raw_id = None
@@ -462,8 +522,8 @@ def main() -> int:
                 source_product_id=parsed.ean or expected_ean,
                 title_raw=parsed.title_raw,
                 ean_raw=parsed.ean,
-                price_raw=parsed.price_raw,
-                availability_raw=parsed.availability,
+                price_raw=final_price_raw,
+                availability_raw=final_availability,
                 image_url_raw=parsed.image_url,
                 payload=raw_payload,
             )
@@ -477,9 +537,13 @@ def main() -> int:
                 "source_url": source_url,
                 "product_url": parsed.canonical_url or final_url,
                 "ean": parsed.ean,
-                "price_raw": parsed.price_raw,
-                "availability": parsed.availability,
-                "availability_text": parsed.availability_text,
+                "price_raw": final_price_raw,
+                "price_source": final_price_source,
+                "listing_price_raw": listing_price_raw,
+                "detail_price_raw": parsed.price_raw,
+                "availability": final_availability,
+                "availability_source": final_availability_source,
+                "availability_text": final_availability_text,
                 "title_raw": parsed.title_raw,
                 "image_url": parsed.image_url,
                 "write": args.write,
