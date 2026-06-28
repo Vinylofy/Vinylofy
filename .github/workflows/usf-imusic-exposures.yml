@@ -1,0 +1,260 @@
+name: USF - iMusic Exposure Priority
+
+on:
+  schedule:
+    # Dagelijkse exposure-lijsten vóór de normale iMusic pipeline.
+    - cron: "5 2 * * *"
+    # Wekelijkse exposure-lijsten op zondag.
+    - cron: "45 2 * * 0"
+
+  workflow_dispatch:
+    inputs:
+      exposure_set:
+        description: "daily, weekly, rsd, all of custom"
+        required: true
+        default: "daily"
+        type: choice
+        options:
+          - daily
+          - weekly
+          - rsd
+          - all
+          - custom
+      custom_exposures:
+        description: "Alleen voor custom: id:slug:frequency:name,id:slug:frequency:name"
+        required: false
+        default: ""
+        type: string
+      start_page_per_exposure:
+        description: "Startpagina per exposure"
+        required: true
+        default: "1"
+        type: string
+      max_pages_per_exposure:
+        description: "Aantal pagina's per exposure vanaf startpagina"
+        required: true
+        default: "2"
+        type: string
+      exposure_delay_seconds:
+        description: "Wachttijd tussen exposure-pagina's"
+        required: true
+        default: "4.0"
+        type: string
+      detail_limit:
+        description: "Maximaal aantal exposure-links detail/EAN valideren"
+        required: true
+        default: "500"
+        type: string
+      detail_sleep:
+        description: "Wachttijd tussen detailpagina's"
+        required: true
+        default: "0.5"
+        type: string
+      stage_limit:
+        description: "Maximaal aantal raw snapshots naar staged_offers"
+        required: true
+        default: "500"
+        type: string
+      promote_limit:
+        description: "Maximaal aantal staged offers promoveren"
+        required: true
+        default: "500"
+        type: string
+      quarantine_limit:
+        description: "Maximaal aantal promote errors quarantinen"
+        required: true
+        default: "100"
+        type: string
+      write:
+        description: "Werkelijke databasewrites uitvoeren"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usf-imusic-exposure-priority
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: Run iMusic exposure priority pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
+          pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+
+      - name: Validate modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/scrapers/usf/core/link_registry.py \
+            scripts/scrapers/usf/jobs/discover_imusic_exposures.py \
+            scripts/scrapers/usf/jobs/detail_imusic.py \
+            scripts/scrapers/usf/jobs/stage_imusic.py \
+            scripts/scrapers/usf/jobs/promote_imusic.py \
+            scripts/scrapers/usf/jobs/quarantine_imusic.py
+
+          python -m scripts.scrapers.usf.jobs.discover_imusic_exposures --help
+          python -m scripts.scrapers.usf.jobs.detail_imusic --help
+          python -m scripts.scrapers.usf.jobs.stage_imusic --help
+          python -m scripts.scrapers.usf.jobs.promote_imusic --help
+          python -m scripts.scrapers.usf.jobs.quarantine_imusic --help
+
+      - name: Validate configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          if not os.environ.get("DATABASE_URL"):
+              raise SystemExit("[ERROR] GitHub secret DATABASE_URL ontbreekt")
+          print("[CONFIG] DATABASE_URL is ingesteld")
+          PY
+
+      - name: Run exposure priority pipeline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output/usf-imusic-exposures
+
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            if [ "${{ github.event.schedule }}" = "5 2 * * *" ]; then
+              EXPOSURE_SET="daily"
+              MAX_PAGES_PER_EXPOSURE="2"
+            elif [ "${{ github.event.schedule }}" = "45 2 * * 0" ]; then
+              EXPOSURE_SET="weekly"
+              MAX_PAGES_PER_EXPOSURE="2"
+            else
+              EXPOSURE_SET="daily"
+              MAX_PAGES_PER_EXPOSURE="2"
+            fi
+
+            CUSTOM_EXPOSURES=""
+            START_PAGE_PER_EXPOSURE="1"
+            EXPOSURE_DELAY_SECONDS="4.0"
+            DETAIL_LIMIT="500"
+            DETAIL_SLEEP="0.5"
+            STAGE_LIMIT="500"
+            PROMOTE_LIMIT="500"
+            QUARANTINE_LIMIT="100"
+            WRITE="true"
+          else
+            EXPOSURE_SET="${{ inputs.exposure_set }}"
+            CUSTOM_EXPOSURES="${{ inputs.custom_exposures }}"
+            START_PAGE_PER_EXPOSURE="${{ inputs.start_page_per_exposure }}"
+            MAX_PAGES_PER_EXPOSURE="${{ inputs.max_pages_per_exposure }}"
+            EXPOSURE_DELAY_SECONDS="${{ inputs.exposure_delay_seconds }}"
+            DETAIL_LIMIT="${{ inputs.detail_limit }}"
+            DETAIL_SLEEP="${{ inputs.detail_sleep }}"
+            STAGE_LIMIT="${{ inputs.stage_limit }}"
+            PROMOTE_LIMIT="${{ inputs.promote_limit }}"
+            QUARANTINE_LIMIT="${{ inputs.quarantine_limit }}"
+            WRITE="${{ inputs.write }}"
+          fi
+
+          DISCOVERY_COMMAND=(
+            python -u -m scripts.scrapers.usf.jobs.discover_imusic_exposures
+            --exposure-set "$EXPOSURE_SET"
+            --start-page-per-exposure "$START_PAGE_PER_EXPOSURE"
+            --max-pages-per-exposure "$MAX_PAGES_PER_EXPOSURE"
+            --delay "$EXPOSURE_DELAY_SECONDS"
+            --requeue-detail
+          )
+
+          if [ "$EXPOSURE_SET" = "custom" ]; then
+            DISCOVERY_COMMAND+=(--exposures "$CUSTOM_EXPOSURES")
+          fi
+
+          if [ "$WRITE" = "true" ]; then
+            DISCOVERY_COMMAND+=(--write)
+          fi
+
+          printf '[WORKFLOW] Exposure discovery command:'
+          printf ' %q' "${DISCOVERY_COMMAND[@]}"
+          printf '\n'
+          "${DISCOVERY_COMMAND[@]}" 2>&1 | tee output/usf-imusic-exposures/discovery.log
+
+          DETAIL_COMMAND=(
+            python -u -m scripts.scrapers.usf.jobs.detail_imusic
+            --limit "$DETAIL_LIMIT"
+            --sleep "$DETAIL_SLEEP"
+          )
+          if [ "$WRITE" = "true" ]; then
+            DETAIL_COMMAND+=(--write)
+          fi
+
+          printf '[WORKFLOW] Detail command:'
+          printf ' %q' "${DETAIL_COMMAND[@]}"
+          printf '\n'
+          "${DETAIL_COMMAND[@]}" 2>&1 | tee output/usf-imusic-exposures/detail.log
+
+          STAGE_COMMAND=(
+            python -u -m scripts.scrapers.usf.jobs.stage_imusic
+            --limit "$STAGE_LIMIT"
+          )
+          if [ "$WRITE" = "true" ]; then
+            STAGE_COMMAND+=(--write)
+          fi
+
+          printf '[WORKFLOW] Stage command:'
+          printf ' %q' "${STAGE_COMMAND[@]}"
+          printf '\n'
+          "${STAGE_COMMAND[@]}" 2>&1 | tee output/usf-imusic-exposures/stage.log
+
+          PROMOTE_COMMAND=(
+            python -u -m scripts.scrapers.usf.jobs.promote_imusic
+            --limit "$PROMOTE_LIMIT"
+          )
+          if [ "$WRITE" = "true" ]; then
+            PROMOTE_COMMAND+=(--write)
+          fi
+
+          printf '[WORKFLOW] Promote command:'
+          printf ' %q' "${PROMOTE_COMMAND[@]}"
+          printf '\n'
+          "${PROMOTE_COMMAND[@]}" 2>&1 | tee output/usf-imusic-exposures/promote.log
+
+          QUARANTINE_COMMAND=(
+            python -u -m scripts.scrapers.usf.jobs.quarantine_imusic
+            --limit "$QUARANTINE_LIMIT"
+          )
+          if [ "$WRITE" = "true" ]; then
+            QUARANTINE_COMMAND+=(--write)
+          fi
+
+          printf '[WORKFLOW] Quarantine command:'
+          printf ' %q' "${QUARANTINE_COMMAND[@]}"
+          printf '\n'
+          "${QUARANTINE_COMMAND[@]}" 2>&1 | tee output/usf-imusic-exposures/quarantine.log
+
+      - name: Upload exposure logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: usf-imusic-exposures-${{ github.run_id }}
+          path: output/usf-imusic-exposures/**
+          if-no-files-found: warn

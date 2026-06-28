@@ -73,7 +73,14 @@ def get_links_for_detail_scrape(shop_id: str, limit: int = 100) -> list[dict[str
                 where shop_id = %s
                   and status = 'active'
                   and last_detail_scraped_at is null
-                order by first_seen_at asc
+                order by
+                    case
+                        when payload->>'detail_priority' = 'high' then 0
+                        when payload->>'source' = 'imusic_exposure_listing' then 0
+                        else 1
+                    end,
+                    last_seen_at desc nulls last,
+                    first_seen_at asc
                 limit %s
                 """,
                 (shop_id, limit),
