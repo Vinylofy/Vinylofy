@@ -1179,6 +1179,7 @@ def main() -> int:
 
     offers: list[ListingOffer] = []
     miss_reasons: dict[str, int] = {}
+    domain_block_count = 0
 
     for idx, target in enumerate(targets, start=1):
         result = probe_one_target(
@@ -1190,6 +1191,25 @@ def main() -> int:
             sleep=args.sleep,
             max_candidate_links=args.max_candidate_links,
         )
+
+        if result.reason == "no_exact_ean_match_found":
+            # Als alle zoekroutes op GitHub-hosted runners 403 geven, moeten we stoppen.
+            # Anders proberen we zinloos 1000 EANs en belasten we Groovespin onnodig.
+            recent_403_like = True
+            # De exacte 403 wordt in GROOVESPIN-SEARCH-SKIP gelogd; hier gebruiken we
+            # opeenvolgende misses zonder detail_url als praktische circuit breaker.
+            if result.detail_url is None:
+                domain_block_count += 1
+            else:
+                domain_block_count = 0
+
+            if domain_block_count >= 3:
+                close_browser_fetcher()
+                raise SystemExit(
+                    "[ERROR] Groovespin geeft herhaaldelijk geen toegankelijke search/detailpagina's. "
+                    "Op GitHub-hosted runners is dit waarschijnlijk een 403/IP-blokkade. "
+                    "Draai deze workflow op een self-hosted runner of lokale/EU VPS."
+                )
 
         if result.offer:
             offers.append(result.offer)
