@@ -46,9 +46,15 @@ DEFAULT_SEARCH_URL_TEMPLATES = [
 ]
 
 UA = (
-    "Mozilla/5.0 (compatible; Vinylofy-Groovespin-EANProbe/1.0; "
-    "+https://vinylofy.nl)"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
 )
+
+_PLAYWRIGHT = None
+_BROWSER = None
+_CONTEXT = None
+_PAGE = None
 
 
 @dataclass(frozen=True)
@@ -289,20 +295,140 @@ def extract_title_raw(html: str | None) -> str | None:
     return None
 
 
-def fetch_html(session: requests.Session, url: str, *, timeout: float, sleep: float) -> FetchResult:
+def fetch_html_with_browser(url: str, *, timeout: float, sleep: float) -> FetchResult:
+    global _PLAYWRIGHT, _BROWSER, _CONTEXT, _PAGE
+
     try:
-        response = session.get(url, timeout=timeout, allow_redirects=True)
-    except requests.RequestException as exc:
+        from playwright.sync_api import sync_playwright
+    except Exception as exc:
         time.sleep(sleep)
         return FetchResult(
             requested_url=url,
             final_url=url,
             status_code=None,
             html=None,
-            error=f"{type(exc).__name__}: {exc}",
+            error=f"playwright_unavailable:{type(exc).__name__}:{exc}",
         )
 
+    try:
+        if _PLAYWRIGHT is None:
+            _PLAYWRIGHT = sync_playwright().start()
+
+        if _BROWSER is None:
+            _BROWSER = _PLAYWRIGHT.chromium.launch(
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                ],
+            )
+
+        if _CONTEXT is None:
+            _CONTEXT = _BROWSER.new_context(
+                user_agent=UA,
+                locale="nl-NL",
+                viewport={"width": 1365, "height": 900},
+                extra_http_headers={
+                    "Accept-Language": "nl-NL,nl;q=0.9,en;q=0.7",
+                },
+            )
+            _CONTEXT.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            )
+
+            def route_handler(route):
+                if route.request.resource_type in ("image", "media", "font"):
+                    return route.abort()
+                return route.continue_()
+
+            _CONTEXT.route("**/*", route_handler)
+
+        if _PAGE is None:
+            _PAGE = _CONTEXT.new_page()
+
+        response = _PAGE.goto(
+            url,
+            wait_until="domcontentloaded",
+            timeout=int(timeout * 1000),
+        )
+        _PAGE.wait_for_timeout(750)
+
+        status_code = response.status if response else None
+        final_url = _PAGE.url
+        html = _PAGE.content()
+
+        time.sleep(sleep)
+
+        if status_code and status_code >= 400:
+            return FetchResult(
+                requested_url=url,
+                final_url=final_url,
+                status_code=status_code,
+                html=None,
+                error=f"browser_http_status:{status_code}",
+            )
+
+        return FetchResult(
+            requested_url=url,
+            final_url=final_url,
+            status_code=status_code,
+            html=html or "",
+            error=None,
+        )
+
+    except Exception as exc:
+        time.sleep(sleep)
+        return FetchResult(
+            requested_url=url,
+            final_url=url,
+            status_code=None,
+            html=None,
+            error=f"browser_error:{type(exc).__name__}:{exc}",
+        )
+
+
+def close_browser_fetcher() -> None:
+    global _PLAYWRIGHT, _BROWSER, _CONTEXT, _PAGE
+
+    for obj in (_PAGE, _CONTEXT, _BROWSER):
+        try:
+            if obj is not None:
+                obj.close()
+        except Exception:
+            pass
+
+    try:
+        if _PLAYWRIGHT is not None:
+            _PLAYWRIGHT.stop()
+    except Exception:
+        pass
+
+    _PLAYWRIGHT = None
+    _BROWSER = None
+    _CONTEXT = None
+    _PAGE = None
+
+
+def fetch_html(session: requests.Session, url: str, *, timeout: float, sleep: float) -> FetchResult:
+    try:
+        response = session.get(url, timeout=timeout, allow_redirects=True)
+    except requests.RequestException as exc:
+        log("GROOVESPIN-REQUESTS-ERROR", {"url": url, "error": f"{type(exc).__name__}: {exc}"})
+        return fetch_html_with_browser(url, timeout=timeout, sleep=sleep)
+
     time.sleep(sleep)
+
+    if response.status_code == 403:
+        log(
+            "GROOVESPIN-BROWSER-FALLBACK",
+            {
+                "url": url,
+                "status_code": response.status_code,
+                "reason": "requests_403",
+            },
+        )
+        return fetch_html_with_browser(url, timeout=timeout, sleep=sleep)
 
     if response.status_code in (429, 500, 502, 503, 504):
         return FetchResult(
@@ -1113,6 +1239,8 @@ def main() -> int:
             f"[ERROR] Slechts {len(offers)} offers gevonden; onder min-offers-to-write={args.min_offers_to_write}. "
             "Geen writes/deactivatie uitgevoerd."
         )
+
+    close_browser_fetcher()
 
     with db_connection() as conn:
         stats = sync_ean_exact_offers(conn, offers, write=args.write)
