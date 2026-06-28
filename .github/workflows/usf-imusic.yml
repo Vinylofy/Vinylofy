@@ -6,8 +6,13 @@ on:
 
   workflow_dispatch:
     inputs:
+      price_only_update:
+        description: "Alleen iMusic listingprijzen ophalen; geen detail/stage/promote"
+        required: true
+        default: false
+        type: boolean
       genre_discovery:
-        description: "Ook iMusic genre-discovery draaien"
+        description: "Ook iMusic genre-discovery draaien voor normale pipeline"
         required: true
         default: true
         type: boolean
@@ -178,6 +183,7 @@ jobs:
           mkdir -p output/usf-imusic
 
           if [ "${{ github.event_name }}" = "schedule" ]; then
+            PRICE_ONLY_UPDATE="false"
             GENRE_DISCOVERY="true"
             GENRE_IDS="30:Country,44:Electronic,51:Folk,60:Gospel-Christian,66:Metal,73:Industrial,74:Instrumental,76:Jazz,94:Musical,98:New-Age,104:Pop,112:Reggae,115:Rock,128:Soundtrack,132:Spoken-Word,151:World-International,157:Easy-Listening,784:Klassiek,808:Kerstmis,2111:Schlager,2460:Hip-Hop-Rap,3018:K-pop,16415:Singer-songwriter,16619:Soul-RnB,16637:Indie,17888:Punk,33988:Downtempo,34057:Nu-Metal,34657:Eurodance,16:Blues"
             GENRE_MAX_PAGES_PER_GENRE="1"
@@ -191,6 +197,7 @@ jobs:
             QUARANTINE_LIMIT="100"
             WRITE="true"
           else
+            PRICE_ONLY_UPDATE="${{ inputs.price_only_update }}"
             GENRE_DISCOVERY="${{ inputs.genre_discovery }}"
             GENRE_IDS="${{ inputs.genre_ids }}"
             GENRE_MAX_PAGES_PER_GENRE="${{ inputs.genre_max_pages_per_genre }}"
@@ -205,7 +212,7 @@ jobs:
             WRITE="${{ inputs.write }}"
           fi
 
-          if [ "$GENRE_DISCOVERY" = "true" ]; then
+          run_genre_discovery() {
             DISCOVERY_COMMAND=(
               python -u -m scripts.scrapers.usf.jobs.discover_imusic_genres
               --genre-ids "$GENRE_IDS"
@@ -216,11 +223,22 @@ jobs:
               DISCOVERY_COMMAND+=(--write)
             fi
 
-            printf '[WORKFLOW] Discovery command:'
+            printf '[WORKFLOW] iMusic listing price command:'
             printf ' %q' "${DISCOVERY_COMMAND[@]}"
             printf '\n'
 
             "${DISCOVERY_COMMAND[@]}" 2>&1 | tee output/usf-imusic/genre-discovery.log
+          }
+
+          if [ "$PRICE_ONLY_UPDATE" = "true" ]; then
+            echo "[WORKFLOW] price_only_update=true; only refreshing iMusic listing prices."
+            run_genre_discovery
+            echo "[WORKFLOW] Price-only update done. Skipping seed/requeue/detail/stage/promote/quarantine."
+            exit 0
+          fi
+
+          if [ "$GENRE_DISCOVERY" = "true" ]; then
+            run_genre_discovery
           fi
 
           COMMAND=(
