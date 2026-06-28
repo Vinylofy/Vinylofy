@@ -11,6 +11,16 @@ on:
         required: true
         default: false
         type: boolean
+      price_only_sync:
+        description: "Bestaande gevalideerde iMusic prices verversen vanuit listingprijzen"
+        required: true
+        default: true
+        type: boolean
+      price_sync_limit:
+        description: "Maximaal aantal listingprijs-records naar bestaande public.prices syncen"
+        required: true
+        default: "5000"
+        type: string
       genre_discovery:
         description: "Ook iMusic genre-discovery draaien voor normale pipeline"
         required: true
@@ -25,6 +35,11 @@ on:
         description: "Aantal listingpagina's per genre"
         required: true
         default: "1"
+        type: string
+      genre_delay_seconds:
+        description: "Wachttijd tussen iMusic listingpagina's"
+        required: true
+        default: "4.0"
         type: string
       seed_limit:
         description: "Aantal bestaande Vinylofy EANs om naar iMusic-links te seeden"
@@ -117,6 +132,7 @@ jobs:
             scripts/scrapers/usf/core/quarantine.py \
             scripts/scrapers/usf/jobs/seed_imusic_ean_links.py \
             scripts/scrapers/usf/jobs/discover_imusic_genres.py \
+            scripts/scrapers/usf/jobs/sync_imusic_listing_prices.py \
             scripts/scrapers/usf/jobs/requeue_stale_links.py \
             scripts/scrapers/usf/jobs/detail_imusic.py \
             scripts/scrapers/usf/jobs/stage_imusic.py \
@@ -130,6 +146,7 @@ jobs:
           set -euo pipefail
           python -m scripts.scrapers.usf.jobs.seed_imusic_ean_links --help
           python -m scripts.scrapers.usf.jobs.discover_imusic_genres --help
+          python -m scripts.scrapers.usf.jobs.sync_imusic_listing_prices --help
           python -m scripts.scrapers.usf.jobs.requeue_stale_links --help
           python -m scripts.scrapers.usf.jobs.detail_imusic --help
           python -m scripts.scrapers.usf.jobs.stage_imusic --help
@@ -184,9 +201,12 @@ jobs:
 
           if [ "${{ github.event_name }}" = "schedule" ]; then
             PRICE_ONLY_UPDATE="false"
+            PRICE_ONLY_SYNC="true"
+            PRICE_SYNC_LIMIT="5000"
             GENRE_DISCOVERY="true"
             GENRE_IDS="30:Country,44:Electronic,51:Folk,60:Gospel-Christian,66:Metal,73:Industrial,74:Instrumental,76:Jazz,94:Musical,98:New-Age,104:Pop,112:Reggae,115:Rock,128:Soundtrack,132:Spoken-Word,151:World-International,157:Easy-Listening,784:Klassiek,808:Kerstmis,2111:Schlager,2460:Hip-Hop-Rap,3018:K-pop,16415:Singer-songwriter,16619:Soul-RnB,16637:Indie,17888:Punk,33988:Downtempo,34057:Nu-Metal,34657:Eurodance,16:Blues"
             GENRE_MAX_PAGES_PER_GENRE="1"
+            GENRE_DELAY_SECONDS="4.0"
             SEED_LIMIT="1000"
             REQUEUE_STALE_HOURS="24"
             REQUEUE_LIMIT="500"
@@ -198,9 +218,12 @@ jobs:
             WRITE="true"
           else
             PRICE_ONLY_UPDATE="${{ inputs.price_only_update }}"
+            PRICE_ONLY_SYNC="${{ inputs.price_only_sync }}"
+            PRICE_SYNC_LIMIT="${{ inputs.price_sync_limit }}"
             GENRE_DISCOVERY="${{ inputs.genre_discovery }}"
             GENRE_IDS="${{ inputs.genre_ids }}"
             GENRE_MAX_PAGES_PER_GENRE="${{ inputs.genre_max_pages_per_genre }}"
+            GENRE_DELAY_SECONDS="${{ inputs.genre_delay_seconds }}"
             SEED_LIMIT="${{ inputs.seed_limit }}"
             REQUEUE_STALE_HOURS="${{ inputs.requeue_stale_hours }}"
             REQUEUE_LIMIT="${{ inputs.requeue_limit }}"
@@ -217,6 +240,7 @@ jobs:
               python -u -m scripts.scrapers.usf.jobs.discover_imusic_genres
               --genre-ids "$GENRE_IDS"
               --max-pages-per-genre "$GENRE_MAX_PAGES_PER_GENRE"
+              --delay "$GENRE_DELAY_SECONDS"
             )
 
             if [ "$WRITE" = "true" ]; then
@@ -230,15 +254,42 @@ jobs:
             "${DISCOVERY_COMMAND[@]}" 2>&1 | tee output/usf-imusic/genre-discovery.log
           }
 
+          run_price_sync() {
+            SYNC_COMMAND=(
+              python -u -m scripts.scrapers.usf.jobs.sync_imusic_listing_prices
+              --limit "$PRICE_SYNC_LIMIT"
+            )
+
+            if [ "$WRITE" = "true" ]; then
+              SYNC_COMMAND+=(--write)
+            fi
+
+            printf '[WORKFLOW] iMusic public price sync command:'
+            printf ' %q' "${SYNC_COMMAND[@]}"
+            printf '\n'
+
+            "${SYNC_COMMAND[@]}" 2>&1 | tee output/usf-imusic/price-sync.log
+          }
+
           if [ "$PRICE_ONLY_UPDATE" = "true" ]; then
-            echo "[WORKFLOW] price_only_update=true; only refreshing iMusic listing prices."
+            echo "[WORKFLOW] price_only_update=true; refreshing iMusic listing prices."
             run_genre_discovery
-            echo "[WORKFLOW] Price-only update done. Skipping seed/requeue/detail/stage/promote/quarantine."
+
+            if [ "$PRICE_ONLY_SYNC" = "true" ]; then
+              echo "[WORKFLOW] price_only_sync=true; syncing existing validated public prices."
+              run_price_sync
+            fi
+
+            echo "[WORKFLOW] Price-only mode done. Skipping seed/requeue/detail/stage/promote/quarantine."
             exit 0
           fi
 
           if [ "$GENRE_DISCOVERY" = "true" ]; then
             run_genre_discovery
+          fi
+
+          if [ "$PRICE_ONLY_SYNC" = "true" ]; then
+            run_price_sync
           fi
 
           COMMAND=(
