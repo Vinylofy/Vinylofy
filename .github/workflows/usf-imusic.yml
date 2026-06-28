@@ -3,8 +3,24 @@ name: USF - iMusic
 on:
   schedule:
     - cron: "25 3 * * *"
+
   workflow_dispatch:
     inputs:
+      genre_discovery:
+        description: "Ook iMusic genre-discovery draaien"
+        required: true
+        default: false
+        type: boolean
+      genre_ids:
+        description: "Comma-separated iMusic genreIds, bv. 16:Blues,16637:Indie"
+        required: true
+        default: "16:Blues"
+        type: string
+      genre_max_pages_per_genre:
+        description: "Aantal listingpagina's per genre"
+        required: true
+        default: "1"
+        type: string
       seed_limit:
         description: "Aantal bestaande Vinylofy EANs om naar iMusic-links te seeden"
         required: true
@@ -95,6 +111,7 @@ jobs:
             scripts/scrapers/usf/core/promotion_writer.py \
             scripts/scrapers/usf/core/quarantine.py \
             scripts/scrapers/usf/jobs/seed_imusic_ean_links.py \
+            scripts/scrapers/usf/jobs/discover_imusic_genres.py \
             scripts/scrapers/usf/jobs/requeue_stale_links.py \
             scripts/scrapers/usf/jobs/detail_imusic.py \
             scripts/scrapers/usf/jobs/stage_imusic.py \
@@ -107,6 +124,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m scripts.scrapers.usf.jobs.seed_imusic_ean_links --help
+          python -m scripts.scrapers.usf.jobs.discover_imusic_genres --help
           python -m scripts.scrapers.usf.jobs.requeue_stale_links --help
           python -m scripts.scrapers.usf.jobs.detail_imusic --help
           python -m scripts.scrapers.usf.jobs.stage_imusic --help
@@ -160,6 +178,9 @@ jobs:
           mkdir -p output/usf-imusic
 
           if [ "${{ github.event_name }}" = "schedule" ]; then
+            GENRE_DISCOVERY="false"
+            GENRE_IDS="16:Blues"
+            GENRE_MAX_PAGES_PER_GENRE="1"
             SEED_LIMIT="1000"
             REQUEUE_STALE_HOURS="24"
             REQUEUE_LIMIT="500"
@@ -170,6 +191,9 @@ jobs:
             QUARANTINE_LIMIT="100"
             WRITE="true"
           else
+            GENRE_DISCOVERY="${{ inputs.genre_discovery }}"
+            GENRE_IDS="${{ inputs.genre_ids }}"
+            GENRE_MAX_PAGES_PER_GENRE="${{ inputs.genre_max_pages_per_genre }}"
             SEED_LIMIT="${{ inputs.seed_limit }}"
             REQUEUE_STALE_HOURS="${{ inputs.requeue_stale_hours }}"
             REQUEUE_LIMIT="${{ inputs.requeue_limit }}"
@@ -179,6 +203,24 @@ jobs:
             PROMOTE_LIMIT="${{ inputs.promote_limit }}"
             QUARANTINE_LIMIT="${{ inputs.quarantine_limit }}"
             WRITE="${{ inputs.write }}"
+          fi
+
+          if [ "$GENRE_DISCOVERY" = "true" ]; then
+            DISCOVERY_COMMAND=(
+              python -u -m scripts.scrapers.usf.jobs.discover_imusic_genres
+              --genre-ids "$GENRE_IDS"
+              --max-pages-per-genre "$GENRE_MAX_PAGES_PER_GENRE"
+            )
+
+            if [ "$WRITE" = "true" ]; then
+              DISCOVERY_COMMAND+=(--write)
+            fi
+
+            printf '[WORKFLOW] Discovery command:'
+            printf ' %q' "${DISCOVERY_COMMAND[@]}"
+            printf '\n'
+
+            "${DISCOVERY_COMMAND[@]}" 2>&1 | tee output/usf-imusic/genre-discovery.log
           fi
 
           COMMAND=(
@@ -197,7 +239,7 @@ jobs:
             COMMAND+=(--write)
           fi
 
-          printf '[WORKFLOW] Command:'
+          printf '[WORKFLOW] Pipeline command:'
           printf ' %q' "${COMMAND[@]}"
           printf '\n'
 
