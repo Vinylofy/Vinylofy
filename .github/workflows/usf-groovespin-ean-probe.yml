@@ -1,0 +1,192 @@
+name: USF - Groovespin EAN Probe
+
+on:
+  schedule:
+    - cron: "15 4 * * *"
+
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Aantal Vinylofy-prioriteit EANs om te proben"
+        required: true
+        default: "1000"
+        type: string
+      cohort_count:
+        description: "Aantal cohorten; 2 = rolling top ~2000"
+        required: true
+        default: "2"
+        type: string
+      cohort:
+        description: "-1 = automatisch roteren; 0 = top 1-1000; 1 = top 1001-2000"
+        required: true
+        default: "-1"
+        type: string
+      min_active_shops:
+        description: "Minimaal aantal actieve niet-Groovespin shops voor selectie"
+        required: true
+        default: "1"
+        type: string
+      max_candidate_links:
+        description: "Maximaal aantal Groovespin albumlinks per EAN controleren"
+        required: true
+        default: "5"
+        type: string
+      sleep:
+        description: "Wachttijd tussen Groovespin requests"
+        required: true
+        default: "1.5"
+        type: string
+      deactivate_stale_after_hours:
+        description: "Groovespin offers ouder dan dit aantal uur deactiveren"
+        required: true
+        default: "60"
+        type: string
+      search_url_templates:
+        description: "Optionele extra zoektemplates, gescheiden met |, met {ean}"
+        required: false
+        default: ""
+        type: string
+      write:
+        description: "Werkelijke databasewrites uitvoeren"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usf-groovespin-ean-probe-production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate Groovespin EAN probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile Groovespin probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/scrapers/usf/core/db.py \
+            scripts/scrapers/usf/core/listing_price_sync.py \
+            scripts/scrapers/usf/jobs/probe_groovespin_selected_eans.py
+          python -m scripts.scrapers.usf.jobs.probe_groovespin_selected_eans --help >/tmp/groovespin_help.txt
+          head -80 /tmp/groovespin_help.txt
+
+  run:
+    name: Run Groovespin EAN probe
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install runtime dependencies
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then python -m pip install -r requirements-scrapers.txt; fi
+          python -m pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+
+      - name: Validate configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          if not os.environ.get("DATABASE_URL"):
+              raise SystemExit("[ERROR] GitHub secret DATABASE_URL ontbreekt")
+          print("[CONFIG] DATABASE_URL is ingesteld")
+          PY
+
+      - name: Run Groovespin selected EAN probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output/usf-groovespin
+
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            LIMIT="1000"
+            COHORT_COUNT="2"
+            COHORT="-1"
+            MIN_ACTIVE_SHOPS="1"
+            MAX_CANDIDATE_LINKS="5"
+            SLEEP="1.5"
+            DEACTIVATE_STALE_AFTER_HOURS="60"
+            SEARCH_URL_TEMPLATES=""
+            WRITE="true"
+          else
+            LIMIT="${{ inputs.limit }}"
+            COHORT_COUNT="${{ inputs.cohort_count }}"
+            COHORT="${{ inputs.cohort }}"
+            MIN_ACTIVE_SHOPS="${{ inputs.min_active_shops }}"
+            MAX_CANDIDATE_LINKS="${{ inputs.max_candidate_links }}"
+            SLEEP="${{ inputs.sleep }}"
+            DEACTIVATE_STALE_AFTER_HOURS="${{ inputs.deactivate_stale_after_hours }}"
+            SEARCH_URL_TEMPLATES="${{ inputs.search_url_templates }}"
+            WRITE="${{ inputs.write }}"
+          fi
+
+          cmd=(
+            python -u -m scripts.scrapers.usf.jobs.probe_groovespin_selected_eans
+            --limit "$LIMIT"
+            --cohort-count "$COHORT_COUNT"
+            --cohort "$COHORT"
+            --min-active-shops "$MIN_ACTIVE_SHOPS"
+            --max-candidate-links "$MAX_CANDIDATE_LINKS"
+            --sleep "$SLEEP"
+            --deactivate-stale-after-hours "$DEACTIVATE_STALE_AFTER_HOURS"
+            --selection-csv "output/usf-groovespin/selected_eans.csv"
+          )
+
+          if [[ -n "$SEARCH_URL_TEMPLATES" ]]; then
+            IFS='|' read -ra templates <<< "$SEARCH_URL_TEMPLATES"
+            for template in "${templates[@]}"; do
+              if [[ -n "$template" ]]; then
+                cmd+=(--search-url-template "$template")
+              fi
+            done
+          fi
+
+          if [[ "$WRITE" == "true" ]]; then
+            cmd+=(--write)
+          fi
+
+          printf '[WORKFLOW] command:'
+          printf ' %q' "${cmd[@]}"
+          printf '\n'
+
+          "${cmd[@]}" 2>&1 | tee output/usf-groovespin/probe.log
+
+      - name: Upload Groovespin probe artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usf-groovespin-ean-probe-${{ github.run_id }}
+          path: output/usf-groovespin/**
+          if-no-files-found: warn
