@@ -200,9 +200,52 @@ def page_signature(source_urls: Iterable[str]) -> str:
     return hashlib.sha1(joined.encode("utf-8")).hexdigest()
 
 
-def fetch_html(url: str, timeout: int = 30) -> tuple[int, str]:
-    response = requests.get(url, headers=REQUEST_HEADERS, timeout=timeout)
-    return response.status_code, response.text
+def fetch_html(url: str, timeout: int = 45, attempts: int = 3) -> tuple[int, str]:
+    last_error: Exception | None = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            response = requests.get(
+                url,
+                headers=REQUEST_HEADERS,
+                timeout=(10, timeout),
+            )
+            return response.status_code, response.text
+        except requests.exceptions.RequestException as exc:
+            last_error = exc
+            if attempt >= attempts:
+                print(
+                    "[NORTHEND-FETCH-ERROR]",
+                    {
+                        "url": url,
+                        "attempt": attempt,
+                        "attempts": attempts,
+                        "error": repr(exc),
+                    },
+                    flush=True,
+                )
+                return 599, ""
+
+            sleep_seconds = attempt * 5
+            print(
+                "[NORTHEND-FETCH-RETRY]",
+                {
+                    "url": url,
+                    "attempt": attempt,
+                    "attempts": attempts,
+                    "sleep_seconds": sleep_seconds,
+                    "error": repr(exc),
+                },
+                flush=True,
+            )
+            time.sleep(sleep_seconds)
+
+    print(
+        "[NORTHEND-FETCH-ERROR]",
+        {"url": url, "error": repr(last_error)},
+        flush=True,
+    )
+    return 599, ""
 
 
 def parse_listing_page(
