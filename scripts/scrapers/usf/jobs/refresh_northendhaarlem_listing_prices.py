@@ -273,18 +273,22 @@ def parse_listing_page(
             payload=payload,
         )
         offer = ListingOffer(
-            shop_id=SHOP_ID,
             shop_name=SHOP_NAME,
+            shop_domain=SHOP_DOMAIN,
+            shop_country="NL",
             source_url=source_url,
-            source_product_id=source_product_id,
-            ean=None,
-            title_raw=title_raw,
-            artist_raw=None,
             price=decimal_price(price),
-            currency="EUR",
             availability=availability,
-            image_url=image_url,
-            payload=payload,
+            currency="EUR",
+            ean=None,
+            seen_at=datetime.now(timezone.utc),
+            raw={
+                **payload,
+                "source_product_id": source_product_id,
+                "title_raw": title_raw,
+                "artist_raw": None,
+                "image_url": image_url,
+            },
         )
 
         existing = rows_by_url.get(source_url)
