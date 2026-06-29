@@ -1,0 +1,152 @@
+name: USF - North End Haarlem
+
+on:
+  schedule:
+    - cron: "35 3 * * *"
+  workflow_dispatch:
+    inputs:
+      category_limit:
+        description: "Aantal categorie-seeds; 0 = alle seeds"
+        required: true
+        default: "0"
+        type: string
+      max_pages_per_category:
+        description: "Aantal pagina's per categorie; 0 = tot stopconditie"
+        required: true
+        default: "0"
+        type: string
+      run_detail:
+        description: "Ook detailverrijking + stage + promote draaien"
+        required: true
+        default: false
+        type: boolean
+      detail_limit:
+        description: "Maximaal aantal detailpagina's"
+        required: true
+        default: "500"
+        type: string
+      stage_limit:
+        description: "Maximaal aantal staged records"
+        required: true
+        default: "500"
+        type: string
+      promote_limit:
+        description: "Maximaal aantal promote records"
+        required: true
+        default: "500"
+        type: string
+      fast_price_sync:
+        description: "Snelle price-only bulk sync gebruiken voor bestaande offers"
+        required: true
+        default: true
+        type: boolean
+      write:
+        description: "Werkelijke databasewrites uitvoeren"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  northendhaarlem:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Compile North End modules
+        run: |
+          python -m py_compile \
+            scripts/scrapers/usf/jobs/refresh_northendhaarlem_listing_prices.py \
+            scripts/scrapers/usf/jobs/detail_northendhaarlem.py \
+            scripts/scrapers/usf/jobs/stage_northendhaarlem.py \
+            scripts/scrapers/usf/jobs/promote_northendhaarlem.py \
+            scripts/scrapers/usf/jobs/run_northendhaarlem_pipeline.py
+
+      - name: Validate CLIs
+        run: |
+          python -m scripts.scrapers.usf.jobs.refresh_northendhaarlem_listing_prices --help
+          python -m scripts.scrapers.usf.jobs.detail_northendhaarlem --help
+          python -m scripts.scrapers.usf.jobs.stage_northendhaarlem --help
+          python -m scripts.scrapers.usf.jobs.promote_northendhaarlem --help
+          python -m scripts.scrapers.usf.jobs.run_northendhaarlem_pipeline --help
+
+      - name: Resolve run settings
+        id: settings
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "category_limit=0" >> "$GITHUB_OUTPUT"
+            echo "max_pages_per_category=0" >> "$GITHUB_OUTPUT"
+            echo "detail_limit=1000" >> "$GITHUB_OUTPUT"
+            echo "stage_limit=1000" >> "$GITHUB_OUTPUT"
+            echo "promote_limit=1000" >> "$GITHUB_OUTPUT"
+            echo "fast_price_sync=true" >> "$GITHUB_OUTPUT"
+            echo "write=true" >> "$GITHUB_OUTPUT"
+            day="$(date -u +%u)"
+            if [ "$day" = "1" ] || [ "$day" = "4" ]; then
+              echo "run_detail=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "run_detail=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "category_limit=${{ inputs.category_limit }}" >> "$GITHUB_OUTPUT"
+            echo "max_pages_per_category=${{ inputs.max_pages_per_category }}" >> "$GITHUB_OUTPUT"
+            echo "run_detail=${{ inputs.run_detail }}" >> "$GITHUB_OUTPUT"
+            echo "detail_limit=${{ inputs.detail_limit }}" >> "$GITHUB_OUTPUT"
+            echo "stage_limit=${{ inputs.stage_limit }}" >> "$GITHUB_OUTPUT"
+            echo "promote_limit=${{ inputs.promote_limit }}" >> "$GITHUB_OUTPUT"
+            echo "fast_price_sync=${{ inputs.fast_price_sync }}" >> "$GITHUB_OUTPUT"
+            echo "write=${{ inputs.write }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run North End Haarlem pipeline
+        shell: bash
+        run: |
+          mkdir -p output/usf-northendhaarlem
+          cmd=(python -u -m scripts.scrapers.usf.jobs.run_northendhaarlem_pipeline
+            --category-limit "${{ steps.settings.outputs.category_limit }}"
+            --max-pages-per-category "${{ steps.settings.outputs.max_pages_per_category }}"
+            --detail-limit "${{ steps.settings.outputs.detail_limit }}"
+            --stage-limit "${{ steps.settings.outputs.stage_limit }}"
+            --promote-limit "${{ steps.settings.outputs.promote_limit }}"
+            --detail-rescrape-days 14)
+          if [ "${{ steps.settings.outputs.fast_price_sync }}" = "true" ]; then
+            cmd+=(--fast-price-sync)
+          fi
+          if [ "${{ steps.settings.outputs.run_detail }}" = "true" ]; then
+            cmd+=(--run-detail)
+          fi
+          if [ "${{ steps.settings.outputs.write }}" = "true" ]; then
+            cmd+=(--write)
+          fi
+          printf '[NORTHEND-WORKFLOW] %q ' "${cmd[@]}" | tee output/usf-northendhaarlem/command.txt
+          printf '\n' | tee -a output/usf-northendhaarlem/command.txt
+          "${cmd[@]}" 2>&1 | tee output/usf-northendhaarlem/run.log
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usf-northendhaarlem-logs
+          path: output/usf-northendhaarlem
+          if-no-files-found: ignore
