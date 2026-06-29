@@ -218,9 +218,11 @@ def sync_listing_prices(*, limit: int, write: bool) -> SyncStats:
     stats = SyncStats()
 
     with psycopg.connect(get_database_url(), prepare_threshold=None) as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
+        # ensure_shop() uit scripts.importers.common verwacht tuple-rows.
+        # De rest van deze sync-job gebruikt dict_row voor expliciete kolomnamen.
+        with conn.cursor() as shop_cur:
             shop_uuid = ensure_shop(
-                cur,
+                shop_cur,
                 ImportConfig(
                     shop_name=SHOP_NAME,
                     shop_domain=SHOP_DOMAIN,
@@ -229,6 +231,7 @@ def sync_listing_prices(*, limit: int, write: bool) -> SyncStats:
                 ),
             )
 
+        with conn.cursor(row_factory=dict_row) as cur:
             links = fetch_listing_links(cur, limit=limit)
             stats.candidates = len(links)
 
