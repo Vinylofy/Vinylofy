@@ -171,7 +171,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
             <h1 className="text-2xl font-semibold tracking-tight">
               Resultaten voor: {query ? `“${query}”` : "…"}
             </h1>
-            <p className="text-sm text-neutral-500">Zoeken op artiest en titel</p>
+            <p className="text-sm text-neutral-500">Zoek op artiest of albumtitel. Suggesties tonen alleen artiesten.</p>
           </div>
 
           {!query ? (

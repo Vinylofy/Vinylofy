@@ -10,8 +10,9 @@ export function SearchControls({ initialQuery }: SearchControlsProps) {
   return (
     <SearchAutocompleteForm
       initialValue={initialQuery}
-      placeholder="Zoek op artiest of titel"
+      placeholder="Zoek op artiest of albumtitel"
       variant="search"
+      openOnFocus={false}
     />
   );
 }

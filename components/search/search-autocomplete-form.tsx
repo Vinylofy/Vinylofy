@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ChangeEvent, FormEvent, KeyboardEvent } from "react";
 import { useRouter } from "next/navigation";
 
 type SearchSuggestion = {
@@ -17,6 +18,7 @@ type SearchAutocompleteFormProps = {
   placeholder: string;
   variant: "global" | "search";
   compact?: boolean;
+  openOnFocus?: boolean;
 };
 
 function buildSearchHref(query: string) {
@@ -35,21 +37,40 @@ export function SearchAutocompleteForm({
   placeholder,
   variant,
   compact = false,
+  openOnFocus = true,
 }: SearchAutocompleteFormProps) {
   const router = useRouter();
+
   const [query, setQuery] = useState(initialValue);
   const [suggestions, setSuggestions] = useState<SearchSuggestion[]>([]);
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [isLoading, setIsLoading] = useState(false);
+  const [canSuggest, setCanSuggest] = useState(false);
+
   const requestRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
+    requestRef.current?.abort();
     setQuery(initialValue);
+    setSuggestions([]);
+    setOpen(false);
+    setActiveIndex(-1);
+    setIsLoading(false);
+    setCanSuggest(false);
   }, [initialValue]);
 
   useEffect(() => {
     const trimmed = query.trim();
+
+    if (!canSuggest) {
+      requestRef.current?.abort();
+      setSuggestions([]);
+      setOpen(false);
+      setActiveIndex(-1);
+      setIsLoading(false);
+      return;
+    }
 
     if (trimmed.length < 2) {
       requestRef.current?.abort();
@@ -109,7 +130,7 @@ export function SearchAutocompleteForm({
       window.clearTimeout(timeoutId);
       controller.abort();
     };
-  }, [query]);
+  }, [canSuggest, query]);
 
   const activeSuggestion = useMemo(() => {
     if (activeIndex < 0 || activeIndex >= suggestions.length) {
@@ -119,18 +140,39 @@ export function SearchAutocompleteForm({
     return suggestions[activeIndex] ?? null;
   }, [activeIndex, suggestions]);
 
+  function closeAutocomplete() {
+    requestRef.current?.abort();
+    setSuggestions([]);
+    setOpen(false);
+    setActiveIndex(-1);
+    setIsLoading(false);
+  }
+
+  function handleQueryChange(event: ChangeEvent<HTMLInputElement>) {
+    setCanSuggest(true);
+    setQuery(event.target.value);
+  }
+
+  function handleInputFocus() {
+    if (openOnFocus && suggestions.length > 0) {
+      setOpen(true);
+    }
+  }
+
   function goToSearch(nextQuery: string) {
+    setCanSuggest(false);
+    closeAutocomplete();
     router.push(buildSearchHref(nextQuery));
   }
 
   function chooseSuggestion(suggestion: SearchSuggestion) {
     setQuery(suggestion.searchValue);
-    setOpen(false);
-    setActiveIndex(-1);
+    setCanSuggest(false);
+    closeAutocomplete();
     router.push(suggestion.href);
   }
 
-  function submitSearch(event?: React.FormEvent) {
+  function submitSearch(event?: FormEvent) {
     event?.preventDefault();
 
     if (activeSuggestion) {
@@ -141,9 +183,10 @@ export function SearchAutocompleteForm({
     goToSearch(query);
   }
 
-  function handleKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+  function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (event.key === "ArrowDown") {
       if (suggestions.length === 0) return;
+
       event.preventDefault();
       setOpen(true);
       setActiveIndex((current) =>
@@ -154,6 +197,7 @@ export function SearchAutocompleteForm({
 
     if (event.key === "ArrowUp") {
       if (suggestions.length === 0) return;
+
       event.preventDefault();
       setOpen(true);
       setActiveIndex((current) =>
@@ -190,12 +234,8 @@ export function SearchAutocompleteForm({
               type="search"
               name="q"
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              onFocus={() => {
-                if (suggestions.length > 0) {
-                  setOpen(true);
-                }
-              }}
+              onChange={handleQueryChange}
+              onFocus={handleInputFocus}
               onBlur={() => {
                 window.setTimeout(() => {
                   setOpen(false);
@@ -229,12 +269,8 @@ export function SearchAutocompleteForm({
               type="search"
               name="q"
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              onFocus={() => {
-                if (suggestions.length > 0) {
-                  setOpen(true);
-                }
-              }}
+              onChange={handleQueryChange}
+              onFocus={handleInputFocus}
               onBlur={() => {
                 window.setTimeout(() => {
                   setOpen(false);
@@ -285,6 +321,7 @@ export function SearchAutocompleteForm({
                     <span className="block truncate text-sm font-medium text-neutral-950">
                       {suggestion.label}
                     </span>
+
                     {suggestion.sublabel ? (
                       <span className="mt-0.5 block truncate text-[11px] text-neutral-500">
                         {suggestion.sublabel}
@@ -301,7 +338,7 @@ export function SearchAutocompleteForm({
           </div>
         ) : null}
 
-        {isLoading && query.trim().length >= 2 ? (
+        {isLoading && canSuggest && query.trim().length >= 2 ? (
           <div className="pointer-events-none absolute right-24 top-1/2 -translate-y-1/2 text-[11px] text-neutral-400">
             zoeken…
           </div>
