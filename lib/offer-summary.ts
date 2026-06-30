@@ -95,13 +95,6 @@ export function compareOffersForSummary(
   a: SearchShopOffer,
   b: SearchShopOffer,
 ): number {
-  const aAvailabilityRank = a.availability === "in_stock" ? 0 : 1;
-  const bAvailabilityRank = b.availability === "in_stock" ? 0 : 1;
-
-  if (aAvailabilityRank !== bAvailabilityRank) {
-    return aAvailabilityRank - bAvailabilityRank;
-  }
-
   const aDisplayPrice = getOfferDisplayPrice(a) ?? Number.MAX_SAFE_INTEGER;
   const bDisplayPrice = getOfferDisplayPrice(b) ?? Number.MAX_SAFE_INTEGER;
 

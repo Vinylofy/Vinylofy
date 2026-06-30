@@ -1,3 +1,4 @@
+import { getOfferDisplayPrice, getVisibleOfferSummary } from "@/lib/offer-summary";
 import { formatOfferDomain, formatRelativeFreshness } from "@/lib/product-page-format";
 import { formatEuro, type SearchShopOffer } from "@/lib/vinylofy-data";
 
@@ -24,7 +25,7 @@ export function ProductOffersCard({ offers }: ProductOffersCardProps) {
         </div>
       ) : (
         <div className="mt-4 space-y-2.5">
-          {offers.map((offer, index) => {
+          {sortedOffers.map((offer, index) => {
             const freshness = formatRelativeFreshness(offer.lastSeenAt);
 
             return (
@@ -46,7 +47,7 @@ export function ProductOffersCard({ offers }: ProductOffersCardProps) {
                 </div>
 
                 <p className="text-left text-lg font-semibold tracking-tight text-[#3f2616] md:text-right md:text-xl">
-                  {formatEuro(offer.price)}
+                  {formatEuro(displayPrice)}
                 </p>
 
                 <div className="md:text-right">
