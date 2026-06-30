@@ -1,16 +1,36 @@
 import Link from "next/link";
+
+import {
+  getOfferDisplayPrice,
+  getVisibleOfferSummary,
+} from "@/lib/offer-summary";
+import { getShopCountryCode } from "@/lib/shop-country";
 import { formatEuro, type SearchResultItem } from "@/lib/vinylofy-data";
 
 type ProductResultCardProps = {
   item: SearchResultItem;
 };
 
+function formatOfferCount(count: number): string {
+  return count === 1 ? "1 aanbieder gevonden" : `${count} aanbieders gevonden`;
+}
+
+function formatCtaLabel(count: number): string {
+  return count <= 1 ? "Bekijk aanbieding" : `Bekijk alle ${count} aanbiedingen`;
+}
+
 export function ProductResultCard({ item }: ProductResultCardProps) {
+  const visibleOffers = getVisibleOfferSummary(item.shops, 3);
   const visibleShopCount = item.shops.length;
-  const effectiveShopCount = Math.max(item.foundIn ?? 0, visibleShopCount);
-  const shouldShowShopCount = effectiveShopCount > 3;
-  const hasMeta = Boolean(item.freshnessLabel) || shouldShowShopCount;
-  const coverSrc = item.coverUrl ?? "/placeholders/vinylofy-cover-placeholder-white2.png";
+  const effectiveOfferCount = Math.max(
+    item.totalShops ?? 0,
+    item.foundIn ?? 0,
+    visibleShopCount,
+  );
+  const offerCountLabel = formatOfferCount(effectiveOfferCount);
+  const ctaLabel = formatCtaLabel(effectiveOfferCount);
+  const coverSrc =
+    item.coverUrl ?? "/placeholders/vinylofy-cover-placeholder-white2.png";
   const hasRealCover = Boolean(item.coverUrl);
 
   return (
@@ -38,47 +58,43 @@ export function ProductResultCard({ item }: ProductResultCardProps) {
             {item.formatLabel ? ` · ${item.formatLabel}` : ""}
           </h2>
 
-          <div className="mt-3 grid gap-x-4 gap-y-2 md:grid-cols-[minmax(0,1fr)_140px]">
-            {item.shops.map((shop) => (
-              <div key={`${shop.name}-${shop.productUrl}`} className="contents">
-                <div className="min-w-0">
-                  <a
-                    href={shop.productUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="block truncate text-sm text-neutral-700 transition hover:text-orange-600 hover:underline"
-                  >
-                    {shop.name}
-                  </a>
-                </div>
+          <div className="mt-3 grid gap-x-4 gap-y-2 md:grid-cols-[minmax(0,1fr)_180px]">
+            <div className="md:col-span-2">
+              <p className="text-xs font-medium text-neutral-500">Beste opties</p>
+            </div>
 
-                <a
-                  href={shop.productUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="shrink-0 text-right text-sm font-medium text-neutral-950 transition hover:text-orange-600 hover:underline"
-                >
-                  {formatEuro(shop.price)}
-                </a>
-              </div>
-            ))}
+            {visibleOffers.map((shop) => {
+              const countryCode = getShopCountryCode(shop);
+              const displayPrice = getOfferDisplayPrice(shop);
+
+              return (
+                <div key={`${shop.name}-${shop.productUrl}`} className="contents">
+                  <div className="min-w-0 truncate text-sm text-neutral-700">
+                    <span>{shop.name}</span>
+                    <span className="text-neutral-400"> · {countryCode}</span>
+                  </div>
+
+                  <div className="shrink-0 text-right text-sm font-medium text-neutral-950">
+                    {formatEuro(displayPrice)}
+                  </div>
+                </div>
+              );
+            })}
 
             <div className="pt-2">
               <Link
                 href={`/product/${item.id}`}
                 className="inline-flex items-center rounded-full bg-orange-500/80 px-4 py-2 text-sm font-medium text-white transition hover:bg-orange-500"
               >
-                Bekijk details
+                {ctaLabel}
               </Link>
             </div>
 
             <div className="pt-2 text-xs text-neutral-500">
-              {hasMeta ? (
-                <div className="space-y-0.5">
-                  {item.freshnessLabel ? <p>{item.freshnessLabel}</p> : null}
-                  {shouldShowShopCount ? <p>gevonden in {effectiveShopCount} winkels</p> : null}
-                </div>
-              ) : null}
+              <div className="space-y-0.5">
+                {item.freshnessLabel ? <p>{item.freshnessLabel}</p> : null}
+                <p>{offerCountLabel}</p>
+              </div>
             </div>
           </div>
         </div>

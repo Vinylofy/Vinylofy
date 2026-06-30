@@ -193,9 +193,14 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
                     kortere zoekterm.
                   </div>
                 ) : (
-                  filteredResults.map((item) => (
-                    <ProductResultCard key={item.id} item={item} />
-                  ))
+                  <>
+                <p className="text-xs text-neutral-500">
+                  Gesorteerd op prijs inclusief geschatte verzendkosten.
+                </p>
+                {filteredResults.map((item) => (
+                  <ProductResultCard key={item.id} item={item} />
+                ))}
+              </>
                 )}
               </div>
             </div>
