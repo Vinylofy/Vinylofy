@@ -22,11 +22,7 @@ function OfferCountLabel({ count }: { count: number }) {
 export function ProductResultCard({ item }: ProductResultCardProps) {
   const visibleOffers = getVisibleOfferSummary(item.shops, 3);
   const visibleShopCount = item.shops.length;
-  const effectiveOfferCount = Math.max(
-    item.totalShops ?? 0,
-    item.foundIn ?? 0,
-    visibleShopCount,
-  );
+  const effectiveOfferCount = Math.max(item.foundIn ?? 0, visibleShopCount);
   const ctaLabel = formatCtaLabel(effectiveOfferCount);
   const coverSrc =
     item.coverUrl ?? "/placeholders/vinylofy-cover-placeholder-white2.png";
@@ -52,7 +48,7 @@ export function ProductResultCard({ item }: ProductResultCardProps) {
         <div className="min-w-0">
           <p className="text-xs text-neutral-500">{item.artist}</p>
 
-          <h2 className="mt-1 text-lg font-semibold leading-tight tracking-tight text-neutral-950 md:text-[20px]">
+          <h2 className="mt-1 text-lg font-semibold leading-tight tracking-tight md:text-[20px]">
             {item.title}
             {item.formatLabel ? ` · ${item.formatLabel}` : ""}
           </h2>
