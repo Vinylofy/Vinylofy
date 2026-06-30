@@ -11,12 +11,25 @@ type ProductResultCardProps = {
   item: SearchResultItem;
 };
 
-function formatOfferCount(count: number): string {
-  return count === 1 ? "1 aanbieder gevonden" : `${count} aanbieders gevonden`;
-}
-
 function formatCtaLabel(count: number): string {
   return count <= 1 ? "Bekijk aanbieding" : `Bekijk alle ${count} aanbiedingen`;
+}
+
+function OfferCountLabel({ count }: { count: number }) {
+  if (count === 1) {
+    return <p>1 aanbieder gevonden</p>;
+  }
+
+  if (count > 3) {
+    return (
+      <p>
+        <span className="text-base font-semibold text-neutral-950">{count}</span>{" "}
+        aanbieders gevonden
+      </p>
+    );
+  }
+
+  return <p>{count} aanbieders gevonden</p>;
 }
 
 export function ProductResultCard({ item }: ProductResultCardProps) {
@@ -27,7 +40,6 @@ export function ProductResultCard({ item }: ProductResultCardProps) {
     item.foundIn ?? 0,
     visibleShopCount,
   );
-  const offerCountLabel = formatOfferCount(effectiveOfferCount);
   const ctaLabel = formatCtaLabel(effectiveOfferCount);
   const coverSrc =
     item.coverUrl ?? "/placeholders/vinylofy-cover-placeholder-white2.png";
@@ -81,20 +93,20 @@ export function ProductResultCard({ item }: ProductResultCardProps) {
               );
             })}
 
-            <div className="pt-2">
+            <div className="mt-1 flex flex-col gap-2 pt-2 md:col-span-2 md:flex-row md:items-end md:justify-between">
+              <div className="text-xs text-neutral-500">
+                <div className="space-y-0.5">
+                  {item.freshnessLabel ? <p>{item.freshnessLabel}</p> : null}
+                  <OfferCountLabel count={effectiveOfferCount} />
+                </div>
+              </div>
+
               <Link
                 href={`/product/${item.id}`}
-                className="inline-flex items-center rounded-full bg-orange-500/80 px-4 py-2 text-sm font-medium text-white transition hover:bg-orange-500"
+                className="inline-flex items-center justify-center rounded-full bg-orange-500/80 px-4 py-2 text-sm font-medium text-white transition hover:bg-orange-500 md:ml-4"
               >
                 {ctaLabel}
               </Link>
-            </div>
-
-            <div className="pt-2 text-xs text-neutral-500">
-              <div className="space-y-0.5">
-                {item.freshnessLabel ? <p>{item.freshnessLabel}</p> : null}
-                <p>{offerCountLabel}</p>
-              </div>
             </div>
           </div>
         </div>
