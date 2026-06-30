@@ -16,20 +16,7 @@ function formatCtaLabel(count: number): string {
 }
 
 function OfferCountLabel({ count }: { count: number }) {
-  if (count === 1) {
-    return <p>1 aanbieder gevonden</p>;
-  }
-
-  if (count > 3) {
-    return (
-      <p>
-        <span className="text-base font-semibold text-neutral-950">{count}</span>{" "}
-        aanbieders gevonden
-      </p>
-    );
-  }
-
-  return <p>{count} aanbieders gevonden</p>;
+  return count === 1 ? <p>1 aanbieder gevonden</p> : <p>{count} aanbieders gevonden</p>;
 }
 
 export function ProductResultCard({ item }: ProductResultCardProps) {
@@ -103,7 +90,7 @@ export function ProductResultCard({ item }: ProductResultCardProps) {
 
               <Link
                 href={`/product/${item.id}`}
-                className="inline-flex items-center justify-center rounded-full bg-orange-500/80 px-4 py-2 text-sm font-medium text-white transition hover:bg-orange-500 md:ml-4"
+                className="inline-flex items-center justify-center rounded-full bg-orange-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-orange-600 md:ml-4"
               >
                 {ctaLabel}
               </Link>
