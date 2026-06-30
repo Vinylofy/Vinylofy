@@ -66,7 +66,7 @@ export function ProductSummaryCard({ product }: ProductSummaryCardProps) {
             </div>
 
             <div className="rounded-xl border border-[rgba(230,126,34,0.24)] bg-[#fffaf6] px-3 py-3">
-              <p className="text-xs uppercase tracking-[0.08em] text-[#8a7769]">Nu gevonden bij</p>
+              <p className="text-xs uppercase tracking-[0.08em] text-[#8a7769]">Aanbieders</p>
               <p className="mt-1.5 text-xl font-semibold tracking-tight text-[#3f2616] md:text-2xl">
                 {product.freshShopCount} winkels
               </p>

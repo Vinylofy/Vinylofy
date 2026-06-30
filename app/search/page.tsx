@@ -195,7 +195,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
                 ) : (
                   <>
                 <p className="text-xs text-neutral-500">
-                  Gesorteerd op prijs inclusief geschatte verzendkosten.
+                  Gesorteerd op laagste actuele productprijs.
                 </p>
                 {filteredResults.map((item) => (
                   <ProductResultCard key={item.id} item={item} />
