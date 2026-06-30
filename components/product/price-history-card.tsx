@@ -12,6 +12,21 @@ const CHART_DAYS = 10;
 const CHART_LABEL = "10D";
 const MIN_POINTS_FOR_CHART = 2;
 
+const NL_SHORT_MONTHS = [
+  "jan",
+  "feb",
+  "mrt",
+  "apr",
+  "mei",
+  "jun",
+  "jul",
+  "aug",
+  "sep",
+  "okt",
+  "nov",
+  "dec",
+];
+
 function parseIsoDay(value: string): Date {
   return new Date(`${value}T00:00:00Z`);
 }
@@ -27,29 +42,17 @@ function filterLastDays(points: ProductPriceHistoryPoint[], days: number): Produ
 }
 
 function formatShortDayLabel(value: string) {
-  return new Intl.DateTimeFormat("nl-NL", {
-    day: "numeric",
-    month: "short",
-  })
-    .format(parseIsoDay(value))
-    .replace(".", "");
+  const date = parseIsoDay(value);
+  return `${date.getUTCDate()} ${NL_SHORT_MONTHS[date.getUTCMonth()]}`;
 }
 
 function formatDayLabel(value: string) {
-  return new Intl.DateTimeFormat("nl-NL", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  }).format(parseIsoDay(value));
+  const date = parseIsoDay(value);
+  return `${date.getUTCDate()} ${NL_SHORT_MONTHS[date.getUTCMonth()]} ${date.getUTCFullYear()}`;
 }
 
 function formatAxisEuro(value: number) {
-  return new Intl.NumberFormat("nl-NL", {
-    style: "currency",
-    currency: "EUR",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(value);
+  return `€ ${Math.round(value)}`;
 }
 
 export function PriceHistoryCard({ currentPrice, points }: PriceHistoryCardProps) {
