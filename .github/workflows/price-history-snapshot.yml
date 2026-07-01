@@ -1,0 +1,78 @@
+name: Price History Snapshot
+
+on:
+  schedule:
+    - cron: "30 7 * * *"
+  workflow_dispatch:
+    inputs:
+      current_window_hours:
+        description: "Alleen actuele prices binnen dit aantal uur snapshotten"
+        required: true
+        default: "48"
+        type: string
+      write:
+        description: "Echte databasewrites uitvoeren"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: price-history-snapshot-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install "psycopg[binary]" python-dotenv
+
+      - name: Validate script
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/maintenance/snapshot_current_prices_to_history.py
+          python scripts/maintenance/snapshot_current_prices_to_history.py --help >/dev/null
+
+      - name: Run current price snapshot
+        run: |
+          set -euo pipefail
+
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "DATABASE_URL secret ontbreekt."
+            exit 1
+          fi
+
+          CURRENT_WINDOW_HOURS="${{ inputs.current_window_hours }}"
+          WRITE="${{ inputs.write }}"
+
+          if [ -z "$CURRENT_WINDOW_HOURS" ]; then
+            CURRENT_WINDOW_HOURS="48"
+          fi
+
+          ARGS=(--current-window-hours "$CURRENT_WINDOW_HOURS")
+
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+            ARGS+=(--write)
+          elif [ "$WRITE" = "true" ]; then
+            ARGS+=(--write)
+          fi
+
+          python -u scripts/maintenance/snapshot_current_prices_to_history.py "${ARGS[@]}"
