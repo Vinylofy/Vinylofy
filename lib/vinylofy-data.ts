@@ -588,18 +588,23 @@ export async function searchProducts(query: string): Promise<SearchResultItem[]>
 
 export async function getProductPriceHistory(
   productId: string,
-  maxDays = 10,
+  maxDays = 30,
 ): Promise<ProductPriceHistoryPoint[]> {
   const supabase = createSupabaseServerClient();
+
   const cutoff = new Date();
+  cutoff.setUTCHours(0, 0, 0, 0);
   cutoff.setUTCDate(cutoff.getUTCDate() - Math.max(1, maxDays - 1));
+  const cutoffDay = cutoff.toISOString().slice(0, 10);
+
+  const rowLimit = Math.max(90, maxDays * 4);
 
   const { data, error } = await supabase
     .from("product_price_history_daily_v1")
     .select("product_id, day, min_instock_price, instock_shop_count, last_captured_at")
     .eq("product_id", productId)
-    .gte("day", cutoff.toISOString().slice(0, 10))
-    .order("day", { ascending: true });
+    .order("day", { ascending: false })
+    .limit(rowLimit);
 
   if (error) {
     console.warn("[vinylofy] product price history unavailable", {
@@ -608,10 +613,12 @@ export async function getProductPriceHistory(
       message: (error as { message?: string }).message,
       hint: (error as { hint?: string | null }).hint ?? null,
     });
+
     return [];
   }
 
   return ((data ?? []) as PriceHistoryDailyRow[])
+    .filter((row) => row.day >= cutoffDay)
     .map((row) => {
       const price = toNumber(row.min_instock_price);
       if (price === null) return null;
@@ -623,6 +630,7 @@ export async function getProductPriceHistory(
         lastCapturedAt: row.last_captured_at ?? null,
       } satisfies ProductPriceHistoryPoint;
     })
-    .filter((row): row is ProductPriceHistoryPoint => Boolean(row));
+    .filter((row): row is ProductPriceHistoryPoint => Boolean(row))
+    .sort((a, b) => a.day.localeCompare(b.day));
 }
 
