@@ -5,11 +5,39 @@ import { ProductSummaryCard } from "@/components/product/product-summary-card";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { CoverQueueBeacon } from "@/components/cover-queue-beacon";
-import { getProductDetail, getProductPriceHistory } from "@/lib/vinylofy-data";
+import { getProductDetail, getProductPriceHistory, type ProductPriceHistoryPoint } from "@/lib/vinylofy-data";
 
 type ProductPageProps = {
   params: Promise<{ id?: string }> | { id?: string };
 };
+
+
+function getTodayIsoDay(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function mergeCurrentPriceIntoHistory(
+  points: ProductPriceHistoryPoint[],
+  product: {
+    lowestPrice: number | null;
+    freshShopCount: number;
+    lastSeenAt: string | null;
+  },
+): ProductPriceHistoryPoint[] {
+  if (product.lowestPrice === null) return points;
+
+  const today = getTodayIsoDay();
+  const todayPoint: ProductPriceHistoryPoint = {
+    day: today,
+    price: product.lowestPrice,
+    shopCount: product.freshShopCount,
+    lastCapturedAt: product.lastSeenAt,
+  };
+
+  const withoutToday = points.filter((point) => point.day !== today);
+
+  return [...withoutToday, todayPoint].sort((a, b) => a.day.localeCompare(b.day));
+}
 
 export default async function ProductDetailPage({ params }: ProductPageProps) {
   const resolvedParams = await Promise.resolve(params);
@@ -17,6 +45,7 @@ export default async function ProductDetailPage({ params }: ProductPageProps) {
 
   const product = await getProductDetail(routeId);
   const priceHistory = product ? await getProductPriceHistory(product.id, 10) : [];
+  const chartPoints = mergeCurrentPriceIntoHistory(priceHistory, product);
 
   if (!product) {
     notFound();
@@ -31,7 +60,7 @@ export default async function ProductDetailPage({ params }: ProductPageProps) {
           <section className="space-y-4 md:space-y-5">
             <ProductSummaryCard product={product} />
             <ProductOffersCard offers={product.shops} />
-            <PriceHistoryCard currentPrice={product.lowestPrice} points={priceHistory} />
+            <PriceHistoryCard currentPrice={product.lowestPrice} points={chartPoints} />
           </section>
         </div>
       </main>
