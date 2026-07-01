@@ -44,7 +44,7 @@ export default async function ProductDetailPage({ params }: ProductPageProps) {
   const routeId = typeof resolvedParams?.id === "string" ? resolvedParams.id : "";
 
   const product = await getProductDetail(routeId);
-  const priceHistory = product ? await getProductPriceHistory(product.id, 10) : [];
+  const priceHistory = product ? await getProductPriceHistory(product.id, 30) : []; const todayIsoDay = new Date().toISOString().slice(0, 10);
   const chartPoints = mergeCurrentPriceIntoHistory(priceHistory, product);
 
   if (!product) {
@@ -60,7 +60,7 @@ export default async function ProductDetailPage({ params }: ProductPageProps) {
           <section className="space-y-4 md:space-y-5">
             <ProductSummaryCard product={product} />
             <ProductOffersCard offers={product.shops} />
-            <PriceHistoryCard currentPrice={product.lowestPrice} points={chartPoints} />
+            <PriceHistoryCard currentPrice={product.lowestPrice} points={chartPoints} asOfDay={todayIsoDay} />
           </section>
         </div>
       </main>
