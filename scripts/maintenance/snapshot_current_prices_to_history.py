@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import os
 from datetime import datetime, timezone
-from pathlib import Path
 
 import psycopg
 from dotenv import load_dotenv
@@ -22,37 +21,30 @@ def load_env() -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Schrijf een dagelijkse snapshot van actuele Vinylofy-prijzen naar "
-            "public.price_history, zodat de prijsgrafiek-dekking niet afhankelijk "
-            "is van welke importer/promoter toevallig die dag draaide."
+            "Write a daily snapshot of current Vinylofy prices to public.price_history. "
+            "This improves graph coverage independently from which scraper/importer ran today."
         )
     )
     parser.add_argument(
         "--write",
         action="store_true",
-        help="Voer echte databasewrites uit. Zonder deze vlag is het een dry-run.",
+        help="Actually insert rows. Without this flag, only prints a dry-run summary.",
     )
     parser.add_argument(
         "--current-window-hours",
         type=int,
         default=DEFAULT_CURRENT_WINDOW_HOURS,
-        help=(
-            "Alleen prices meenemen waarvan last_seen_at binnen dit aantal uur valt. "
-            "Default: 48, gelijk aan de current-offer logica."
-        ),
+        help="Only snapshot prices seen within this many hours. Default: 48.",
     )
     parser.add_argument(
         "--day",
         default=None,
-        help=(
-            "UTC snapshotdag in YYYY-MM-DD. Default is vandaag UTC. "
-            "Gebruik dit alleen bewust; voor normaal gebruik leeg laten."
-        ),
+        help="UTC snapshot day in YYYY-MM-DD. Default: today UTC.",
     )
     return parser.parse_args()
 
 
-def get_snapshot_day(day_arg: str | None) -> str:
+def snapshot_day(day_arg: str | None) -> str:
     if day_arg:
         datetime.fromisoformat(f"{day_arg}T00:00:00+00:00")
         return day_arg
@@ -62,18 +54,20 @@ def get_snapshot_day(day_arg: str | None) -> str:
 
 def main() -> int:
     args = parse_args()
+
     if args.current_window_hours < 1:
-        raise SystemExit("--current-window-hours moet minimaal 1 zijn.")
+        raise SystemExit("--current-window-hours must be at least 1.")
 
     load_env()
     database_url = os.environ.get("DATABASE_URL")
-    if not database_url:
-        raise SystemExit("DATABASE_URL ontbreekt.")
 
-    snapshot_day = get_snapshot_day(args.day)
+    if not database_url:
+        raise SystemExit("DATABASE_URL is not set.")
+
+    day = snapshot_day(args.day)
     dry_run = not args.write
 
-    sql_count_eligible = """
+    eligible_sql = """
         select count(*)
         from public.prices p
         where p.is_active = true
@@ -82,7 +76,7 @@ def main() -> int:
           and coalesce(p.availability, 'unknown') = any(%s)
     """
 
-    sql_count_to_insert = """
+    to_insert_sql = """
         with eligible as (
           select
             p.product_id,
@@ -110,7 +104,7 @@ def main() -> int:
         )
     """
 
-    sql_insert = """
+    insert_sql = """
         with eligible as (
           select
             p.product_id,
@@ -168,18 +162,18 @@ def main() -> int:
             cur.execute("set idle_in_transaction_session_timeout = 0")
 
             cur.execute(
-                sql_count_eligible,
+                eligible_sql,
                 (args.current_window_hours, list(DEFAULT_AVAILABILITIES)),
             )
             eligible_count = int(cur.fetchone()[0])
 
             cur.execute(
-                sql_count_to_insert,
+                to_insert_sql,
                 (
                     args.current_window_hours,
                     list(DEFAULT_AVAILABILITIES),
-                    snapshot_day,
-                    snapshot_day,
+                    day,
+                    day,
                 ),
             )
             to_insert_count = int(cur.fetchone()[0])
@@ -187,7 +181,7 @@ def main() -> int:
             print(
                 "[PRICE-HISTORY-SNAPSHOT]",
                 {
-                    "snapshot_day": snapshot_day,
+                    "snapshot_day": day,
                     "current_window_hours": args.current_window_hours,
                     "eligible_current_prices": eligible_count,
                     "rows_to_insert": to_insert_count,
@@ -201,12 +195,12 @@ def main() -> int:
                 return 0
 
             cur.execute(
-                sql_insert,
+                insert_sql,
                 (
                     args.current_window_hours,
                     list(DEFAULT_AVAILABILITIES),
-                    snapshot_day,
-                    snapshot_day,
+                    day,
+                    day,
                 ),
             )
             inserted_count = int(cur.fetchone()[0])
@@ -215,7 +209,7 @@ def main() -> int:
             print(
                 "[PRICE-HISTORY-SNAPSHOT] done",
                 {
-                    "snapshot_day": snapshot_day,
+                    "snapshot_day": day,
                     "inserted_rows": inserted_count,
                 },
                 flush=True,

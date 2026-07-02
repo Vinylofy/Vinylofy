@@ -6,12 +6,12 @@ on:
   workflow_dispatch:
     inputs:
       current_window_hours:
-        description: "Alleen actuele prices binnen dit aantal uur snapshotten"
+        description: "Only snapshot prices seen within this many hours"
         required: true
         default: "48"
         type: string
       write:
-        description: "Echte databasewrites uitvoeren"
+        description: "Actually write snapshot rows"
         required: true
         default: true
         type: boolean
@@ -51,7 +51,7 @@ jobs:
           python -m py_compile scripts/maintenance/snapshot_current_prices_to_history.py
           python scripts/maintenance/snapshot_current_prices_to_history.py --help >/dev/null
 
-      - name: Run current price snapshot
+      - name: Run snapshot
         run: |
           set -euo pipefail
 
