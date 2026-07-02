@@ -330,14 +330,12 @@ export function PriceHistoryCard({
                       fill={isActive ? "#e67e22" : "#fffaf6"}
                       stroke="#e67e22"
                       strokeWidth="4"
+                      aria-label={`${formatDayLabel(point.day)} — ${formatEuro(point.price)}`}
                       onMouseEnter={() => setActiveIndex(index)}
                       onFocus={() => setActiveIndex(index)}
                       onMouseLeave={() => setActiveIndex(null)}
                       tabIndex={0}
                     >
-                      <title>
-                        {formatDayLabel(point.day)} — {formatEuro(point.price)}
-                      </title>
                     </circle>
                   );
                 })}
