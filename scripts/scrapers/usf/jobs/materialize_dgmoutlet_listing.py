@@ -7,7 +7,6 @@ from typing import Any
 from scripts.scrapers.usf.core.models import RawProductData
 from scripts.scrapers.usf.core.raw_materializer import materialize_queued_links
 
-
 SHOP_ID = "dgmoutlet"
 
 
@@ -22,10 +21,6 @@ def build_title(
     fallback_url: str | None = None,
     source_product_id: str | None = None,
 ) -> str | None:
-    # DGM is voor Vinylofy primair EAN + prijs + URL.
-    # raw_name/title/artist zijn alleen technische shop-observaties.
-    # Als die ontbreken, maken we een neutrale technische placeholder
-    # zodat promotie niet faalt voordat MusicBrainz canonical data vult.
     raw_name = clean(payload.get("raw_name"))
     if raw_name:
         return raw_name
@@ -33,10 +28,6 @@ def build_title(
     title = clean(payload.get("title"))
     if title:
         return title
-
-    artist = clean(payload.get("artist"))
-    if artist:
-        return artist
 
     ean = clean(payload.get("ean"))
     if ean:
@@ -55,6 +46,29 @@ def build_title(
 
 def map_link_to_raw(link: dict[str, Any]) -> RawProductData:
     listing_payload = dict(link.get("payload") or {})
+    availability_raw = clean(listing_payload.get("availability")) or "unknown"
+    is_out_of_stock = availability_raw == "out_of_stock"
+
+    # DGM: OOS mag niet staged/promoted worden als actuele prijs.
+    # stage_latest_raw_snapshots pakt alleen rows met price_raw != null.
+    price_raw = None if is_out_of_stock else clean(listing_payload.get("price_current"))
+
+    if is_out_of_stock:
+        print(
+            "[DGM-SEEN-OOS] "
+            f"source_url={link['source_url']} "
+            f"ean={clean(listing_payload.get('ean'))} "
+            f"availability_source={clean(listing_payload.get('availability_source'))}",
+            flush=True,
+        )
+    else:
+        print(
+            "[DGM-SEEN-INSTOCK] "
+            f"source_url={link['source_url']} "
+            f"ean={clean(listing_payload.get('ean'))} "
+            f"price_raw={price_raw} availability_raw={availability_raw}",
+            flush=True,
+        )
 
     return RawProductData(
         shop_id=SHOP_ID,
@@ -66,8 +80,8 @@ def map_link_to_raw(link: dict[str, Any]) -> RawProductData:
             source_product_id=link.get("source_product_id"),
         ),
         ean_raw=clean(listing_payload.get("ean")),
-        price_raw=clean(listing_payload.get("price_current")),
-        availability_raw=None,
+        price_raw=price_raw,
+        availability_raw=availability_raw,
         image_url_raw=clean(listing_payload.get("image_url")),
         payload={
             "source": "dgmoutlet_listing_payload",
@@ -79,9 +93,7 @@ def map_link_to_raw(link: dict[str, Any]) -> RawProductData:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description=(
-            "Materialiseer DGM listingpayload atomair naar raw_shop_scrapes."
-        )
+        description="Materialiseer DGM listingpayload atomair naar raw_shop_scrapes."
     )
     parser.add_argument("--limit", type=int, default=5)
     parser.add_argument(

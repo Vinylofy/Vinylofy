@@ -16,10 +16,10 @@ from bs4 import BeautifulSoup, Tag
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-
 BASE_URL = "https://www.dgmoutlet.nl/muziek-films-games/muziek/lp/?order=name-asc&p={page}"
 SHOP_NAME = "dgmoutlet"
 DEFAULT_OUTPUT = "dgmoutlet_lp_listing.csv"
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -28,6 +28,17 @@ HEADERS = {
     ),
     "Accept-Language": "nl-NL,nl;q=0.9,en;q=0.8",
 }
+
+DGM_OOS_MARKERS: tuple[str, ...] = (
+    "Niet langer beschikbaar",
+    "niet langer beschikbaar",
+    "Niet beschikbaar",
+    "niet beschikbaar",
+    "Uitverkocht",
+    "uitverkocht",
+    "Sold out",
+    "sold out",
+)
 
 
 @dataclass
@@ -47,10 +58,18 @@ class ProductRow:
     image_url: str
     image_source_page_url: str
     image_source_type: str
+    availability: str
+    availability_source: str
 
 
 class DGMOutletLPScraper:
-    def __init__(self, output_path: str, start_page: int = 1, max_pages: Optional[int] = None, delay: float = 0.0):
+    def __init__(
+        self,
+        output_path: str,
+        start_page: int = 1,
+        max_pages: Optional[int] = None,
+        delay: float = 0.0,
+    ):
         self.output_path = Path(output_path)
         self.start_page = max(1, start_page)
         self.max_pages = max_pages if (max_pages is None or max_pages > 0) else None
@@ -102,6 +121,7 @@ class DGMOutletLPScraper:
 
             new_rows = []
             duplicates = 0
+
             for row in rows:
                 key = row.ean or row.url
                 if key in self.seen_keys:
@@ -136,6 +156,7 @@ class DGMOutletLPScraper:
         if response.status_code >= 400:
             print(f"[FOUT] HTTP {response.status_code} voor {url}")
             return None
+
         return response.text
 
     def _parse_listing_page(self, html: str, page: int, page_url: str) -> list[ProductRow]:
@@ -148,6 +169,7 @@ class DGMOutletLPScraper:
             row = self._parse_card(card, page=page, page_url=page_url, scraped_at=scraped_at)
             if row is not None:
                 rows.append(row)
+
         return rows
 
     def _parse_card(self, card: Tag, page: int, page_url: str, scraped_at: str) -> Optional[ProductRow]:
@@ -158,16 +180,30 @@ class DGMOutletLPScraper:
         raw_name = self._clean_text(name_link.get_text(" ", strip=True))
         raw_url = name_link.get("href", "").strip()
         url = urljoin(page_url, raw_url)
-        description = self._clean_text_from_html(card.select_one("div.product-description"))
 
+        description = self._clean_text_from_html(card.select_one("div.product-description"))
         ean = self._extract_ean(card, url)
         price_current = self._extract_current_price(card)
         price_original = self._extract_original_price(card)
         artist, title, fmt = self._parse_name(raw_name, description)
-
         image_url = self._extract_listing_image_url(card, page_url)
         image_source_page_url = page_url if image_url else ""
         image_source_type = "listing_img_src" if image_url else ""
+
+        availability, availability_source = self._detect_availability_from_html(
+            str(card),
+            positive_source="listing_card_no_oos_marker",
+        )
+
+        if availability != "out_of_stock":
+            detail_availability, detail_source = self._detect_detail_availability(url)
+            if detail_availability in {"in_stock", "out_of_stock"}:
+                availability, availability_source = detail_availability, detail_source
+
+        if availability == "out_of_stock":
+            print(f"[DGM-SEEN-OOS] ean={ean} url={url} source={availability_source}", flush=True)
+        else:
+            print(f"[DGM-SEEN-INSTOCK] ean={ean} url={url} price={price_current} source={availability_source}", flush=True)
 
         return ProductRow(
             source_shop=SHOP_NAME,
@@ -185,26 +221,71 @@ class DGMOutletLPScraper:
             image_url=image_url,
             image_source_page_url=image_source_page_url,
             image_source_type=image_source_type,
+            availability=availability,
+            availability_source=availability_source,
         )
+
+    def _detect_detail_availability(self, url: str) -> tuple[str, str]:
+        if not url:
+            return "unknown", "missing_url"
+
+        html = self._fetch(url)
+        if html is None:
+            return "unknown", "detail_fetch_failed"
+
+        return self._detect_availability_from_html(
+            html,
+            positive_source="detail_no_oos_marker",
+        )
+
+    @staticmethod
+    def _detect_availability_from_html(
+        html: str,
+        *,
+        positive_source: str = "html_no_oos_marker",
+    ) -> tuple[str, str]:
+        soup = BeautifulSoup(html or "", "html.parser")
+        text = DGMOutletLPScraper._clean_text(soup.get_text(" ", strip=True)).casefold()
+
+        for marker in DGM_OOS_MARKERS:
+            if marker.casefold() in text:
+                print(f"[DGM-OOS-MARKER] marker={marker!r}", flush=True)
+                return "out_of_stock", f"marker:{marker}"
+
+        add_to_cart = soup.select_one(
+            'button[name*="add"], button[class*="cart"], '
+            'a[href*="checkout/cart/add"], input[name="product"]'
+        )
+        if add_to_cart is not None:
+            disabled = (
+                add_to_cart.has_attr("disabled")
+                or add_to_cart.get("aria-disabled") == "true"
+                or "disabled" in (add_to_cart.get("class") or [])
+            )
+            if disabled:
+                return "out_of_stock", "disabled_add_to_cart"
+            return "in_stock", "add_to_cart_present"
+
+        return "in_stock", positive_source
 
     def _extract_listing_image_url(self, card: Tag, page_url: str) -> str:
         image_node = card.select_one("a.product-image-link img")
         if image_node is None:
             return ""
-
         raw_src = (image_node.get("src") or "").strip()
         if not raw_src:
             return ""
-
         return urljoin(page_url, raw_src)
 
     def _extract_current_price(self, card: Tag) -> str:
         price_node = card.select_one("span.product-price")
         if not price_node:
             return ""
+
         clone = BeautifulSoup(str(price_node), "html.parser")
         for nested in clone.select("span.list-price, span.list-price-price"):
             nested.decompose()
+
         cleaned = self._clean_text(clone.get_text(" ", strip=True))
         return self._normalize_price(cleaned)
 
@@ -226,6 +307,7 @@ class DGMOutletLPScraper:
         candidate = self._extract_ean_candidate(last_path)
         if candidate:
             return candidate
+
         return ""
 
     @staticmethod
@@ -239,13 +321,21 @@ class DGMOutletLPScraper:
 
     def _parse_name(self, raw_name: str, description: str) -> tuple[str, str, str]:
         name = self._clean_text(raw_name)
+
         if " - " in name:
             artist, remainder = name.split(" - ", 1)
         else:
             artist, remainder = "", name
-        groups = [self._clean_text(g) for g in re.findall(r"\(([^()]*)\)", remainder) if self._clean_text(g)]
+
+        groups = [
+            self._clean_text(g)
+            for g in re.findall(r"\(([^()]*)\)", remainder)
+            if self._clean_text(g)
+        ]
+
         title = self._clean_text(re.sub(r"\s*\([^)]*\)", "", remainder))
         fmt = self._build_format(groups=groups, description=description)
+
         return artist.strip(), title.strip(), fmt.strip()
 
     def _build_format(self, groups: list[str], description: str) -> str:
@@ -270,8 +360,18 @@ class DGMOutletLPScraper:
             for token in tokens:
                 low = token.casefold()
                 if low in {
-                    "lp", "vinyl", "coloured vinyl", "colored vinyl", "limited edition", "picture disc",
-                    "180 gram", "180g", "standard edition", "2 lp", "3 lp", "4 lp",
+                    "lp",
+                    "vinyl",
+                    "coloured vinyl",
+                    "colored vinyl",
+                    "limited edition",
+                    "picture disc",
+                    "180 gram",
+                    "180g",
+                    "standard edition",
+                    "2 lp",
+                    "3 lp",
+                    "4 lp",
                 }:
                     add(token)
 
@@ -288,6 +388,7 @@ class DGMOutletLPScraper:
         value = DGMOutletLPScraper._clean_text(value)
         if not value:
             return ""
+
         replacements = {
             "colored vinyl": "Coloured Vinyl",
             "colour vinyl": "Coloured Vinyl",
@@ -296,9 +397,11 @@ class DGMOutletLPScraper:
             "vinyl": "Vinyl",
             "lp": "LP",
         }
+
         lower = value.casefold()
         if lower in replacements:
             return replacements[lower]
+
         value = re.sub(r"\bLp\b", "LP", value)
         value = re.sub(r"\bEp\b", "EP", value)
         value = re.sub(r"\bCd\b", "CD", value)
@@ -324,35 +427,43 @@ class DGMOutletLPScraper:
         text = (text or "").strip()
         if not text:
             return ""
+
         cleaned = re.sub(r"[^\d,\.]", "", text)
         if not cleaned:
             return ""
+
         if "," in cleaned and "." in cleaned:
             if cleaned.rfind(",") > cleaned.rfind("."):
                 cleaned = cleaned.replace(".", "").replace(",", ".")
         elif "," in cleaned:
             cleaned = cleaned.replace(",", ".")
+
         try:
             value = float(cleaned)
         except ValueError:
             return ""
+
         return f"{value:.2f}"
 
     def _prepare_output(self) -> None:
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         if self.output_path.exists():
             self.output_path.unlink()
+
         with self.output_path.open("w", encoding="utf-8-sig", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=list(asdict(self._empty_row()).keys()))
             writer.writeheader()
+
         self.output_initialized = True
 
     def _append_rows(self, rows: Iterable[ProductRow]) -> None:
         if not self.output_initialized:
             self._prepare_output()
+
         rows = list(rows)
         if not rows:
             return
+
         with self.output_path.open("a", encoding="utf-8-sig", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=list(asdict(self._empty_row()).keys()))
             for row in rows:
@@ -376,10 +487,17 @@ class DGMOutletLPScraper:
             image_url="",
             image_source_page_url="",
             image_source_type="",
+            availability="",
+            availability_source="",
         )
 
 
-def run_default(output_path: str | Path, start_page: int = 1, max_pages: Optional[int] = None, delay: float = 0.0) -> Path:
+def run_default(
+    output_path: str | Path,
+    start_page: int = 1,
+    max_pages: Optional[int] = None,
+    delay: float = 0.0,
+) -> Path:
     output_path = Path(output_path)
     scraper = DGMOutletLPScraper(
         output_path=str(output_path),

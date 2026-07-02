@@ -89,6 +89,7 @@ def fetch_locked_staged_rows(
           and s.stage_status = 'staged'
           and s.ean_match_key is not null
           and s.price is not null
+          and coalesce(s.availability, 'unknown') <> 'out_of_stock'
         order by s.created_at asc, s.id asc
         limit %s
         for update of s skip locked
