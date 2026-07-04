@@ -51,8 +51,7 @@ def mark_missing_links_out_of_stock(
                         '{availability}',
                         '"out_of_stock"'::jsonb,
                         true
-                    ),
-                    updated_at = now()
+                    )
                 where shop_id = %s
                   and source_url <> all(%s)
                   and coalesce(payload->>'availability', 'unknown') <> 'out_of_stock'
