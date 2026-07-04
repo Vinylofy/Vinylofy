@@ -87,7 +87,8 @@ jobs:
             scripts/scrapers/usf/jobs/promote_musiconvinyl.py \
             scripts/scrapers/usf/jobs/run_musiconvinyl_pipeline.py \
             scripts/scrapers/usf/jobs/enrich_musiconvinyl_details.py \
-            scripts/scrapers/usf/jobs/refresh_musiconvinyl_prices_only.py
+            scripts/scrapers/usf/jobs/refresh_musiconvinyl_prices_only.py \
+            scripts/scrapers/usf/jobs/sync_musiconvinyl_listing_prices.py
 
       - name: Validate CLIs
         shell: bash
@@ -186,6 +187,12 @@ jobs:
             --max-pages 10 \
             --listing-limit 250 \
             --write
+
+      - name: Sync live prices from listing payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u -m scripts.scrapers.usf.jobs.sync_musiconvinyl_listing_prices --write
 
   scheduled-detail-enrichment:
     name: Scheduled detail enrichment batch
