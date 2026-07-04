@@ -1,0 +1,92 @@
+name: USF - FiftiesStore
+
+on:
+  schedule:
+    - cron: "35 3 * * *"
+  workflow_dispatch:
+    inputs:
+      batch_size:
+        description: "Clerk API batch size"
+        required: true
+        default: "500"
+        type: string
+      stage_limit:
+        description: "Max staged offers"
+        required: true
+        default: "6000"
+        type: string
+      promote_limit:
+        description: "Max promoted offers"
+        required: true
+        default: "6000"
+        type: string
+      write:
+        description: "Write to database"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  fiftiesstore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then python -m pip install -r requirements-scrapers.txt; fi
+          python -m pip install "psycopg[binary]"
+
+      - name: Compile
+        run: |
+          python -m py_compile \
+            scripts/scrapers/usf/core/delist_missing_links.py \
+            scripts/scrapers/usf/jobs/refresh_fiftiesstore_listing_prices.py \
+            scripts/scrapers/usf/jobs/stage_fiftiesstore.py \
+            scripts/scrapers/usf/jobs/promote_fiftiesstore.py
+
+      - name: Resolve settings
+        id: settings
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "batch_size=500" >> "$GITHUB_OUTPUT"
+            echo "stage_limit=6000" >> "$GITHUB_OUTPUT"
+            echo "promote_limit=6000" >> "$GITHUB_OUTPUT"
+            echo "write=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "batch_size=${{ inputs.batch_size }}" >> "$GITHUB_OUTPUT"
+            echo "stage_limit=${{ inputs.stage_limit }}" >> "$GITHUB_OUTPUT"
+            echo "promote_limit=${{ inputs.promote_limit }}" >> "$GITHUB_OUTPUT"
+            echo "write=${{ inputs.write }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Refresh
+        run: |
+          cmd=(python -u -m scripts.scrapers.usf.jobs.refresh_fiftiesstore_listing_prices --batch-size "${{ steps.settings.outputs.batch_size }}")
+          if [ "${{ steps.settings.outputs.write }}" = "true" ]; then cmd+=(--write); fi
+          "${cmd[@]}"
+
+      - name: Stage
+        run: |
+          cmd=(python -u -m scripts.scrapers.usf.jobs.stage_fiftiesstore --limit "${{ steps.settings.outputs.stage_limit }}")
+          if [ "${{ steps.settings.outputs.write }}" = "true" ]; then cmd+=(--write); fi
+          "${cmd[@]}"
+
+      - name: Promote
+        run: |
+          cmd=(python -u -m scripts.scrapers.usf.jobs.promote_fiftiesstore --limit "${{ steps.settings.outputs.promote_limit }}")
+          if [ "${{ steps.settings.outputs.write }}" = "true" ]; then cmd+=(--write); fi
+          "${cmd[@]}"
