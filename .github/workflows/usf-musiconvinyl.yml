@@ -8,6 +8,15 @@ on:
     - cron: "23 */2 * * *"
   workflow_dispatch:
     inputs:
+      mode:
+        description: "Run mode"
+        required: true
+        default: "price-only"
+        type: choice
+        options:
+          - price-only
+          - detail
+          - full
       collections:
         description: "Comma-separated collections"
         required: true
@@ -127,7 +136,7 @@ jobs:
           if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
           pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
 
-      - name: Run pipeline
+      - name: Run selected mode
         shell: bash
         run: |
           set -euo pipefail
@@ -135,22 +144,92 @@ jobs:
             echo "[ERROR] DATABASE_URL ontbreekt"
             exit 1
           fi
-          COMMAND=(
-            python -u -m scripts.scrapers.usf.jobs.run_musiconvinyl_pipeline
-            --collections "${{ inputs.collections }}"
-            --max-pages "${{ inputs.max_pages }}"
-            --listing-limit "${{ inputs.listing_limit }}"
-            --materialize-limit "${{ inputs.materialize_limit }}"
-            --stage-limit "${{ inputs.stage_limit }}"
-            --promote-limit "${{ inputs.promote_limit }}"
-          )
-          if [ "${{ inputs.write }}" = "true" ]; then
-            COMMAND+=(--write)
+
+          if [ "${{ inputs.mode }}" = "price-only" ]; then
+            PRICE_REFRESH=(
+              python -u -m scripts.scrapers.usf.jobs.refresh_musiconvinyl_prices_only
+              --collections "${{ inputs.collections }}"
+              --max-pages "${{ inputs.max_pages }}"
+              --listing-limit "${{ inputs.listing_limit }}"
+            )
+            FAST_SYNC=(
+              python -u -m scripts.scrapers.usf.jobs.sync_musiconvinyl_listing_prices
+            )
+            if [ "${{ inputs.write }}" = "true" ]; then
+              PRICE_REFRESH+=(--write)
+              FAST_SYNC+=(--write)
+            fi
+            printf '[WORKFLOW] Price refresh:'
+            printf ' %q' "${PRICE_REFRESH[@]}"
+            printf '\n'
+            "${PRICE_REFRESH[@]}"
+
+            printf '[WORKFLOW] Fast sync:'
+            printf ' %q' "${FAST_SYNC[@]}"
+            printf '\n'
+            "${FAST_SYNC[@]}"
+            exit 0
           fi
-          printf '[WORKFLOW] Command:'
-          printf ' %q' "${COMMAND[@]}"
-          printf '\n'
-          "${COMMAND[@]}"
+
+          if [ "${{ inputs.mode }}" = "detail" ]; then
+            DETAIL=(
+              python -u -m scripts.scrapers.usf.jobs.enrich_musiconvinyl_details
+              --limit "${{ inputs.materialize_limit }}"
+              --sleep 3
+            )
+            STAGE=(
+              python -u -m scripts.scrapers.usf.jobs.stage_musiconvinyl
+              --limit "${{ inputs.stage_limit }}"
+            )
+            PROMOTE=(
+              python -u -m scripts.scrapers.usf.jobs.promote_musiconvinyl
+              --limit "${{ inputs.promote_limit }}"
+            )
+            if [ "${{ inputs.write }}" = "true" ]; then
+              DETAIL+=(--write)
+              STAGE+=(--write)
+              PROMOTE+=(--write)
+            fi
+
+            printf '[WORKFLOW] Detail enrichment:'
+            printf ' %q' "${DETAIL[@]}"
+            printf '\n'
+            "${DETAIL[@]}"
+
+            printf '[WORKFLOW] Stage:'
+            printf ' %q' "${STAGE[@]}"
+            printf '\n'
+            "${STAGE[@]}"
+
+            printf '[WORKFLOW] Promote:'
+            printf ' %q' "${PROMOTE[@]}"
+            printf '\n'
+            "${PROMOTE[@]}"
+            exit 0
+          fi
+
+          if [ "${{ inputs.mode }}" = "full" ]; then
+            COMMAND=(
+              python -u -m scripts.scrapers.usf.jobs.run_musiconvinyl_pipeline
+              --collections "${{ inputs.collections }}"
+              --max-pages "${{ inputs.max_pages }}"
+              --listing-limit "${{ inputs.listing_limit }}"
+              --materialize-limit "${{ inputs.materialize_limit }}"
+              --stage-limit "${{ inputs.stage_limit }}"
+              --promote-limit "${{ inputs.promote_limit }}"
+            )
+            if [ "${{ inputs.write }}" = "true" ]; then
+              COMMAND+=(--write)
+            fi
+            printf '[WORKFLOW] Full pipeline:'
+            printf ' %q' "${COMMAND[@]}"
+            printf '\n'
+            "${COMMAND[@]}"
+            exit 0
+          fi
+
+          echo "[ERROR] Unknown mode: ${{ inputs.mode }}"
+          exit 1
 
   scheduled-price-refresh:
     name: Scheduled full listing price refresh
