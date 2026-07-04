@@ -1,0 +1,145 @@
+name: USF - Music On Vinyl
+
+on:
+  workflow_dispatch:
+    inputs:
+      collections:
+        description: "Comma-separated collections"
+        required: true
+        default: "all-products,new-releases,back-in-stock"
+        type: string
+      max_pages:
+        description: "Aantal pagina's per collection"
+        required: true
+        default: "1"
+        type: string
+      listing_limit:
+        description: "Shopify products.json limit per page"
+        required: true
+        default: "250"
+        type: string
+      materialize_limit:
+        description: "Max queued links naar raw"
+        required: true
+        default: "500"
+        type: string
+      stage_limit:
+        description: "Max raw snapshots naar staged_offers"
+        required: true
+        default: "500"
+        type: string
+      promote_limit:
+        description: "Max staged offers promoveren"
+        required: true
+        default: "500"
+        type: string
+      write:
+        description: "Werkelijke databasewrites uitvoeren"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usf-musiconvinyl-production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate Music On Vinyl USF modules
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
+          pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+
+      - name: Compile modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/scrapers/musiconvinyl.py \
+            scripts/scrapers/usf/jobs/discover_musiconvinyl.py \
+            scripts/scrapers/usf/jobs/materialize_musiconvinyl_listing.py \
+            scripts/scrapers/usf/jobs/refresh_musiconvinyl_listing_prices.py \
+            scripts/scrapers/usf/jobs/stage_musiconvinyl.py \
+            scripts/scrapers/usf/jobs/promote_musiconvinyl.py \
+            scripts/scrapers/usf/jobs/run_musiconvinyl_pipeline.py
+
+      - name: Validate CLIs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m scripts.scrapers.usf.jobs.discover_musiconvinyl --help
+          python -m scripts.scrapers.usf.jobs.materialize_musiconvinyl_listing --help
+          python -m scripts.scrapers.usf.jobs.refresh_musiconvinyl_listing_prices --help
+          python -m scripts.scrapers.usf.jobs.stage_musiconvinyl --help
+          python -m scripts.scrapers.usf.jobs.promote_musiconvinyl --help
+          python -m scripts.scrapers.usf.jobs.run_musiconvinyl_pipeline --help
+
+  run:
+    name: Run Music On Vinyl USF pipeline
+    if: github.event_name == 'workflow_dispatch'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
+          pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+
+      - name: Run pipeline
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.write }}" = "true" ] && [ -z "${DATABASE_URL:-}" ]; then
+            echo "[ERROR] DATABASE_URL ontbreekt"
+            exit 1
+          fi
+          COMMAND=(
+            python -u -m scripts.scrapers.usf.jobs.run_musiconvinyl_pipeline
+            --collections "${{ inputs.collections }}"
+            --max-pages "${{ inputs.max_pages }}"
+            --listing-limit "${{ inputs.listing_limit }}"
+            --materialize-limit "${{ inputs.materialize_limit }}"
+            --stage-limit "${{ inputs.stage_limit }}"
+            --promote-limit "${{ inputs.promote_limit }}"
+          )
+          if [ "${{ inputs.write }}" = "true" ]; then
+            COMMAND+=(--write)
+          fi
+          printf '[WORKFLOW] Command:'
+          printf ' %q' "${COMMAND[@]}"
+          printf '\n'
+          "${COMMAND[@]}"
