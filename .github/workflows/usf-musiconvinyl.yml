@@ -1,6 +1,11 @@
 name: USF - Music On Vinyl
 
 on:
+  schedule:
+    # Dagelijkse volle listing/prijsrefresh
+    - cron: "17 2 * * *"
+    # Elke 2 uur detail enrichment, kleine batch
+    - cron: "23 */2 * * *"
   workflow_dispatch:
     inputs:
       collections:
@@ -80,7 +85,9 @@ jobs:
             scripts/scrapers/usf/jobs/refresh_musiconvinyl_listing_prices.py \
             scripts/scrapers/usf/jobs/stage_musiconvinyl.py \
             scripts/scrapers/usf/jobs/promote_musiconvinyl.py \
-            scripts/scrapers/usf/jobs/run_musiconvinyl_pipeline.py
+            scripts/scrapers/usf/jobs/run_musiconvinyl_pipeline.py \
+            scripts/scrapers/usf/jobs/enrich_musiconvinyl_details.py \
+            scripts/scrapers/usf/jobs/refresh_musiconvinyl_prices_only.py
 
       - name: Validate CLIs
         shell: bash
@@ -143,3 +150,87 @@ jobs:
           printf ' %q' "${COMMAND[@]}"
           printf '\n'
           "${COMMAND[@]}"
+
+  scheduled-price-refresh:
+    name: Scheduled full listing price refresh
+    if: github.event_name == 'schedule' && github.event.schedule == '17 2 * * *'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
+          pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+
+      - name: Full price refresh without details
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u -m scripts.scrapers.usf.jobs.refresh_musiconvinyl_prices_only \
+            --collections all-products,new-releases,back-in-stock \
+            --max-pages 10 \
+            --listing-limit 250 \
+            --write
+
+  scheduled-detail-enrichment:
+    name: Scheduled detail enrichment batch
+    if: github.event_name == 'schedule' && github.event.schedule == '23 */2 * * *'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
+          pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+
+      - name: Enrich 25 details
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u -m scripts.scrapers.usf.jobs.enrich_musiconvinyl_details \
+            --limit 25 \
+            --sleep 3 \
+            --write
+
+      - name: Stage enriched rows
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u -m scripts.scrapers.usf.jobs.stage_musiconvinyl --limit 25 --write
+
+      - name: Promote enriched rows
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u -m scripts.scrapers.usf.jobs.promote_musiconvinyl --limit 25 --write
+
