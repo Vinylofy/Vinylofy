@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from scripts.scrapers.musiconvinyl import SHOP_ID
+from scripts.scrapers.musiconvinyl import SHOP_ID, fetch_detail_metadata
 from scripts.scrapers.usf.core.models import RawProductData
 from scripts.scrapers.usf.core.raw_materializer import materialize_queued_links
 
@@ -28,6 +28,31 @@ def title_from_payload(payload: dict[str, Any], source_url: str) -> str:
 
 def map_link_to_raw(link: dict[str, Any]) -> RawProductData:
     payload = dict(link.get("payload") or {})
+    detail_metadata: dict[str, Any] = {}
+
+    ean_raw = clean(payload.get("ean") or payload.get("barcode"))
+    if not ean_raw:
+        try:
+            detail_metadata = fetch_detail_metadata(link["source_url"])
+            ean_raw = clean(detail_metadata.get("ean"))
+            print(
+                "[MUSICONVINYL-DETAIL] parsed",
+                {
+                    "source_url": link["source_url"],
+                    "ean": ean_raw,
+                    "ean_source": detail_metadata.get("ean_source"),
+                    "catalogue_number": detail_metadata.get("catalogue_number")
+                    or detail_metadata.get("catalog_number"),
+                },
+                flush=True,
+            )
+        except Exception as exc:
+            print(
+                "[MUSICONVINYL-DETAIL-WARN]",
+                {"source_url": link["source_url"], "reason": str(exc)},
+                flush=True,
+            )
+
     availability = clean(payload.get("availability"))
     if availability == "preorder":
         # Bewust niet als normale actieve voorraad behandelen.
@@ -40,14 +65,15 @@ def map_link_to_raw(link: dict[str, Any]) -> RawProductData:
         source_url=link["source_url"],
         source_product_id=clean(link.get("source_product_id")),
         title_raw=title_from_payload(payload, link["source_url"]),
-        ean_raw=clean(payload.get("ean") or payload.get("barcode")),
+        ean_raw=ean_raw,
         price_raw=clean(payload.get("chosen_price")),
         availability_raw=availability_raw,
         image_url_raw=clean(payload.get("image_url")),
         payload={
-            "source": "musiconvinyl_listing_payload",
+            "source": "musiconvinyl_listing_plus_detail_payload",
             "shop_product_link_id": link["id"],
             "listing_payload": payload,
+            "detail_metadata": detail_metadata,
             "price_source": payload.get("price_source"),
             "regular_price": payload.get("regular_price"),
             "sale_price": payload.get("sale_price"),

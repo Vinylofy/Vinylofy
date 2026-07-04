@@ -54,13 +54,29 @@ def clean(value: Any) -> str | None:
 
 
 def cents_to_eur(value: Any) -> str | None:
+    """
+    Shopify /products.json can expose prices either as cents-like integers
+    or as decimal strings, depending on storefront/API shape.
+
+    Music On Vinyl currently returns decimal euro strings such as "28.00".
+    Do not divide those by 100. Only divide plain integer-cent values.
+    """
     if value is None:
         return None
+
+    raw = str(value).strip()
+    if not raw:
+        return None
+
     try:
-        cents = Decimal(str(value))
+        amount = Decimal(raw)
     except (InvalidOperation, ValueError):
         return None
-    return str((cents / Decimal("100")).quantize(Decimal("0.01")))
+
+    if re.fullmatch(r"\d+", raw) and amount >= Decimal("1000"):
+        amount = amount / Decimal("100")
+
+    return str(amount.quantize(Decimal("0.01")))
 
 
 def parse_price_text(value: Any) -> str | None:
@@ -298,3 +314,70 @@ def fetch_product_js(source_url: str, *, timeout: float = 20.0) -> dict[str, Any
     response.raise_for_status()
     data = response.json()
     return data if isinstance(data, dict) else None
+
+
+DETAIL_LABEL_RE = re.compile(
+    r"(Barcode\s*\\(EAN\\)|Barcode|EAN|Catalogue number|Catalog number|Releasedate|Release date|Original Release Year|Vinyl colour|Genre|Number of discs|Vinyl weight|Limited Edition of)\\s*:?\\s*([^\\n\\r<]+)",
+    re.IGNORECASE,
+)
+
+
+def extract_detail_metadata_from_html(html_text: str) -> dict[str, str | None]:
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    text_parts: list[str] = []
+
+    for script in soup.find_all("script", {"type": "application/ld+json"}):
+        try:
+            data = json.loads(script.string or "")
+        except Exception:
+            continue
+        stack = [data]
+        while stack:
+            item = stack.pop()
+            if isinstance(item, dict):
+                for key, value in item.items():
+                    if key.lower() in {"gtin", "gtin13", "gtin12", "barcode", "sku"}:
+                        ean = normalize_ean_candidate(value)
+                        if ean:
+                            return {"ean": ean, "ean_source": f"json_ld_{key}"}
+                    if isinstance(value, (dict, list)):
+                        stack.append(value)
+            elif isinstance(item, list):
+                stack.extend(item)
+
+    details: dict[str, str | None] = {}
+    visible_text = soup.get_text("\\n", strip=True)
+    text_parts.append(visible_text)
+
+    for raw_text in text_parts:
+        # Direct high-confidence EAN label match
+        ean_match = re.search(
+            r"Barcode\\s*\\(EAN\\)\\s*:?\\s*(\\d{12,13})",
+            raw_text,
+            flags=re.IGNORECASE,
+        )
+        if ean_match:
+            details["ean"] = normalize_ean_candidate(ean_match.group(1))
+            details["ean_source"] = "details_barcode_ean"
+            break
+
+        for label, value in DETAIL_LABEL_RE.findall(raw_text):
+            key = re.sub(r"\\W+", "_", label.lower()).strip("_")
+            details[key] = clean(value)
+
+    if not details.get("ean"):
+        for key in ("barcode_ean", "barcode", "ean"):
+            candidate = normalize_ean_candidate(details.get(key))
+            if candidate:
+                details["ean"] = candidate
+                details["ean_source"] = f"details_{key}"
+                break
+
+    return details
+
+
+def fetch_detail_metadata(source_url: str, *, timeout: float = 20.0) -> dict[str, str | None]:
+    response = make_session().get(source_url, timeout=timeout)
+    response.raise_for_status()
+    return extract_detail_metadata_from_html(response.text)
