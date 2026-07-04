@@ -194,6 +194,7 @@ def main():
     ap.add_argument("--max-products", type=int, default=0, help="0 = all")
     ap.add_argument("--sleep", type=float, default=0.25)
     ap.add_argument("--write", action="store_true")
+    ap.add_argument("--skip-raw", action="store_true", help="Skip raw_shop_scrapes inserts; useful for Actions performance")
     args = ap.parse_args()
 
     load_env()
@@ -297,22 +298,25 @@ def main():
     print("[FIFTIES-API] registry", vars(reg), flush=True)
 
     inserted = 0
-    for r in raw_rows:
-        insert_raw_shop_scrape(
-            run_id=run_id,
-            shop_id=SHOP_ID,
-            source_url=r["source_url"],
-            source_product_id=r.get("source_product_id"),
-            title_raw=r.get("title_raw"),
-            ean_raw=r.get("ean"),
-            price_raw=r.get("price"),
-            availability_raw=r.get("availability"),
-            image_url_raw=r.get("image_url"),
-            payload=r,
-        )
-        inserted += 1
+    if args.skip_raw:
+        print("[FIFTIES-API] raw", {"inserted": 0, "skipped": len(raw_rows), "reason": "skip_raw", "run_id": run_id}, flush=True)
+    else:
+        for r in raw_rows:
+            insert_raw_shop_scrape(
+                run_id=run_id,
+                shop_id=SHOP_ID,
+                source_url=r["source_url"],
+                source_product_id=r.get("source_product_id"),
+                title_raw=r.get("title_raw"),
+                ean_raw=r.get("ean"),
+                price_raw=r.get("price"),
+                availability_raw=r.get("availability"),
+                image_url_raw=r.get("image_url"),
+                payload=r,
+            )
+            inserted += 1
 
-    print("[FIFTIES-API] raw", {"inserted": inserted, "run_id": run_id}, flush=True)
+        print("[FIFTIES-API] raw", {"inserted": inserted, "run_id": run_id}, flush=True)
 
     delist_stats = mark_missing_links_out_of_stock(
         shop_id=SHOP_ID,

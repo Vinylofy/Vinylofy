@@ -75,7 +75,7 @@ jobs:
 
       - name: Refresh
         run: |
-          cmd=(python -u -m scripts.scrapers.usf.jobs.refresh_fiftiesstore_listing_prices --batch-size "${{ steps.settings.outputs.batch_size }}")
+          cmd=(python -u -m scripts.scrapers.usf.jobs.refresh_fiftiesstore_listing_prices --batch-size "${{ steps.settings.outputs.batch_size }}" --skip-raw)
           if [ "${{ steps.settings.outputs.write }}" = "true" ]; then cmd+=(--write); fi
           "${cmd[@]}"
 
