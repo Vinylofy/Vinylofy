@@ -28,7 +28,6 @@ with mov_shop as (
   select id
   from public.shops
   where domain = %(shop_domain)s
-     or slug = %(shop_id)s
   limit 1
 ),
 listing_prices_raw as (
