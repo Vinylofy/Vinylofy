@@ -1,4 +1,6 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { enrichOffersWithShipping } from "@/lib/shipping";
+import { getShippingRulesMap } from "@/lib/shipping-repository";
 
 type ProductRow = {
   id: string;
@@ -32,6 +34,7 @@ type ShopRelation =
 
 type PriceRow = {
   product_id: string;
+  shop_id: string;
   price: number | string;
   product_url: string;
   last_seen_at: string;
@@ -55,10 +58,17 @@ export type HomeProduct = {
 export type SearchShopOffer = {
   name: string;
   domain: string;
+  shopId: string;
   price: number;
   productUrl: string;
   lastSeenAt: string;
   availability: "in_stock" | "unknown";
+
+  estimatedShippingPrice: number | null;
+  estimatedTotalPrice: number | null;
+  freeShippingApplied: boolean;
+  shippingNote: string | null;
+  shippingConfidence: string | null;
 };
 
 export type SearchResultItem = {
@@ -273,7 +283,7 @@ async function getOffersMap(productIds: string[]) {
 
   const { data, error } = await supabase
     .from("prices")
-    .select("product_id, price, product_url, last_seen_at, availability, shops(name, domain)")
+    .select("product_id, price, product_url, last_seen_at, availability, shop_id, shops(name, domain)")
     .in("product_id", productIds)
     .eq("is_active", true)
     .in("availability", ["in_stock", "unknown"])
@@ -292,6 +302,7 @@ async function getOffersMap(productIds: string[]) {
     const offer: SearchShopOffer = {
       name: shop.name,
       domain: shop.domain,
+      shopId: row.shop_id,
       price: toNumber(row.price) ?? 0,
       productUrl: row.product_url,
       lastSeenAt: row.last_seen_at,
@@ -303,8 +314,16 @@ async function getOffersMap(productIds: string[]) {
     grouped.set(row.product_id, existing);
   }
 
+  const shippingRules = await getShippingRulesMap();
+
   for (const [productId, offers] of grouped.entries()) {
-    grouped.set(productId, offers.sort(compareOffers));
+    grouped.set(
+      productId,
+      enrichOffersWithShipping(
+        offers.sort(compareOffers),
+        shippingRules,
+      ),
+    );
   }
 
   return grouped;
@@ -633,4 +652,3 @@ export async function getProductPriceHistory(
     .filter((row): row is ProductPriceHistoryPoint => Boolean(row))
     .sort((a, b) => a.day.localeCompare(b.day));
 }
-

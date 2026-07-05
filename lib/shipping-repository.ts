@@ -17,12 +17,21 @@ export async function getShippingRulesMap(): Promise<Map<string, ShippingRule>> 
     .eq("country_code", "NL");
 
   if (error) {
-    console.error("[shipping] failed to load shipping rules", error);
+    console.error("[shipping] failed to load shipping rules");
+    console.error(JSON.stringify(error, null, 2));
 
     return new Map();
   }
 
   const map = new Map<string, ShippingRule>();
+
+  console.log(
+    "[shipping-rules]",
+    (data ?? []).map(r => ({
+      shopId: r.shop_id,
+      note: r.shipping_note,
+    }))
+  );
 
   for (const row of data ?? []) {
     map.set(row.shop_id, {

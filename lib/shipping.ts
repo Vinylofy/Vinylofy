@@ -29,6 +29,15 @@ export function enrichOffersWithShipping<
         ? rules.get(offer.shopId)!
         : null;
 
+
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[SHIPPING]", {
+        shopId: offer.shopId,
+        found: !!rule,
+        price: offer.price,
+      });
+    }
+
     if (!rule) {
       return {
         ...offer,
