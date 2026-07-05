@@ -36,13 +36,7 @@ type PriceRow = {
   product_url: string;
   last_seen_at: string;
   availability: string | null;
-  shop_name: string | null;
-  shop_domain: string | null;
-  estimated_shipping_cents: number | null;
-  estimated_total_cents: number | null;
-  free_shipping_applied: boolean | null;
-  shipping_note: string | null;
-  shipping_confidence: string | null;
+  shops: ShopRelation;
 };
 
 export type HomeProduct = {
@@ -278,8 +272,8 @@ async function getOffersMap(productIds: string[]) {
   const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
 
   const { data, error } = await supabase
-    .from("prices_with_shipping_v1")
-    .select("product_id, price, product_url, last_seen_at, availability, shop_name, shop_domain, estimated_shipping_cents, estimated_total_cents, free_shipping_applied, shipping_note, shipping_confidence")
+    .from("prices")
+    .select("product_id, price, product_url, last_seen_at, availability, shops(name, domain)")
     .in("product_id", productIds)
     .eq("is_active", true)
     .in("availability", ["in_stock", "unknown"])
