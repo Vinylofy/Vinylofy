@@ -63,9 +63,22 @@ export function ProductOffersCard({ offers }: ProductOffersCardProps) {
                   </div>
                 </div>
 
-                <p className="text-left text-lg font-semibold tracking-tight text-[#3f2616] md:text-right md:text-xl">
-                  {formatEuro(offer.estimatedTotalPrice ?? offer.price)}
-                </p>
+                <div className="text-left md:text-right">
+                  <p
+                    className="text-lg font-semibold tracking-tight text-[#3f2616] md:text-xl"
+                    title={shippingTitle}
+                  >
+                    {formatEuro(offer.price)}
+                  </p>
+                  {hasEstimatedTotal ? (
+                    <p
+                      className="mt-0.5 text-xs font-medium text-[#7d6b5d]"
+                      title={shippingTitle}
+                    >
+                      ± {formatEuro(offer.estimatedTotalPrice)} totaal
+                    </p>
+                  ) : null}
+                </div>
 
                 <div className="md:text-right">
                   <a
