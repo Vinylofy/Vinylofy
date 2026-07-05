@@ -64,7 +64,7 @@ export function ProductOffersCard({ offers }: ProductOffersCardProps) {
                 </div>
 
                 <p className="text-left text-lg font-semibold tracking-tight text-[#3f2616] md:text-right md:text-xl">
-                  {formatEuro(displayPrice)}
+                  {formatEuro(offer.estimatedTotalPrice ?? offer.price)}
                 </p>
 
                 <div className="md:text-right">
