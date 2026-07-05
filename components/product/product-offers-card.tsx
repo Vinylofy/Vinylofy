@@ -1,7 +1,4 @@
-import {
-  getOfferDisplayPrice,
-  getVisibleOfferSummary,
-} from "@/lib/offer-summary";
+import { getVisibleOfferSummary } from "@/lib/offer-summary";
 import { formatOfferDomain, formatRelativeFreshness } from "@/lib/product-page-format";
 import { formatEuro, type SearchShopOffer } from "@/lib/vinylofy-data";
 
@@ -37,7 +34,13 @@ export function ProductOffersCard({ offers }: ProductOffersCardProps) {
         <div className="mt-4 space-y-2.5">
           {sortedOffers.map((offer, index) => {
             const freshness = formatRelativeFreshness(offer.lastSeenAt);
-            const displayPrice = getOfferDisplayPrice(offer);
+            const hasEstimatedTotal = offer.estimatedTotalPrice !== null;
+            const shippingTitle =
+              offer.estimatedShippingPrice === null
+                ? "Verzendkosten onbekend"
+                : offer.freeShippingApplied
+                  ? `Geschatte verzendkosten: gratis. ${offer.shippingNote ?? ""}`.trim()
+                  : `Geschatte verzendkosten: ${formatEuro(offer.estimatedShippingPrice)}. ${offer.shippingNote ?? ""}`.trim();
 
             return (
               <div

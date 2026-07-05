@@ -30,8 +30,21 @@ type ShopRelation =
     }[]
   | null;
 
+type ShopShippingRuleRow = {
+  shop_slug: string;
+  country_code: string;
+  currency: string;
+  shipping_cost_cents: number | null;
+  free_shipping_threshold_cents: number | null;
+  shipping_logic: string;
+  shipping_note: string | null;
+  confidence: string | null;
+  active: boolean;
+};
+
 type PriceRow = {
   product_id: string;
+  shop_id: string | null;
   price: number | string;
   product_url: string;
   last_seen_at: string;
@@ -55,10 +68,16 @@ export type HomeProduct = {
 export type SearchShopOffer = {
   name: string;
   domain: string;
+  shopSlug: string | null;
   price: number;
   productUrl: string;
   lastSeenAt: string;
   availability: "in_stock" | "unknown";
+  estimatedShippingPrice: number | null;
+  estimatedTotalPrice: number | null;
+  freeShippingApplied: boolean;
+  shippingNote: string | null;
+  shippingConfidence: string | null;
 };
 
 export type SearchResultItem = {
@@ -216,6 +235,75 @@ function normalizeOfferAvailability(value: string | null | undefined): "in_stock
   return value === "in_stock" ? "in_stock" : "unknown";
 }
 
+function centsToEuro(value: number | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  return value / 100;
+}
+
+function calculateShippingForOffer(
+  price: number,
+  rule: ShopShippingRuleRow | undefined,
+): {
+  estimatedShippingPrice: number | null;
+  estimatedTotalPrice: number | null;
+  freeShippingApplied: boolean;
+  shippingNote: string | null;
+  shippingConfidence: string | null;
+} {
+  if (!rule || !rule.active) {
+    return {
+      estimatedShippingPrice: null,
+      estimatedTotalPrice: null,
+      freeShippingApplied: false,
+      shippingNote: null,
+      shippingConfidence: null,
+    };
+  }
+
+  const threshold = centsToEuro(rule.free_shipping_threshold_cents);
+  const baseShipping = centsToEuro(rule.shipping_cost_cents);
+  const freeShippingApplied =
+    threshold !== null && price >= threshold && rule.shipping_logic !== "pickup_only";
+
+  const estimatedShippingPrice = freeShippingApplied ? 0 : baseShipping;
+  const estimatedTotalPrice =
+    estimatedShippingPrice === null ? null : price + estimatedShippingPrice;
+
+  return {
+    estimatedShippingPrice,
+    estimatedTotalPrice,
+    freeShippingApplied,
+    shippingNote: rule.shipping_note,
+    shippingConfidence: rule.confidence,
+  };
+}
+
+async function getShippingRulesMap(countryCode = "NL"): Promise<Map<string, ShopShippingRuleRow>> {
+  const supabase = createSupabaseServerClient();
+
+  const { data, error } = await supabase
+    .from("shop_shipping_rules")
+    .select(
+      "shop_slug, country_code, currency, shipping_cost_cents, free_shipping_threshold_cents, shipping_logic, shipping_note, confidence, active",
+    )
+    .eq("country_code", countryCode)
+    .eq("active", true);
+
+  if (error) {
+    console.warn("[vinylofy] shop shipping rules unavailable", {
+      code: (error as { code?: string }).code,
+      message: (error as { message?: string }).message,
+    });
+    return new Map();
+  }
+
+  const map = new Map<string, ShopShippingRuleRow>();
+  for (const row of (data ?? []) as ShopShippingRuleRow[]) {
+    map.set(row.shop_slug, row);
+  }
+  return map;
+}
+
 function compareOffers(a: SearchShopOffer, b: SearchShopOffer): number {
   const aAvailabilityRank = a.availability === "in_stock" ? 0 : 1;
   const bAvailabilityRank = b.availability === "in_stock" ? 0 : 1;
@@ -226,6 +314,11 @@ function compareOffers(a: SearchShopOffer, b: SearchShopOffer): number {
 
   if (a.price !== b.price) return a.price - b.price;
   return b.lastSeenAt.localeCompare(a.lastSeenAt);
+}
+
+function getLowestOffer(offers: SearchShopOffer[]): SearchShopOffer | null {
+  if (offers.length === 0) return null;
+  return offers.reduce((lowest, offer) => (offer.price < lowest.price ? offer : lowest), offers[0]);
 }
 
 async function getProductsByIds(ids: string[]): Promise<ProductRow[]> {
@@ -273,7 +366,7 @@ async function getOffersMap(productIds: string[]) {
 
   const { data, error } = await supabase
     .from("prices")
-    .select("product_id, price, product_url, last_seen_at, availability, shops(name, domain)")
+    .select("product_id, shop_id, price, product_url, last_seen_at, availability, shops(name, domain)")
     .in("product_id", productIds)
     .eq("is_active", true)
     .in("availability", ["in_stock", "unknown"])
@@ -283,19 +376,33 @@ async function getOffersMap(productIds: string[]) {
 
   if (error) throw error;
 
+  const shippingRulesMap = await getShippingRulesMap("NL");
   const grouped = new Map<string, SearchShopOffer[]>();
 
   for (const row of (data ?? []) as PriceRow[]) {
     const shop = normalizeShopRelation(row.shops);
     if (!shop) continue;
 
+    const price = toNumber(row.price) ?? 0;
+    const shopSlug = row.shop_id ?? null;
+    const shipping = calculateShippingForOffer(
+      price,
+      shopSlug ? shippingRulesMap.get(shopSlug) : undefined,
+    );
+
     const offer: SearchShopOffer = {
       name: shop.name,
       domain: shop.domain,
-      price: toNumber(row.price) ?? 0,
+      shopSlug,
+      price,
       productUrl: row.product_url,
       lastSeenAt: row.last_seen_at,
       availability: normalizeOfferAvailability(row.availability),
+      estimatedShippingPrice: shipping.estimatedShippingPrice,
+      estimatedTotalPrice: shipping.estimatedTotalPrice,
+      freeShippingApplied: shipping.freeShippingApplied,
+      shippingNote: shipping.shippingNote,
+      shippingConfidence: shipping.shippingConfidence,
     };
 
     const existing = grouped.get(row.product_id) ?? [];
