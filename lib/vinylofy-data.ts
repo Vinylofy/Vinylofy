@@ -691,15 +691,20 @@ type ReleaseCalendarRow = {
 
 export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalendarItem[]> {
   const supabase = createSupabaseServerClient();
-  const today = new Date();
-  today.setUTCDate(today.getUTCDate() - 14);
-  const minDate = today.toISOString().slice(0, 10);
+  const minDateValue = new Date();
+  minDateValue.setUTCDate(minDateValue.getUTCDate() - 14);
+  const minDate = minDateValue.toISOString().slice(0, 10);
+
+  const maxDateValue = new Date();
+  maxDateValue.setUTCDate(maxDateValue.getUTCDate() + 14);
+  const maxDate = maxDateValue.toISOString().slice(0, 10);
 
   const { data, error } = await supabase
     .from("release_calendar")
     .select("id, ean, artist, title, release_date, source_shop, source_url, image_url, format, label, product_id")
     .eq("status", "active")
     .gte("release_date", minDate)
+    .lte("release_date", maxDate)
     .order("release_date", { ascending: true })
     .order("artist", { ascending: true })
     .limit(limit);
