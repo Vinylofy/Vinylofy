@@ -273,7 +273,7 @@ export function PriceHistoryCard({
               </defs>
 
               <g>
-                {chart.tickValues.map((tick) => {
+                {chart.tickValues.map((tick, index) => {
                   const yPosition = chart.y(tick);
 
                   return (
