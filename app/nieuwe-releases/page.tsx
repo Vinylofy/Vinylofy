@@ -18,10 +18,6 @@ function formatReleaseDate(value: string): string {
   }).format(new Date(`${value}T00:00:00Z`));
 }
 
-function sourceLabel(sourceShop: string): string {
-  if (sourceShop === "bobsvinyl") return "Bob's Vinyl";
-  return sourceShop;
-}
 
 
 function formatVanafPrice(value: number | null | undefined): string | null {
@@ -82,10 +78,6 @@ function ReleaseCard({ release }: { release: ReleaseCalendarItem }) {
               {displayTitle}
             </p>
           </div>
-
-          <span className="shrink-0 rounded-full bg-neutral-100 px-2.5 py-1 text-[11px] font-medium text-neutral-600">
-            {sourceLabel(release.sourceShop)}
-          </span>
         </div>
 
         <div className="mt-4 space-y-1 text-xs text-neutral-500">
