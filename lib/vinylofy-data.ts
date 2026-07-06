@@ -69,6 +69,7 @@ export type SearchShopOffer = {
   freeShippingApplied: boolean;
   shippingNote: string | null;
   shippingConfidence: string | null;
+  freeShippingThresholdPrice: number | null;
 };
 
 export type SearchResultItem = {
@@ -307,6 +308,12 @@ async function getOffersMap(productIds: string[]) {
       productUrl: row.product_url,
       lastSeenAt: row.last_seen_at,
       availability: normalizeOfferAvailability(row.availability),
+      estimatedShippingPrice: null,
+      estimatedTotalPrice: null,
+      freeShippingApplied: false,
+      shippingNote: null,
+      shippingConfidence: null,
+      freeShippingThresholdPrice: null,
     };
 
     const existing = grouped.get(row.product_id) ?? [];
@@ -651,4 +658,65 @@ export async function getProductPriceHistory(
     })
     .filter((row): row is ProductPriceHistoryPoint => Boolean(row))
     .sort((a, b) => a.day.localeCompare(b.day));
+}
+
+export type ReleaseCalendarItem = {
+  id: string;
+  ean: string | null;
+  artist: string;
+  title: string;
+  releaseDate: string;
+  sourceShop: string;
+  sourceUrl: string;
+  imageUrl: string | null;
+  format: string | null;
+  label: string | null;
+  productId: string | null;
+};
+
+type ReleaseCalendarRow = {
+  id: string;
+  ean: string | null;
+  artist: string;
+  title: string;
+  release_date: string;
+  source_shop: string;
+  source_url: string;
+  image_url: string | null;
+  format: string | null;
+  label: string | null;
+  product_id: string | null;
+};
+
+export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalendarItem[]> {
+  const supabase = createSupabaseServerClient();
+
+  const today = new Date();
+  today.setUTCDate(today.getUTCDate() - 14);
+  const minDate = today.toISOString().slice(0, 10);
+
+  const { data, error } = await supabase
+    .from("release_calendar")
+    .select("id, ean, artist, title, release_date, source_shop, source_url, image_url, format, label, product_id")
+    .eq("status", "active")
+    .gte("release_date", minDate)
+    .order("release_date", { ascending: true })
+    .order("artist", { ascending: true })
+    .limit(limit);
+
+  if (error) throw error;
+
+  return ((data ?? []) as ReleaseCalendarRow[]).map((row) => ({
+    id: row.id,
+    ean: row.ean,
+    artist: row.artist,
+    title: row.title,
+    releaseDate: row.release_date,
+    sourceShop: row.source_shop,
+    sourceUrl: row.source_url,
+    imageUrl: row.image_url,
+    format: row.format,
+    label: row.label,
+    productId: row.product_id,
+  }));
 }

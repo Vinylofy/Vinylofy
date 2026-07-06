@@ -1,0 +1,68 @@
+name: Release Calendar - Bob's Vinyl
+
+on:
+  workflow_dispatch:
+    inputs:
+      write:
+        description: "Write to Supabase"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      past_weeks:
+        description: "Past release weeks"
+        required: true
+        default: "1"
+      future_weeks:
+        description: "Future release weeks"
+        required: true
+        default: "4"
+      max_details_per_date:
+        description: "Max detail pages per release date"
+        required: true
+        default: "80"
+
+  schedule:
+    - cron: "20 6 * * 1"
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Compile release discovery
+        run: |
+          python -m py_compile \
+            scripts/release_discovery/core/release_weeks.py \
+            scripts/release_discovery/jobs/discover_bobsvinyl.py
+
+      - name: Discover Bob's Vinyl releases
+        run: |
+          WRITE_FLAG=""
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.write }}" = "true" ]; then
+            WRITE_FLAG="--write"
+          fi
+
+          python -m scripts.release_discovery.jobs.discover_bobsvinyl \
+            --past-weeks "${{ inputs.past_weeks || '1' }}" \
+            --future-weeks "${{ inputs.future_weeks || '4' }}" \
+            --max-details-per-date "${{ inputs.max_details_per_date || '80' }}" \
+            --sleep 0.5 \
+            $WRITE_FLAG
