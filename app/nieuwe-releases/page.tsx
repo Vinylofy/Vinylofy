@@ -81,7 +81,6 @@ function ReleaseCard({ release }: { release: ReleaseCalendarItem }) {
         </div>
 
         <div className="mt-4 space-y-1 text-xs text-neutral-500">
-          {release.ean ? <div>EAN {release.ean}</div> : null}
           {release.label ? <div>{release.label}</div> : null}
           {release.format ? <div>{release.format}</div> : null}
         </div>
