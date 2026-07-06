@@ -3,7 +3,7 @@ import Link from "next/link";
 
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
-import { getReleaseCalendarItems, type ReleaseCalendarItem } from "@/lib/vinylofy-data";
+import { formatEuro, getReleaseCalendarItems, type ReleaseCalendarItem } from "@/lib/vinylofy-data";
 
 export const metadata: Metadata = {
   title: "Nieuwe releases",
@@ -23,6 +23,12 @@ function sourceLabel(sourceShop: string): string {
   return sourceShop;
 }
 
+
+function formatVanafPrice(value: number | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  return `Vanaf ${formatEuro(value)}`;
+}
+
 function groupByReleaseDate(releases: ReleaseCalendarItem[]) {
   const groups = new Map<string, ReleaseCalendarItem[]>();
 
@@ -38,6 +44,7 @@ function groupByReleaseDate(releases: ReleaseCalendarItem[]) {
 
 function ReleaseCard({ release }: { release: ReleaseCalendarItem }) {
   const href = release.productId ? `/product/${release.productId}` : release.sourceUrl;
+  const displayPrice = formatVanafPrice(release.lowestPrice);
 
   const card = (
     <article className="h-full overflow-hidden rounded-3xl border border-neutral-200 bg-white shadow-sm">
@@ -62,7 +69,6 @@ function ReleaseCard({ release }: { release: ReleaseCalendarItem }) {
             <h2 className="text-sm font-semibold text-neutral-950">
               {release.artist}
             </h2>
-
             <p className="mt-1 text-sm leading-6 text-neutral-700">
               {release.title}
             </p>
@@ -79,8 +85,22 @@ function ReleaseCard({ release }: { release: ReleaseCalendarItem }) {
           {release.format ? <div>{release.format}</div> : null}
         </div>
 
-        <div className="mt-4 text-xs font-medium text-neutral-800">
-          {release.productId ? "Bekijk op Vinylofy" : "Bekijk bij bron"}
+        <div className="mt-4 flex flex-col gap-3">
+          {displayPrice ? (
+            <div className="text-lg font-semibold text-neutral-950">
+              {displayPrice}
+            </div>
+          ) : null}
+
+          {release.productId ? (
+            <span className="inline-flex w-fit items-center justify-center rounded-full bg-orange-500 px-4 py-2 text-sm font-medium !text-white transition hover:bg-orange-600 hover:!text-white">
+              Bekijk alle aanbiedingen
+            </span>
+          ) : (
+            <span className="text-xs font-medium text-neutral-500">
+              Bekijk bij bron
+            </span>
+          )}
         </div>
       </div>
     </article>
@@ -100,7 +120,6 @@ function ReleaseCard({ release }: { release: ReleaseCalendarItem }) {
     </a>
   );
 }
-
 export default async function NieuweReleasesPage() {
   const releases = await getReleaseCalendarItems(180);
   const groupedReleases = groupByReleaseDate(releases);

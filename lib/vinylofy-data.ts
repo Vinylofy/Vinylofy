@@ -672,6 +672,7 @@ export type ReleaseCalendarItem = {
   format: string | null;
   label: string | null;
   productId: string | null;
+  lowestPrice: number | null;
 };
 
 type ReleaseCalendarRow = {
@@ -690,7 +691,6 @@ type ReleaseCalendarRow = {
 
 export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalendarItem[]> {
   const supabase = createSupabaseServerClient();
-
   const today = new Date();
   today.setUTCDate(today.getUTCDate() - 14);
   const minDate = today.toISOString().slice(0, 10);
@@ -706,17 +706,34 @@ export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalen
 
   if (error) throw error;
 
-  return ((data ?? []) as ReleaseCalendarRow[]).map((row) => ({
-    id: row.id,
-    ean: row.ean,
-    artist: row.artist,
-    title: row.title,
-    releaseDate: row.release_date,
-    sourceShop: row.source_shop,
-    sourceUrl: row.source_url,
-    imageUrl: row.image_url,
-    format: row.format,
-    label: row.label,
-    productId: row.product_id,
-  }));
+  const rows = (data ?? []) as ReleaseCalendarRow[];
+  const productIds = Array.from(
+    new Set(
+      rows
+        .map((row) => row.product_id)
+        .filter((id): id is string => Boolean(id)),
+    ),
+  );
+
+  const bestPriceMap =
+    productIds.length > 0 ? await getBestPriceMap(productIds) : new Map<string, BestPriceRow>();
+
+  return rows.map((row) => {
+    const bestPrice = row.product_id ? bestPriceMap.get(row.product_id) : undefined;
+
+    return {
+      id: row.id,
+      ean: row.ean,
+      artist: row.artist,
+      title: row.title,
+      releaseDate: row.release_date,
+      sourceShop: row.source_shop,
+      sourceUrl: row.source_url,
+      imageUrl: row.image_url,
+      format: row.format,
+      label: row.label,
+      productId: row.product_id,
+      lowestPrice: toNumber(bestPrice?.lowest_fresh_price),
+    };
+  });
 }
