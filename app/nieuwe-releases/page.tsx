@@ -71,18 +71,18 @@ function ReleaseCard({ release }: { release: ReleaseCalendarItem }) {
       <div className="p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="text-sm font-semibold text-neutral-950">
+            <h2 className="truncate text-sm font-semibold text-neutral-950">
               {release.artist}
             </h2>
-            <p className="mt-1 text-sm leading-6 text-neutral-700">
+            <p className="mt-1 line-clamp-2 min-h-12 text-sm leading-6 text-neutral-700">
               {displayTitle}
             </p>
           </div>
         </div>
 
-        <div className="mt-4 space-y-1 text-xs text-neutral-500">
-          {release.label ? <div>{release.label}</div> : null}
-          {release.format ? <div>{release.format}</div> : null}
+        <div className="mt-3 min-h-5 space-y-1 text-xs text-neutral-500">
+          {release.label ? <div className="truncate">{release.label}</div> : null}
+          {release.format ? <div className="truncate">{release.format}</div> : null}
         </div>
 
         <div className="mt-4 flex flex-col gap-3">
