@@ -27,9 +27,7 @@ function groupByReleaseDate(releases: ReleaseCalendarItem[]) {
   const groups = new Map<string, ReleaseCalendarItem[]>();
 
   for (const release of releases) {
-    const existing = groups.get(release.releaseDate) ?? [];
-    existing.push(release);
-    groups.set(release.releaseDate, existing);
+    groups.set(release.releaseDate, [...(groups.get(release.releaseDate) ?? []), release]);
   }
 
   return Array.from(groups.entries()).map(([releaseDate, items]) => ({
@@ -40,10 +38,9 @@ function groupByReleaseDate(releases: ReleaseCalendarItem[]) {
 
 function ReleaseCard({ release }: { release: ReleaseCalendarItem }) {
   const href = release.productId ? `/product/${release.productId}` : release.sourceUrl;
-  const isExternal = !release.productId;
 
-  const content = (
-    <article className="group h-full overflow-hidden rounded-3xl border border-neutral-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
+  const card = (
+    <article className="h-full overflow-hidden rounded-3xl border border-neutral-200 bg-white shadow-sm">
       <div className="aspect-square bg-neutral-100">
         {release.imageUrl ? (
           <img
@@ -62,11 +59,11 @@ function ReleaseCard({ release }: { release: ReleaseCalendarItem }) {
       <div className="p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="line-clamp-1 text-sm font-semibold text-neutral-950">
+            <h2 className="text-sm font-semibold text-neutral-950">
               {release.artist}
             </h2>
 
-            <p className="mt-1 line-clamp-2 text-sm leading-6 text-neutral-700">
+            <p className="mt-1 text-sm leading-6 text-neutral-700">
               {release.title}
             </p>
           </div>
@@ -89,18 +86,18 @@ function ReleaseCard({ release }: { release: ReleaseCalendarItem }) {
     </article>
   );
 
-  if (isExternal) {
+  if (release.productId) {
     return (
-      <a href={href} target="_blank" rel="noreferrer" className="block h-full">
-        {content}
-      </a>
+      <Link href={href} className="block h-full">
+        {card}
+      </Link>
     );
   }
 
   return (
-    <Link href={href} className="block h-full">
-      {content}
-    </Link>
+    <a href={href} target="_blank" rel="noreferrer" className="block h-full">
+      {card}
+    </a>
   );
 }
 
@@ -147,15 +144,13 @@ export default async function NieuweReleasesPage() {
           <div className="space-y-10">
             {groupedReleases.map((group) => (
               <section key={group.releaseDate}>
-                <div className="mb-4 flex items-end justify-between gap-4 border-b border-neutral-200 pb-3">
-                  <div>
-                    <h2 className="text-xl font-semibold text-neutral-950">
-                      {formatReleaseDate(group.releaseDate)}
-                    </h2>
-                    <p className="mt-1 text-sm text-neutral-500">
-                      {group.items.length} releases
-                    </p>
-                  </div>
+                <div className="mb-4 border-b border-neutral-200 pb-3">
+                  <h2 className="text-xl font-semibold text-neutral-950">
+                    {formatReleaseDate(group.releaseDate)}
+                  </h2>
+                  <p className="mt-1 text-sm text-neutral-500">
+                    {group.items.length} releases
+                  </p>
                 </div>
 
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
