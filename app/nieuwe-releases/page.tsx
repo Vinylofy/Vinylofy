@@ -42,8 +42,17 @@ function groupByReleaseDate(releases: ReleaseCalendarItem[]) {
   }));
 }
 
+
+function cleanReleaseTitle(value: string): string {
+  return value
+    .replace(/\s+\|\s*Bob'?s Vinyl\s*$/i, "")
+    .replace(/\s+\|\s*Bobsvinyl\s*$/i, "")
+    .trim();
+}
+
 function ReleaseCard({ release }: { release: ReleaseCalendarItem }) {
   const href = release.productId ? `/product/${release.productId}` : release.sourceUrl;
+  const displayTitle = cleanReleaseTitle(release.title);
   const displayPrice = formatVanafPrice(release.lowestPrice);
 
   const card = (
@@ -52,7 +61,7 @@ function ReleaseCard({ release }: { release: ReleaseCalendarItem }) {
         {release.imageUrl ? (
           <img
             src={release.imageUrl}
-            alt={`${release.artist} - ${release.title}`}
+            alt={`${release.artist} - ${displayTitle}`}
             className="h-full w-full object-cover"
             loading="lazy"
           />
@@ -70,7 +79,7 @@ function ReleaseCard({ release }: { release: ReleaseCalendarItem }) {
               {release.artist}
             </h2>
             <p className="mt-1 text-sm leading-6 text-neutral-700">
-              {release.title}
+              {displayTitle}
             </p>
           </div>
 
