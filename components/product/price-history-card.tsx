@@ -277,7 +277,7 @@ export function PriceHistoryCard({
                   const yPosition = chart.y(tick);
 
                   return (
-                    <g key={tick}>
+                    <g key={`y-tick-${index}-${tick}`}>
                       <line
                         x1={chart.padding.left}
                         x2={chart.width - chart.padding.right}
