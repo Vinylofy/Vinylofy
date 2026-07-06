@@ -38,9 +38,14 @@ export function ProductOffersCard({ offers }: ProductOffersCardProps) {
             const shippingTitle =
               offer.estimatedShippingPrice === null
                 ? "Verzendkosten onbekend"
-                : offer.freeShippingApplied
-                  ? `Geschatte verzendkosten: gratis. ${offer.shippingNote ?? ""}`.trim()
-                  : `Geschatte verzendkosten: ${formatEuro(offer.estimatedShippingPrice)}. ${offer.shippingNote ?? ""}`.trim();
+                : [
+                    `Geschatte verzendkosten zijn ${formatEuro(offer.estimatedShippingPrice)}.`,
+                    offer.freeShippingThresholdPrice !== null
+                      ? `Deze webshop verzendt bij bestellingen vanaf ${formatEuro(offer.freeShippingThresholdPrice)} gratis.`
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" ");
 
             return (
               <div
