@@ -678,14 +678,39 @@ export type TopDealItem = {
   lastSeenAt: string | null;
 };
 
+type TopDealCandidate = {
+  productId: string;
+  lowestOffer: SearchShopOffer;
+  highestOffer: SearchShopOffer;
+  offers: SearchShopOffer[];
+  lowestPrice: number;
+  highestPrice: number;
+  priceDifference: number;
+  shopCount: number;
+  lastSeenAt: string | null;
+};
+
+async function getProductsByIdsInChunks(ids: string[], chunkSize = 100): Promise<ProductRow[]> {
+  const products: ProductRow[] = [];
+
+  for (let index = 0; index < ids.length; index += chunkSize) {
+    const chunk = ids.slice(index, index + chunkSize);
+    products.push(...(await getProductsByIds(chunk)));
+  }
+
+  return products;
+}
+
 export async function getTopDeals(limit = 45): Promise<TopDealItem[]> {
   const supabase = createSupabaseServerClient();
   const safeLimit = Math.max(1, Math.min(limit, 45));
   const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+
   const pricePageSize = 1000;
+  const maxPriceRows = 50000;
   const priceRows: PriceRow[] = [];
 
-  for (let offset = 0; ; offset += pricePageSize) {
+  for (let offset = 0; offset < maxPriceRows; offset += pricePageSize) {
     const { data, error } = await supabase
       .from("prices")
       .select("product_id, price, product_url, last_seen_at, availability, shop_id, shops(name, domain)")
@@ -713,7 +738,7 @@ export async function getTopDeals(limit = 45): Promise<TopDealItem[]> {
     const availability = normalizeOfferAvailability(row.availability);
 
     if (!shop) continue;
-    if (price === null) continue;
+    if (price === null || price <= 0) continue;
     if (availability !== "in_stock" && availability !== "unknown") continue;
 
     const offer: SearchShopOffer = {
@@ -738,7 +763,7 @@ export async function getTopDeals(limit = 45): Promise<TopDealItem[]> {
   }
 
   const shippingRules = await getShippingRulesMap();
-  const offersByProduct = new Map<string, SearchShopOffer[]>();
+  const candidates: TopDealCandidate[] = [];
 
   for (const [productId, offers] of grouped.entries()) {
     const bestOfferByShop = new Map<string, SearchShopOffer>();
@@ -755,7 +780,11 @@ export async function getTopDeals(limit = 45): Promise<TopDealItem[]> {
       }
     }
 
-    const dedupedOffers = Array.from(bestOfferByShop.values()).sort(compareOffers);
+    const dedupedOffers = Array.from(bestOfferByShop.values()).sort((a, b) => {
+      if (a.price !== b.price) return a.price - b.price;
+      return b.lastSeenAt.localeCompare(a.lastSeenAt);
+    });
+
     if (dedupedOffers.length < 2) continue;
 
     const enrichedOffers = enrichOffersWithShipping(dedupedOffers, shippingRules).sort((a, b) => {
@@ -767,36 +796,49 @@ export async function getTopDeals(limit = 45): Promise<TopDealItem[]> {
     const highestOffer = enrichedOffers[enrichedOffers.length - 1];
 
     if (!lowestOffer || !highestOffer) continue;
-    if (highestOffer.price - lowestOffer.price <= 0) continue;
-
-    offersByProduct.set(productId, enrichedOffers);
-  }
-
-  const productIds = Array.from(offersByProduct.keys());
-  if (productIds.length === 0) return [];
-
-  const products = (await getProductsByIds(productIds)).filter(isAllowedProduct);
-  const productsMap = new Map(products.map((product) => [product.id, product]));
-
-  const deals: TopDealItem[] = [];
-
-  for (const [productId, offers] of offersByProduct.entries()) {
-    const product = productsMap.get(productId);
-    if (!product) continue;
-
-    const lowestOffer = offers[0];
-    const highestOffer = offers[offers.length - 1];
-
-    if (!lowestOffer || !highestOffer) continue;
 
     const priceDifference = highestOffer.price - lowestOffer.price;
     if (priceDifference <= 0) continue;
 
     const lastSeenAt =
-      offers
+      enrichedOffers
         .map((offer) => offer.lastSeenAt)
         .filter(Boolean)
         .sort((a, b) => b.localeCompare(a))[0] ?? null;
+
+    candidates.push({
+      productId,
+      lowestOffer,
+      highestOffer,
+      offers: enrichedOffers,
+      lowestPrice: lowestOffer.price,
+      highestPrice: highestOffer.price,
+      priceDifference,
+      shopCount: enrichedOffers.length,
+      lastSeenAt,
+    });
+  }
+
+  const rankedCandidates = candidates
+    .sort((a, b) => {
+      if (b.priceDifference !== a.priceDifference) return b.priceDifference - a.priceDifference;
+      if (b.shopCount !== a.shopCount) return b.shopCount - a.shopCount;
+      if (a.lowestPrice !== b.lowestPrice) return a.lowestPrice - b.lowestPrice;
+      return a.productId.localeCompare(b.productId);
+    })
+    .slice(0, Math.max(safeLimit * 8, 300));
+
+  if (rankedCandidates.length === 0) return [];
+
+  const candidateProductIds = rankedCandidates.map((candidate) => candidate.productId);
+  const products = (await getProductsByIdsInChunks(candidateProductIds)).filter(isAllowedProduct);
+  const productsMap = new Map(products.map((product) => [product.id, product]));
+
+  const deals: TopDealItem[] = [];
+
+  for (const candidate of rankedCandidates) {
+    const product = productsMap.get(candidate.productId);
+    if (!product) continue;
 
     deals.push({
       id: product.id,
@@ -805,25 +847,54 @@ export async function getTopDeals(limit = 45): Promise<TopDealItem[]> {
       title: product.title,
       formatLabel: product.format_label,
       coverUrl: product.cover_url,
-      lowestPrice: lowestOffer.price,
-      highestPrice: highestOffer.price,
-      priceDifference,
-      shopCount: offers.length,
-      lowestOffer,
-      highestOffer,
-      offers,
-      lastSeenAt,
+      lowestPrice: candidate.lowestPrice,
+      highestPrice: candidate.highestPrice,
+      priceDifference: candidate.priceDifference,
+      shopCount: candidate.shopCount,
+      lowestOffer: candidate.lowestOffer,
+      highestOffer: candidate.highestOffer,
+      offers: candidate.offers,
+      lastSeenAt: candidate.lastSeenAt,
     });
+
+    if (deals.length >= safeLimit) break;
   }
 
-  return deals
-    .sort((a, b) => {
-      if (b.priceDifference !== a.priceDifference) return b.priceDifference - a.priceDifference;
-      if (b.shopCount !== a.shopCount) return b.shopCount - a.shopCount;
-      if (a.lowestPrice !== b.lowestPrice) return a.lowestPrice - b.lowestPrice;
-      return a.artist.localeCompare(b.artist);
-    })
-    .slice(0, safeLimit);
+  return deals;
+}
+
+
+const TOP_DEALS_CACHE_MS = 5 * 60 * 1000;
+
+let topDealsCache:
+  | {
+      limit: number;
+      expiresAt: number;
+      deals: TopDealItem[];
+    }
+  | null = null;
+
+export async function getCachedTopDeals(limit = 45): Promise<TopDealItem[]> {
+  const safeLimit = Math.max(1, Math.min(limit, 45));
+  const now = Date.now();
+
+  if (
+    topDealsCache &&
+    topDealsCache.limit === safeLimit &&
+    topDealsCache.expiresAt > now
+  ) {
+    return topDealsCache.deals;
+  }
+
+  const deals = await getTopDeals(safeLimit);
+
+  topDealsCache = {
+    limit: safeLimit,
+    expiresAt: now + TOP_DEALS_CACHE_MS,
+    deals,
+  };
+
+  return deals;
 }
 
 export type ReleaseCalendarItem = {

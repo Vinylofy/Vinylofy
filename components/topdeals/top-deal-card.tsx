@@ -27,7 +27,9 @@ export function TopDealCard({ deal, rank }: TopDealCardProps) {
             src={coverSrc}
             alt=""
             className="h-full w-full object-contain"
-            loading="lazy"
+            loading={rank <= 6 ? "eager" : "lazy"}
+            decoding="async"
+            fetchPriority={rank <= 6 ? "high" : "low"}
           />
           <span className="absolute left-2 top-2 rounded-full bg-white/95 px-2 py-1 text-xs font-semibold text-neutral-900 shadow-sm">
             #{rank}

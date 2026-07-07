@@ -4,9 +4,9 @@ import { SiteFooter } from "@/components/site-footer";
 import { SearchControls } from "@/components/search/search-controls";
 import { SiteHeader } from "@/components/site-header";
 import { TopDealCard } from "@/components/topdeals/top-deal-card";
-import { getTopDeals } from "@/lib/vinylofy-data";
+import { getCachedTopDeals } from "@/lib/vinylofy-data";
 
-export const dynamic = "force-dynamic";
+export const revalidate = 300;
 
 export const metadata: Metadata = {
   title: "Top 45 Deals",
@@ -14,7 +14,7 @@ export const metadata: Metadata = {
 };
 
 export default async function TopDealsPage() {
-  const deals = (await getTopDeals(45))
+  const deals = (await getCachedTopDeals(45))
     .filter((deal) => deal.priceDifference > 0 && deal.lowestOffer && deal.highestOffer)
     .slice(0, 45);
 
