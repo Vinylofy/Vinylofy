@@ -682,24 +682,32 @@ export async function getTopDeals(limit = 45): Promise<TopDealItem[]> {
   const supabase = createSupabaseServerClient();
   const safeLimit = Math.max(1, Math.min(limit, 45));
   const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-  const candidateLimit = Math.max(1000, safeLimit * 300);
+  const pricePageSize = 1000;
+  const priceRows: PriceRow[] = [];
 
-  const { data, error } = await supabase
-    .from("prices")
-    .select("product_id, price, product_url, last_seen_at, availability, shop_id, shops(name, domain)")
-    .eq("is_active", true)
-    .eq("availability", "in_stock")
-    .gte("last_seen_at", cutoff)
-    .order("product_id", { ascending: true })
-    .order("price", { ascending: true })
-    .order("last_seen_at", { ascending: false })
-    .limit(candidateLimit);
+  for (let offset = 0; ; offset += pricePageSize) {
+    const { data, error } = await supabase
+      .from("prices")
+      .select("product_id, price, product_url, last_seen_at, availability, shop_id, shops(name, domain)")
+      .eq("is_active", true)
+      .in("availability", ["in_stock", "unknown"])
+      .gte("last_seen_at", cutoff)
+      .order("product_id", { ascending: true })
+      .order("price", { ascending: true })
+      .order("last_seen_at", { ascending: false })
+      .range(offset, offset + pricePageSize - 1);
 
-  if (error) throw error;
+    if (error) throw error;
+
+    const page = (data ?? []) as PriceRow[];
+    priceRows.push(...page);
+
+    if (page.length < pricePageSize) break;
+  }
 
   const grouped = new Map<string, SearchShopOffer[]>();
 
-  for (const row of (data ?? []) as PriceRow[]) {
+  for (const row of priceRows) {
     const shop = normalizeShopRelation(row.shops);
     const price = toNumber(row.price);
     const availability = normalizeOfferAvailability(row.availability);
