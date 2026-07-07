@@ -660,6 +660,164 @@ export async function getProductPriceHistory(
     .sort((a, b) => a.day.localeCompare(b.day));
 }
 
+
+export type TopDealItem = {
+  id: string;
+  ean: string | null;
+  artist: string;
+  title: string;
+  formatLabel: string | null;
+  coverUrl: string | null;
+  lowestPrice: number;
+  highestPrice: number;
+  priceDifference: number;
+  shopCount: number;
+  lowestOffer: SearchShopOffer;
+  highestOffer: SearchShopOffer;
+  offers: SearchShopOffer[];
+  lastSeenAt: string | null;
+};
+
+export async function getTopDeals(limit = 45): Promise<TopDealItem[]> {
+  const supabase = createSupabaseServerClient();
+  const safeLimit = Math.max(1, Math.min(limit, 45));
+  const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+  const candidateLimit = Math.max(1000, safeLimit * 300);
+
+  const { data, error } = await supabase
+    .from("prices")
+    .select("product_id, price, product_url, last_seen_at, availability, shop_id, shops(name, domain)")
+    .eq("is_active", true)
+    .eq("availability", "in_stock")
+    .gte("last_seen_at", cutoff)
+    .order("product_id", { ascending: true })
+    .order("price", { ascending: true })
+    .order("last_seen_at", { ascending: false })
+    .limit(candidateLimit);
+
+  if (error) throw error;
+
+  const grouped = new Map<string, SearchShopOffer[]>();
+
+  for (const row of (data ?? []) as PriceRow[]) {
+    const shop = normalizeShopRelation(row.shops);
+    const price = toNumber(row.price);
+    const availability = normalizeOfferAvailability(row.availability);
+
+    if (!shop) continue;
+    if (price === null) continue;
+    if (availability !== "in_stock" && availability !== "unknown") continue;
+
+    const offer: SearchShopOffer = {
+      name: shop.name,
+      domain: shop.domain,
+      shopId: row.shop_id,
+      price,
+      productUrl: row.product_url,
+      lastSeenAt: row.last_seen_at,
+      availability,
+      estimatedShippingPrice: null,
+      estimatedTotalPrice: null,
+      freeShippingApplied: false,
+      shippingNote: null,
+      shippingConfidence: null,
+      freeShippingThresholdPrice: null,
+    };
+
+    const existing = grouped.get(row.product_id) ?? [];
+    existing.push(offer);
+    grouped.set(row.product_id, existing);
+  }
+
+  const shippingRules = await getShippingRulesMap();
+  const offersByProduct = new Map<string, SearchShopOffer[]>();
+
+  for (const [productId, offers] of grouped.entries()) {
+    const bestOfferByShop = new Map<string, SearchShopOffer>();
+
+    for (const offer of offers) {
+      const previous = bestOfferByShop.get(offer.shopId);
+
+      if (
+        !previous ||
+        offer.price < previous.price ||
+        (offer.price === previous.price && offer.lastSeenAt.localeCompare(previous.lastSeenAt) > 0)
+      ) {
+        bestOfferByShop.set(offer.shopId, offer);
+      }
+    }
+
+    const dedupedOffers = Array.from(bestOfferByShop.values()).sort(compareOffers);
+    if (dedupedOffers.length < 2) continue;
+
+    const enrichedOffers = enrichOffersWithShipping(dedupedOffers, shippingRules).sort((a, b) => {
+      if (a.price !== b.price) return a.price - b.price;
+      return b.lastSeenAt.localeCompare(a.lastSeenAt);
+    });
+
+    const lowestOffer = enrichedOffers[0];
+    const highestOffer = enrichedOffers[enrichedOffers.length - 1];
+
+    if (!lowestOffer || !highestOffer) continue;
+    if (highestOffer.price - lowestOffer.price <= 0) continue;
+
+    offersByProduct.set(productId, enrichedOffers);
+  }
+
+  const productIds = Array.from(offersByProduct.keys());
+  if (productIds.length === 0) return [];
+
+  const products = (await getProductsByIds(productIds)).filter(isAllowedProduct);
+  const productsMap = new Map(products.map((product) => [product.id, product]));
+
+  const deals: TopDealItem[] = [];
+
+  for (const [productId, offers] of offersByProduct.entries()) {
+    const product = productsMap.get(productId);
+    if (!product) continue;
+
+    const lowestOffer = offers[0];
+    const highestOffer = offers[offers.length - 1];
+
+    if (!lowestOffer || !highestOffer) continue;
+
+    const priceDifference = highestOffer.price - lowestOffer.price;
+    if (priceDifference <= 0) continue;
+
+    const lastSeenAt =
+      offers
+        .map((offer) => offer.lastSeenAt)
+        .filter(Boolean)
+        .sort((a, b) => b.localeCompare(a))[0] ?? null;
+
+    deals.push({
+      id: product.id,
+      ean: product.ean,
+      artist: product.artist,
+      title: product.title,
+      formatLabel: product.format_label,
+      coverUrl: product.cover_url,
+      lowestPrice: lowestOffer.price,
+      highestPrice: highestOffer.price,
+      priceDifference,
+      shopCount: offers.length,
+      lowestOffer,
+      highestOffer,
+      offers,
+      lastSeenAt,
+    });
+  }
+
+  return deals
+    .sort((a, b) => {
+      if (b.priceDifference !== a.priceDifference) return b.priceDifference - a.priceDifference;
+      if (b.shopCount !== a.shopCount) return b.shopCount - a.shopCount;
+      if (a.lowestPrice !== b.lowestPrice) return a.lowestPrice - b.lowestPrice;
+      return a.artist.localeCompare(b.artist);
+    })
+    .slice(0, safeLimit);
+}
+
 export type ReleaseCalendarItem = {
   id: string;
   ean: string | null;

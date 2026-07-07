@@ -1,76 +1,70 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
+import { TopDealCard } from "@/components/topdeals/top-deal-card";
+import { getTopDeals } from "@/lib/vinylofy-data";
+
+export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Topdeals",
+  title: "Top 45 Deals",
+  description: "De grootste prijsverschillen op vinyl, gevonden door Vinylofy.",
 };
 
-const demoDeals = [
-  {
-    title: "Weekend deal",
-    shop: "Demo shop",
-    text: "Een tijdelijke dealmodule voor opvallende aanbiedingen en scherpe price-drops.",
-    badge: "-18%",
-  },
-  {
-    title: "Prijsfavoriet",
-    shop: "Demo shop",
-    text: "Hier kun je straks de beste deal-tips tonen op basis van prijsverschil of opvallende daling.",
-    badge: "Hot",
-  },
-  {
-    title: "Editor’s tip",
-    shop: "Demo shop",
-    text: "Gebruik deze dummy landingspagina om later echte dealregels, filters of een curatorselectie aan te hangen.",
-    badge: "Tip",
-  },
-];
+export default async function TopDealsPage() {
+  const deals = (await getTopDeals(45))
+    .filter((deal) => deal.priceDifference > 0 && deal.lowestOffer && deal.highestOffer)
+    .slice(0, 45);
 
-export default function TopDealsPage() {
   return (
-    <main className="min-h-screen bg-neutral-50 text-neutral-950">
+    <>
       <SiteHeader />
-
-      <section className="mx-auto max-w-6xl px-6 pb-10 pt-8 md:pt-10">
-        <div className="max-w-3xl">
-          <div className="mb-3 text-xs font-semibold uppercase tracking-[0.18em] text-orange-600">
-            Dummy landingpagina
-          </div>
-          <h1 className="text-4xl font-semibold tracking-tight text-neutral-950">
-            TOPDEALS
-          </h1>
-          <p className="mt-3 text-base leading-7 text-neutral-600">
-            Bekijk hier onze top-tips voor aanbiedingen. Deze pagina is bewust dummy opgezet zodat je nu al een actiematige homepage hebt, terwijl de echte deal-logica later kan volgen.
+      <main className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+        <section className="rounded-[2rem] border border-neutral-200 bg-white p-6 shadow-sm sm:p-8">
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-neutral-500">
+            Vinylofy deals
           </p>
-        </div>
-
-        <div className="mt-8 grid gap-4 md:grid-cols-3">
-          {demoDeals.map((deal) => (
-            <article key={deal.title} className="rounded-3xl border border-neutral-200 bg-white p-5 shadow-sm">
-              <div className="mb-4 inline-flex rounded-full bg-orange-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-orange-700">
-                {deal.badge}
-              </div>
-              <h2 className="text-xl font-semibold tracking-tight text-neutral-950">{deal.title}</h2>
-              <p className="mt-1 text-sm font-medium text-neutral-500">{deal.shop}</p>
-              <p className="mt-4 text-sm leading-6 text-neutral-600">{deal.text}</p>
-            </article>
-          ))}
-        </div>
-
-        <div className="mt-10 rounded-3xl border border-dashed border-neutral-300 bg-white px-6 py-6 text-sm text-neutral-600">
-          Straks kun je hier ook filters, deal-labels en directe links naar zoekresultaten opnemen. Voor nu is dit een nette dummy bestemming vanaf de homepage.
-          <div className="mt-4">
-            <Link href="/search" className="font-medium text-orange-600 hover:text-orange-700">
-              Naar zoeken →
-            </Link>
+          <div className="mt-4 max-w-3xl">
+            <h1 className="text-3xl font-semibold tracking-tight text-neutral-950 sm:text-5xl">
+              Top 45 Deals
+            </h1>
+            <p className="mt-4 text-base leading-7 text-neutral-600 sm:text-lg">
+              De grootste prijsverschillen op vinyl, gevonden door Vinylofy.
+            </p>
+            <p className="mt-3 text-sm font-medium text-neutral-900">
+              Zelfde plaat. Zelfde EAN. Andere prijs.
+            </p>
+            <p className="mt-2 text-sm text-neutral-500">
+              We vergelijken actuele productprijzen. Verzendkosten tellen niet mee in deze ranking.
+            </p>
           </div>
-        </div>
-      </section>
+        </section>
 
+        {deals.length > 0 ? (
+          <section className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {deals.map((deal, index) => (
+              <TopDealCard key={deal.id} deal={deal} rank={index + 1} />
+            ))}
+          </section>
+        ) : (
+          <section className="mt-8 rounded-[2rem] border border-dashed border-neutral-300 bg-white p-8 text-center">
+            <p className="text-lg font-semibold text-neutral-950">
+              Nog niet genoeg actuele prijsverschillen gevonden.
+            </p>
+            <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-neutral-500">
+              Zodra meerdere aanbieders dezelfde plaat actueel met een prijs tonen, verschijnt hier de Top 45.
+            </p>
+            <Link
+              href="/search"
+              className="mt-6 inline-flex rounded-full bg-neutral-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-neutral-800"
+            >
+              Zoek vinyl
+            </Link>
+          </section>
+        )}
+      </main>
       <SiteFooter />
-    </main>
+    </>
   );
 }
