@@ -12,9 +12,6 @@ function formatOfferCount(count: number): string {
   return count === 1 ? "1 aanbieder" : `${count} aanbieders`;
 }
 
-function formatAvailabilityNote(availability: TopDealItem["lowestOffer"]["availability"]): string {
-  return availability === "unknown" ? " · voorraad onbekend" : "";
-}
 
 export function TopDealCard({ deal, rank }: TopDealCardProps) {
   const coverSrc = deal.coverUrl ?? COVER_PLACEHOLDER;
@@ -65,14 +62,12 @@ export function TopDealCard({ deal, rank }: TopDealCardProps) {
             <dt className="text-neutral-500">Laagste prijs</dt>
             <dd className="truncate text-right font-medium text-neutral-900">
               {deal.lowestOffer.name} · {formatEuro(deal.lowestOffer.price)}
-              {formatAvailabilityNote(deal.lowestOffer.availability)}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-3">
             <dt className="text-neutral-500">Hoogste gevonden</dt>
             <dd className="truncate text-right font-medium text-neutral-900">
               {deal.highestOffer.name} · {formatEuro(deal.highestOffer.price)}
-              {formatAvailabilityNote(deal.highestOffer.availability)}
             </dd>
           </div>
         </dl>

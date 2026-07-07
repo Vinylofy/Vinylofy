@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { SiteFooter } from "@/components/site-footer";
+import { SearchControls } from "@/components/search/search-controls";
 import { SiteHeader } from "@/components/site-header";
 import { TopDealCard } from "@/components/topdeals/top-deal-card";
 import { getTopDeals } from "@/lib/vinylofy-data";
@@ -19,7 +20,7 @@ export default async function TopDealsPage() {
 
   return (
     <>
-      <SiteHeader />
+      <SiteHeader searchSlot={<SearchControls initialQuery="" />} />
       <main className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         <section className="rounded-[2rem] border border-neutral-200 bg-white p-6 shadow-sm sm:p-8">
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-neutral-500">
