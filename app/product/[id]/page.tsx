@@ -44,12 +44,14 @@ export default async function ProductDetailPage({ params }: ProductPageProps) {
   const routeId = typeof resolvedParams?.id === "string" ? resolvedParams.id : "";
 
   const product = await getProductDetail(routeId);
-  const priceHistory = product ? await getProductPriceHistory(product.id, 30) : []; const todayIsoDay = new Date().toISOString().slice(0, 10);
-  const chartPoints = mergeCurrentPriceIntoHistory(priceHistory, product);
 
   if (!product) {
     notFound();
   }
+
+  const priceHistory = await getProductPriceHistory(product.id, 30);
+  const todayIsoDay = new Date().toISOString().slice(0, 10);
+  const chartPoints = mergeCurrentPriceIntoHistory(priceHistory, product);
 
   return (
     <div className="min-h-screen bg-[#f8f7f4] text-neutral-900">
