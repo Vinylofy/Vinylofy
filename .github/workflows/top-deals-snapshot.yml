@@ -1,0 +1,88 @@
+name: Top Deals Snapshot
+
+on:
+  schedule:
+    - cron: "12 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      current_window_hours:
+        description: "Only use prices seen within this many hours"
+        required: true
+        default: "48"
+        type: string
+      limit:
+        description: "Number of deals to snapshot"
+        required: true
+        default: "45"
+        type: string
+      write:
+        description: "Actually refresh snapshot rows"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: top-deals-snapshot-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install "psycopg[binary]" python-dotenv
+
+      - name: Validate script
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/maintenance/refresh_top_deals_snapshot.py
+          python scripts/maintenance/refresh_top_deals_snapshot.py --help >/dev/null
+
+      - name: Refresh snapshot
+        run: |
+          set -euo pipefail
+
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "DATABASE_URL secret ontbreekt."
+            exit 1
+          fi
+
+          CURRENT_WINDOW_HOURS="${{ inputs.current_window_hours }}"
+          LIMIT="${{ inputs.limit }}"
+          WRITE="${{ inputs.write }}"
+
+          if [ -z "$CURRENT_WINDOW_HOURS" ]; then
+            CURRENT_WINDOW_HOURS="48"
+          fi
+
+          if [ -z "$LIMIT" ]; then
+            LIMIT="45"
+          fi
+
+          ARGS=(--current-window-hours "$CURRENT_WINDOW_HOURS" --limit "$LIMIT")
+
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+            ARGS+=(--write)
+          elif [ "$WRITE" = "true" ]; then
+            ARGS+=(--write)
+          fi
+
+          python -u scripts/maintenance/refresh_top_deals_snapshot.py "${ARGS[@]}"

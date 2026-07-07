@@ -678,223 +678,128 @@ export type TopDealItem = {
   lastSeenAt: string | null;
 };
 
-type TopDealCandidate = {
-  productId: string;
-  lowestOffer: SearchShopOffer;
-  highestOffer: SearchShopOffer;
-  offers: SearchShopOffer[];
-  lowestPrice: number;
-  highestPrice: number;
-  priceDifference: number;
-  shopCount: number;
-  lastSeenAt: string | null;
+type TopDealsSnapshotRow = {
+  rank: number;
+  product_id: string;
+  ean: string | null;
+  artist: string;
+  title: string;
+  format_label: string | null;
+  cover_url: string | null;
+  lowest_price: number | string;
+  highest_price: number | string;
+  price_difference: number | string;
+  shop_count: number;
+  lowest_offer: unknown;
+  highest_offer: unknown;
+  offers: unknown;
+  last_seen_at: string | null;
 };
 
-async function getProductsByIdsInChunks(ids: string[], chunkSize = 100): Promise<ProductRow[]> {
-  const products: ProductRow[] = [];
+function isSnapshotOffer(value: unknown): value is SearchShopOffer {
+  if (!value || typeof value !== "object") return false;
 
-  for (let index = 0; index < ids.length; index += chunkSize) {
-    const chunk = ids.slice(index, index + chunkSize);
-    products.push(...(await getProductsByIds(chunk)));
-  }
+  const offer = value as Partial<SearchShopOffer>;
 
-  return products;
+  return (
+    typeof offer.name === "string" &&
+    typeof offer.domain === "string" &&
+    typeof offer.shopId === "string" &&
+    typeof offer.price === "number" &&
+    typeof offer.productUrl === "string" &&
+    typeof offer.lastSeenAt === "string" &&
+    (offer.availability === "in_stock" || offer.availability === "unknown")
+  );
+}
+
+function normalizeSnapshotOffer(value: unknown): SearchShopOffer | null {
+  if (!value || typeof value !== "object") return null;
+
+  const raw = value as Record<string, unknown>;
+  const price = toNumber(raw.price as number | string | null | undefined);
+  const availability = normalizeOfferAvailability(
+    typeof raw.availability === "string" ? raw.availability : null,
+  );
+
+  const offer: SearchShopOffer = {
+    name: typeof raw.name === "string" ? raw.name : "",
+    domain: typeof raw.domain === "string" ? raw.domain : "",
+    shopId: typeof raw.shopId === "string" ? raw.shopId : "",
+    price: price ?? 0,
+    productUrl: typeof raw.productUrl === "string" ? raw.productUrl : "",
+    lastSeenAt: typeof raw.lastSeenAt === "string" ? raw.lastSeenAt : "",
+    availability,
+    estimatedShippingPrice: null,
+    estimatedTotalPrice: null,
+    freeShippingApplied: false,
+    shippingNote: null,
+    shippingConfidence: null,
+    freeShippingThresholdPrice: null,
+  };
+
+  return isSnapshotOffer(offer) ? offer : null;
 }
 
 export async function getTopDeals(limit = 45): Promise<TopDealItem[]> {
   const supabase = createSupabaseServerClient();
   const safeLimit = Math.max(1, Math.min(limit, 45));
-  const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
 
-  const pricePageSize = 1000;
-  const maxPriceRows = 50000;
-  const priceRows: PriceRow[] = [];
+  const { data, error } = await supabase
+    .from("top_deals_snapshot")
+    .select(
+      "rank, product_id, ean, artist, title, format_label, cover_url, lowest_price, highest_price, price_difference, shop_count, lowest_offer, highest_offer, offers, last_seen_at",
+    )
+    .eq("snapshot_key", "current")
+    .order("rank", { ascending: true })
+    .limit(safeLimit);
 
-  for (let offset = 0; offset < maxPriceRows; offset += pricePageSize) {
-    const { data, error } = await supabase
-      .from("prices")
-      .select("product_id, price, product_url, last_seen_at, availability, shop_id, shops(name, domain)")
-      .eq("is_active", true)
-      .in("availability", ["in_stock", "unknown"])
-      .gte("last_seen_at", cutoff)
-      .order("product_id", { ascending: true })
-      .order("price", { ascending: true })
-      .order("last_seen_at", { ascending: false })
-      .range(offset, offset + pricePageSize - 1);
+  if (error) throw error;
 
-    if (error) throw error;
+  const rows = (data ?? []) as TopDealsSnapshotRow[];
 
-    const page = (data ?? []) as PriceRow[];
-    priceRows.push(...page);
+  return rows.flatMap((row) => {
+    const lowestPrice = toNumber(row.lowest_price);
+    const highestPrice = toNumber(row.highest_price);
+    const priceDifference = toNumber(row.price_difference);
+    const lowestOffer = normalizeSnapshotOffer(row.lowest_offer);
+    const highestOffer = normalizeSnapshotOffer(row.highest_offer);
+    const offers = Array.isArray(row.offers)
+      ? row.offers.flatMap((offer) => {
+          const normalized = normalizeSnapshotOffer(offer);
+          return normalized ? [normalized] : [];
+        })
+      : [];
 
-    if (page.length < pricePageSize) break;
-  }
-
-  const grouped = new Map<string, SearchShopOffer[]>();
-
-  for (const row of priceRows) {
-    const shop = normalizeShopRelation(row.shops);
-    const price = toNumber(row.price);
-    const availability = normalizeOfferAvailability(row.availability);
-
-    if (!shop) continue;
-    if (price === null || price <= 0) continue;
-    if (availability !== "in_stock" && availability !== "unknown") continue;
-
-    const offer: SearchShopOffer = {
-      name: shop.name,
-      domain: shop.domain,
-      shopId: row.shop_id,
-      price,
-      productUrl: row.product_url,
-      lastSeenAt: row.last_seen_at,
-      availability,
-      estimatedShippingPrice: null,
-      estimatedTotalPrice: null,
-      freeShippingApplied: false,
-      shippingNote: null,
-      shippingConfidence: null,
-      freeShippingThresholdPrice: null,
-    };
-
-    const existing = grouped.get(row.product_id) ?? [];
-    existing.push(offer);
-    grouped.set(row.product_id, existing);
-  }
-
-  const shippingRules = await getShippingRulesMap();
-  const candidates: TopDealCandidate[] = [];
-
-  for (const [productId, offers] of grouped.entries()) {
-    const bestOfferByShop = new Map<string, SearchShopOffer>();
-
-    for (const offer of offers) {
-      const previous = bestOfferByShop.get(offer.shopId);
-
-      if (
-        !previous ||
-        offer.price < previous.price ||
-        (offer.price === previous.price && offer.lastSeenAt.localeCompare(previous.lastSeenAt) > 0)
-      ) {
-        bestOfferByShop.set(offer.shopId, offer);
-      }
+    if (
+      lowestPrice === null ||
+      highestPrice === null ||
+      priceDifference === null ||
+      !lowestOffer ||
+      !highestOffer ||
+      offers.length < 2
+    ) {
+      return [];
     }
 
-    const dedupedOffers = Array.from(bestOfferByShop.values()).sort((a, b) => {
-      if (a.price !== b.price) return a.price - b.price;
-      return b.lastSeenAt.localeCompare(a.lastSeenAt);
-    });
-
-    if (dedupedOffers.length < 2) continue;
-
-    const enrichedOffers = enrichOffersWithShipping(dedupedOffers, shippingRules).sort((a, b) => {
-      if (a.price !== b.price) return a.price - b.price;
-      return b.lastSeenAt.localeCompare(a.lastSeenAt);
-    });
-
-    const lowestOffer = enrichedOffers[0];
-    const highestOffer = enrichedOffers[enrichedOffers.length - 1];
-
-    if (!lowestOffer || !highestOffer) continue;
-
-    const priceDifference = highestOffer.price - lowestOffer.price;
-    if (priceDifference <= 0) continue;
-
-    const lastSeenAt =
-      enrichedOffers
-        .map((offer) => offer.lastSeenAt)
-        .filter(Boolean)
-        .sort((a, b) => b.localeCompare(a))[0] ?? null;
-
-    candidates.push({
-      productId,
-      lowestOffer,
-      highestOffer,
-      offers: enrichedOffers,
-      lowestPrice: lowestOffer.price,
-      highestPrice: highestOffer.price,
-      priceDifference,
-      shopCount: enrichedOffers.length,
-      lastSeenAt,
-    });
-  }
-
-  const rankedCandidates = candidates
-    .sort((a, b) => {
-      if (b.priceDifference !== a.priceDifference) return b.priceDifference - a.priceDifference;
-      if (b.shopCount !== a.shopCount) return b.shopCount - a.shopCount;
-      if (a.lowestPrice !== b.lowestPrice) return a.lowestPrice - b.lowestPrice;
-      return a.productId.localeCompare(b.productId);
-    })
-    .slice(0, Math.max(safeLimit * 8, 300));
-
-  if (rankedCandidates.length === 0) return [];
-
-  const candidateProductIds = rankedCandidates.map((candidate) => candidate.productId);
-  const products = (await getProductsByIdsInChunks(candidateProductIds)).filter(isAllowedProduct);
-  const productsMap = new Map(products.map((product) => [product.id, product]));
-
-  const deals: TopDealItem[] = [];
-
-  for (const candidate of rankedCandidates) {
-    const product = productsMap.get(candidate.productId);
-    if (!product) continue;
-
-    deals.push({
-      id: product.id,
-      ean: product.ean,
-      artist: product.artist,
-      title: product.title,
-      formatLabel: product.format_label,
-      coverUrl: product.cover_url,
-      lowestPrice: candidate.lowestPrice,
-      highestPrice: candidate.highestPrice,
-      priceDifference: candidate.priceDifference,
-      shopCount: candidate.shopCount,
-      lowestOffer: candidate.lowestOffer,
-      highestOffer: candidate.highestOffer,
-      offers: candidate.offers,
-      lastSeenAt: candidate.lastSeenAt,
-    });
-
-    if (deals.length >= safeLimit) break;
-  }
-
-  return deals;
-}
-
-
-const TOP_DEALS_CACHE_MS = 5 * 60 * 1000;
-
-let topDealsCache:
-  | {
-      limit: number;
-      expiresAt: number;
-      deals: TopDealItem[];
-    }
-  | null = null;
-
-export async function getCachedTopDeals(limit = 45): Promise<TopDealItem[]> {
-  const safeLimit = Math.max(1, Math.min(limit, 45));
-  const now = Date.now();
-
-  if (
-    topDealsCache &&
-    topDealsCache.limit === safeLimit &&
-    topDealsCache.expiresAt > now
-  ) {
-    return topDealsCache.deals;
-  }
-
-  const deals = await getTopDeals(safeLimit);
-
-  topDealsCache = {
-    limit: safeLimit,
-    expiresAt: now + TOP_DEALS_CACHE_MS,
-    deals,
-  };
-
-  return deals;
+    return [
+      {
+        id: row.product_id,
+        ean: row.ean,
+        artist: row.artist,
+        title: row.title,
+        formatLabel: row.format_label,
+        coverUrl: row.cover_url,
+        lowestPrice,
+        highestPrice,
+        priceDifference,
+        shopCount: row.shop_count,
+        lowestOffer,
+        highestOffer,
+        offers,
+        lastSeenAt: row.last_seen_at,
+      },
+    ];
+  });
 }
 
 export type ReleaseCalendarItem = {
