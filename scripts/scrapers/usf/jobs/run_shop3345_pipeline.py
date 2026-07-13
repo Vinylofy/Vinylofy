@@ -284,7 +284,15 @@ def main() -> int:
             flush=True,
         )
 
-    if args.run_detail:
+    if args.run_detail and not args.write:
+        print(
+            "[SHOP3345-PIPELINE] SKIP detail/stage/promote/quarantine: "
+            "listing-dry-run schrijft geen registryrecords; downstream zou "
+            "daarom altijd een lege queue zien.",
+            flush=True,
+        )
+
+    if args.run_detail and args.write:
         run_step(
             "detail_shop3345",
             add_write(
@@ -306,7 +314,10 @@ def main() -> int:
             ),
         )
 
-    if args.run_detail or args.run_stage_promote:
+    if (
+        (args.run_detail and args.write)
+        or args.run_stage_promote
+    ):
         if not args.skip_stage:
             run_step(
                 "stage_shop3345",

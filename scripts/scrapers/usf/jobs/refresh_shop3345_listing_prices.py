@@ -102,7 +102,12 @@ def normalize_product_url(value: object) -> str:
 
     path = parsed.path.rstrip("/")
 
-    if "/products/" not in path:
+    # De collectie kan afwisselend /nl/products/... en /products/...
+    # teruggeven. Intern gebruiken we één canonieke URL.
+    if path.startswith("/nl/products/"):
+        path = path[3:]
+
+    if not path.startswith("/products/"):
         return ""
 
     return f"https://3345.nl{path}"
@@ -161,8 +166,18 @@ def normalize_price(value: object) -> str | None:
 
 
 def find_product_card(anchor: Tag) -> Tag | None:
-    for selector in CARD_SELECTORS:
-        parent = anchor.find_parent(selector)
+    """Vind de kleinste volledige Shopify-productkaart.
+
+    Sommige binnenste wrappers bevatten alleen titel en formaat. Prijs,
+    vendor en quick-add staan in een hogere wrapper. We lopen daarom omhoog
+    totdat dezelfde unieke product-URL én commerciële kaartinformatie
+    aanwezig zijn.
+    """
+    fallback: Tag | None = None
+
+    for depth, parent in enumerate(anchor.parents):
+        if depth > 12:
+            break
 
         if not isinstance(parent, Tag):
             continue
@@ -174,26 +189,43 @@ def find_product_card(anchor: Tag) -> Tag | None:
         }
         product_urls.discard("")
 
-        # Een kaart moet bij precies één product horen. Dit voorkomt dat een
-        # algemene containerprijs of verzenddrempel als productprijs eindigt.
-        if len(product_urls) == 1:
+        if len(product_urls) != 1:
+            continue
+
+        fallback = parent
+
+        parent_text = clean(
+            parent.get_text(" ", strip=True)
+        ).lower()
+
+        has_price = bool(
+            re.search(
+                r"(?:€|eur)\s*\d+(?:[.,]\d{1,2})?",
+                parent_text,
+                flags=re.IGNORECASE,
+            )
+        )
+
+        has_availability = any(
+            marker in parent_text
+            for marker in (
+                "add to cart",
+                "add to chart",
+                "toevoegen aan winkelwagen",
+                "in winkelwagen",
+                "sold out",
+                "out of stock",
+                "coming soon",
+                "pre-order",
+                "pre order",
+                "preorder",
+            )
+        )
+
+        if has_price or has_availability:
             return parent
 
-    parent = anchor.parent
-
-    if isinstance(parent, Tag):
-        product_urls = {
-            normalize_product_url(node.get("href"))
-            for node in parent.select("a[href*='/products/']")
-            if isinstance(node, Tag)
-        }
-        product_urls.discard("")
-
-        if len(product_urls) == 1:
-            return parent
-
-    return None
-
+    return fallback
 
 def node_is_hidden_or_disabled(node: Tag) -> bool:
     classes = {
@@ -213,6 +245,33 @@ def node_is_hidden_or_disabled(node: Tag) -> bool:
 
 
 def has_active_add_to_cart(card: Tag) -> bool:
+    card_text = clean(
+        card.get_text(" ", strip=True)
+    ).lower()
+
+    # Op 3345 kan de quick-addtekst buiten het feitelijke button-element
+    # staan, maar wel binnen dezelfde productkaart.
+    if any(
+        marker in card_text
+        for marker in (
+            "add to cart",
+            "add to chart",
+            "toevoegen aan winkelwagen",
+            "in winkelwagen",
+        )
+    ):
+        if not any(
+            marker in card_text
+            for marker in (
+                "sold out",
+                "out of stock",
+                "uitverkocht",
+                "niet op voorraad",
+                "coming soon",
+            )
+        ):
+            return True
+
     selectors = (
         "form[action*='/cart/add'] button",
         "button[name='add']",
@@ -455,6 +514,8 @@ def extract_price(card: Tag) -> str | None:
         flags=re.IGNORECASE,
     )
 
+    # In een correcte unieke kaart is de eerste zichtbare europrijs de
+    # productprijs. De algemene €80-verzenddrempel valt buiten de kaart.
     for match in matches:
         price = normalize_price(match)
 
@@ -493,6 +554,7 @@ def parse_listing_page(
     offers_by_url: dict[str, ListingOffer] = {}
 
     position = 0
+    examined_urls: set[str] = set()
 
     for anchor in soup.select("a[href*='/products/']"):
         if not isinstance(anchor, Tag):
@@ -500,8 +562,12 @@ def parse_listing_page(
 
         source_url = normalize_product_url(anchor.get("href"))
 
-        if not source_url or source_url in links_by_url:
+        if not source_url or source_url in examined_urls:
             continue
+
+        # Ook niet-LP-producten direct markeren als onderzocht, zodat meerdere
+        # afbeelding-/titelanchors niet tot dubbele skipregels leiden.
+        examined_urls.add(source_url)
 
         card = find_product_card(anchor)
 
@@ -514,6 +580,14 @@ def parse_listing_page(
             continue
 
         artist = extract_artist(card)
+
+        # Fallback voor themes waar vendor niet via een eigen class staat.
+        if not artist and " - " in title:
+            possible_artist, possible_title = title.split(" - ", 1)
+
+            if clean(possible_artist) and clean(possible_title):
+                artist = clean(possible_artist)
+
         card_text = clean(card.get_text(" ", strip=True))
         listing_format = extract_listing_format(card)
 
