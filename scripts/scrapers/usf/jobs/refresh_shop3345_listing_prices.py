@@ -33,7 +33,7 @@ SHOP_DOMAIN = "3345.nl"
 SHOP_COUNTRY = "NL"
 
 BASE_URL = "https://3345.nl"
-COLLECTION_URL = "https://3345.nl/collections/all"
+COLLECTION_URL = "https://3345.nl/nl/collections/all"
 
 HEADERS = {
     "User-Agent": (
@@ -45,7 +45,7 @@ HEADERS = {
         "text/html,application/xhtml+xml,application/xml;q=0.9,"
         "image/avif,image/webp,*/*;q=0.8"
     ),
-    "Accept-Language": "en-US,en;q=0.9,nl;q=0.8",
+    "Accept-Language": "nl-NL,nl;q=0.9,en;q=0.8",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
 }
