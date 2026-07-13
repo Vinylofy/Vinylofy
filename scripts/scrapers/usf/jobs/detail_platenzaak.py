@@ -88,13 +88,25 @@ def get_eligible_links(limit: int) -> list[EligibleLink]:
                     source_url,
                     source_product_id,
                     payload,
-                    coalesce(ean_enrichment_status, 'pending') as ean_status,
-                    coalesce(ean_content_miss_count, 0) as content_miss_count,
-                    coalesce(ean_technical_failure_count, 0) as technical_failure_count
+                    coalesce(
+                        ean_enrichment_status,
+                        'pending'
+                    ) as ean_status,
+                    coalesce(
+                        ean_content_miss_count,
+                        0
+                    ) as content_miss_count,
+                    coalesce(
+                        ean_technical_failure_count,
+                        0
+                    ) as technical_failure_count
                 from public.shop_product_links
                 where shop_id = %s
                   and status = 'active'
-                  and coalesce(ean_enrichment_status, 'pending') in (
+                  and coalesce(
+                      ean_enrichment_status,
+                      'pending'
+                  ) in (
                       'pending',
                       'not_found',
                       'technical_error'
@@ -104,19 +116,46 @@ def get_eligible_links(limit: int) -> list[EligibleLink]:
                       or ean_next_attempt_at <= now()
                   )
                 order by
-                    case coalesce(ean_enrichment_status, 'pending')
+                    case
+                        when
+                            payload->>'detail_priority' = 'high'
+                            and nullif(
+                                payload->>'platenzaak_latest_seen_at',
+                                ''
+                            )::timestamptz
+                                >= now() - interval '14 days'
+                        then 0
+                        else 1
+                    end,
+                    case coalesce(
+                        ean_enrichment_status,
+                        'pending'
+                    )
                         when 'pending' then 1
                         when 'technical_error' then 2
                         when 'not_found' then 3
                         else 9
                     end,
+                    case
+                        when
+                            payload->>'detail_priority' = 'high'
+                            and nullif(
+                                payload->>'platenzaak_latest_seen_at',
+                                ''
+                            )::timestamptz
+                                >= now() - interval '14 days'
+                        then nullif(
+                            payload->>'platenzaak_latest_page',
+                            ''
+                        )::integer
+                        else null
+                    end asc nulls last,
                     ean_next_attempt_at asc nulls first,
                     first_seen_at asc
                 limit %s
                 """,
                 (SHOP_ID, limit),
             )
-
             rows = cur.fetchall()
 
     return [
@@ -131,7 +170,6 @@ def get_eligible_links(limit: int) -> list[EligibleLink]:
         )
         for row in rows
     ]
-
 
 def claim_link(link_id: str) -> EligibleLink | None:
     database_url = load_database_url()
