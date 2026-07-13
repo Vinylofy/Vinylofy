@@ -59,6 +59,10 @@ CARD_SELECTORS = (
 )
 
 PRICE_SELECTORS = (
+    # Actuele 3345-collectie:
+    # <div data-product-bottom> ... <div>€24,99</div>
+    "[data-product-bottom]",
+    ".card__product-bottom",
     ".price__sale .price-item--sale",
     ".price-item--sale",
     ".price__current",
@@ -166,17 +170,17 @@ def normalize_price(value: object) -> str | None:
 
 
 def find_product_card(anchor: Tag) -> Tag | None:
-    """Vind de kleinste volledige Shopify-productkaart.
+    """Vind de volledige 3345-productkaart.
 
-    Sommige binnenste wrappers bevatten alleen titel en formaat. Prijs,
-    vendor en quick-add staan in een hogere wrapper. We lopen daarom omhoog
-    totdat dezelfde unieke product-URL én commerciële kaartinformatie
-    aanwezig zijn.
+    Titel, vendor, formaat, prijs en quick-add kunnen in verschillende
+    zusterblokken binnen dezelfde kaart staan. Daarom stoppen we niet bij
+    de eerste ancestor met alleen Add to cart. We geven voorrang aan de
+    kleinste unieke productcontainer die [data-product-bottom] bevat.
     """
-    fallback: Tag | None = None
+    unique_candidates: list[Tag] = []
 
     for depth, parent in enumerate(anchor.parents):
-        if depth > 12:
+        if depth > 14:
             break
 
         if not isinstance(parent, Tag):
@@ -192,8 +196,15 @@ def find_product_card(anchor: Tag) -> Tag | None:
         if len(product_urls) != 1:
             continue
 
-        fallback = parent
+        unique_candidates.append(parent)
 
+        # Dit is de concrete commerciële onderkant uit de actuele
+        # 3345-collectiebron: formaat en prijs staan hierin.
+        if parent.select_one("[data-product-bottom]"):
+            return parent
+
+    # Tweede voorkeur: een volledige card-wrapper met prijs én CTA.
+    for parent in unique_candidates:
         parent_text = clean(
             parent.get_text(" ", strip=True)
         ).lower()
@@ -222,10 +233,14 @@ def find_product_card(anchor: Tag) -> Tag | None:
             )
         )
 
-        if has_price or has_availability:
+        if has_price and has_availability:
             return parent
 
-    return fallback
+    # Alleen als noodfallback de grootste nog unieke productcontainer.
+    if unique_candidates:
+        return unique_candidates[-1]
+
+    return None
 
 def node_is_hidden_or_disabled(node: Tag) -> bool:
     classes = {
@@ -373,6 +388,8 @@ def detect_secondhand(
 
 def extract_artist(card: Tag) -> str | None:
     selectors = (
+        ".card-vendor-wrapper .vendor-link",
+        "a.vendor-link",
         "[data-vendor]",
         ".product-card__vendor",
         ".card-information .caption-with-letter-spacing",
@@ -483,7 +500,52 @@ def extract_listing_format(card: Tag) -> str | None:
 
 
 def extract_price(card: Tag) -> str | None:
-    # Prijzen worden uitsluitend binnen de bewezen unieke productkaart gelezen.
+    """Lees uitsluitend de productprijs uit de unieke 3345-kaart."""
+
+    # Primaire actuele bron:
+    #
+    # <div class="card__product-bottom ..." data-product-bottom>
+    #   <div>7"</div>
+    #   <div>€24,99</div>
+    # </div>
+    product_bottom = card.select_one(
+        "[data-product-bottom]"
+    )
+
+    if isinstance(product_bottom, Tag):
+        bottom_text = clean(
+            product_bottom.get_text(" ", strip=True)
+        )
+
+        match = re.search(
+            r"(?:€|EUR)\s*(\d+(?:[.,]\d{1,2})?)",
+            bottom_text,
+            flags=re.IGNORECASE,
+        )
+
+        if match:
+            return normalize_price(match.group(1))
+
+    # Ondersteun ook dezelfde class wanneer het data-attribuut wijzigt.
+    product_bottom = card.select_one(
+        ".card__product-bottom"
+    )
+
+    if isinstance(product_bottom, Tag):
+        bottom_text = clean(
+            product_bottom.get_text(" ", strip=True)
+        )
+
+        match = re.search(
+            r"(?:€|EUR)\s*(\d+(?:[.,]\d{1,2})?)",
+            bottom_text,
+            flags=re.IGNORECASE,
+        )
+
+        if match:
+            return normalize_price(match.group(1))
+
+    # Bestaande Shopify-prijsstructuren als gecontroleerde fallback.
     for selector in PRICE_SELECTORS:
         for node in card.select(selector):
             if not isinstance(node, Tag):
@@ -500,30 +562,68 @@ def extract_price(card: Tag) -> str | None:
             )
 
             for value in values:
-                price = normalize_price(value)
+                value_text = clean(value)
 
-                if price:
-                    return price
+                match = re.search(
+                    r"(?:€|EUR)\s*(\d+(?:[.,]\d{1,2})?)",
+                    value_text,
+                    flags=re.IGNORECASE,
+                )
 
-    # Alleen als laatste lokale fallback: valuta binnen dezelfde unieke kaart.
-    card_text = clean(card.get_text(" ", strip=True))
+                if match:
+                    return normalize_price(
+                        match.group(1)
+                    )
 
-    matches = re.findall(
-        r"(?:€|EUR)\s*(\d+(?:[.,]\d{1,2})?)",
-        card_text,
-        flags=re.IGNORECASE,
+                # Alleen expliciete prijsattributen mogen zonder €-teken.
+                if (
+                    node.get("data-product-price") is not None
+                    or node.get("data-price") is not None
+                    or node.get("content") is not None
+                ):
+                    price = normalize_price(value)
+
+                    if price:
+                        return price
+
+    # Laatste fallback blijft lokaal binnen de bewezen unieke productkaart.
+    card_text = clean(
+        card.get_text(" ", strip=True)
     )
 
-    # In een correcte unieke kaart is de eerste zichtbare europrijs de
-    # productprijs. De algemene €80-verzenddrempel valt buiten de kaart.
-    for match in matches:
-        price = normalize_price(match)
+    matches = list(
+        re.finditer(
+            r"(?:€|EUR)\s*(\d+(?:[.,]\d{1,2})?)",
+            card_text,
+            flags=re.IGNORECASE,
+        )
+    )
 
-        if price:
-            return price
+    for match in matches:
+        context = clean(
+            card_text[
+                max(0, match.start() - 80):
+                min(len(card_text), match.end() + 80)
+            ]
+        ).lower()
+
+        # Nooit de algemene verzenddrempel als productprijs gebruiken.
+        if any(
+            marker in context
+            for marker in (
+                "free shipping",
+                "gratis verzending",
+                "orders over",
+                "bestellingen vanaf",
+                "shipping",
+                "verzend",
+            )
+        ):
+            continue
+
+        return normalize_price(match.group(1))
 
     return None
-
 
 def public_availability(
     *,
