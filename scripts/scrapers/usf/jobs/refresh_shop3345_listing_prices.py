@@ -171,6 +171,182 @@ def normalize_price(value: object) -> str | None:
     return f"{whole}.{cents[:2].ljust(2, '0')}"
 
 
+
+def fetch_collection_json_prices(
+    session: requests.Session,
+    *,
+    html: str,
+    page: int,
+    debug: bool,
+) -> dict[str, str]:
+    """Lees prijzen uit dezelfde Shopify-collectie, niet uit detail."""
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    needed_urls = {
+        normalize_product_url(anchor.get("href"))
+        for anchor in soup.select("a[href*='/products/']")
+        if isinstance(anchor, Tag)
+    }
+    needed_urls.discard("")
+
+    price_by_url: dict[str, str] = {}
+    attempts: list[dict[str, object]] = []
+
+    json_bases = (
+        f"{COLLECTION_URL}/products.json",
+        f"{BASE_URL}/collections/all/products.json",
+    )
+
+    candidate_pages = tuple(
+        dict.fromkeys(
+            (
+                max(1, page),
+                max(1, page - 1),
+                page + 1,
+            )
+        )
+    )
+
+    for json_base in json_bases:
+        for json_page in candidate_pages:
+            query = urlencode(
+                {
+                    "limit": 50,
+                    "page": json_page,
+                }
+            )
+            json_url = f"{json_base}?{query}"
+
+            try:
+                response = session.get(
+                    json_url,
+                    headers={
+                        "Accept": "application/json",
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Referer": listing_url_for_page(page),
+                    },
+                    timeout=45,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except (
+                requests.RequestException,
+                ValueError,
+                TypeError,
+            ) as exc:
+                attempts.append(
+                    {
+                        "url": json_url,
+                        "error": str(exc),
+                    }
+                )
+                continue
+
+            products = payload.get("products")
+
+            if not isinstance(products, list):
+                attempts.append(
+                    {
+                        "url": json_url,
+                        "error": "products-lijst ontbreekt",
+                    }
+                )
+                continue
+
+            matched_here = 0
+
+            for product in products:
+                if not isinstance(product, dict):
+                    continue
+
+                handle = clean(product.get("handle"))
+                if not handle:
+                    continue
+
+                source_url = normalize_product_url(
+                    f"/products/{handle}"
+                )
+
+                if (
+                    not source_url
+                    or source_url not in needed_urls
+                ):
+                    continue
+
+                variants = product.get("variants")
+
+                if not isinstance(variants, list):
+                    continue
+
+                available_prices: list[str] = []
+                all_prices: list[str] = []
+
+                for variant in variants:
+                    if not isinstance(variant, dict):
+                        continue
+
+                    price = normalize_price(
+                        variant.get("price")
+                    )
+
+                    if price is None:
+                        continue
+
+                    all_prices.append(price)
+
+                    if variant.get("available") is True:
+                        available_prices.append(price)
+
+                candidates = available_prices or all_prices
+
+                if not candidates:
+                    continue
+
+                selected_price = min(
+                    candidates,
+                    key=lambda value: int(
+                        value.replace(".", "")
+                    ),
+                )
+
+                if source_url not in price_by_url:
+                    matched_here += 1
+
+                price_by_url[source_url] = selected_price
+
+            attempts.append(
+                {
+                    "url": json_url,
+                    "products": len(products),
+                    "matched": matched_here,
+                }
+            )
+
+            if needed_urls.issubset(price_by_url):
+                break
+
+        if needed_urls.issubset(price_by_url):
+            break
+
+    print(
+        "[3345-COLLECTION-JSON]",
+        {
+            "page": page,
+            "needed": len(needed_urls),
+            "prices": len(price_by_url),
+            "sample": next(
+                iter(price_by_url.items()),
+                None,
+            ),
+            "attempts": attempts if debug else len(attempts),
+        },
+        flush=True,
+    )
+
+    return price_by_url
+
+
 def find_product_card(anchor: Tag) -> Tag | None:
     """Vind de volledige 3345-productkaart.
 
@@ -649,6 +825,7 @@ def parse_listing_page(
     listing_url: str,
     seen_at: datetime,
     debug: bool,
+    listing_prices: dict[str, str] | None = None,
 ) -> tuple[list[DiscoveredLink], list[ListingOffer]]:
     soup = BeautifulSoup(html, "html.parser")
 
@@ -722,7 +899,11 @@ def parse_listing_page(
             secondhand=secondhand,
             add_to_cart=add_to_cart,
         )
-        price = extract_price(card)
+        json_price = (
+            listing_prices or {}
+        ).get(source_url)
+
+        price = json_price or extract_price(card)
 
         position += 1
 
@@ -737,6 +918,11 @@ def parse_listing_page(
             "price": price,
             "currency": "EUR",
             "price_source": "listing",
+            "listing_price_transport": (
+                "collection_products_json"
+                if json_price is not None
+                else "html"
+            ),
             "source_availability": source_availability,
             "availability": availability,
             "listing_cta_add_to_cart": add_to_cart,
@@ -1028,12 +1214,20 @@ def main() -> int:
 
         consecutive_failures = 0
 
+        listing_prices = fetch_collection_json_prices(
+            session,
+            html=response.text,
+            page=page,
+            debug=args.debug,
+        )
+
         links, offers = parse_listing_page(
             response.text,
             page=page,
             listing_url=listing_url,
             seen_at=run_started_at,
             debug=args.debug,
+            listing_prices=listing_prices,
         )
 
         signature = tuple(
