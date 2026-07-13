@@ -114,11 +114,14 @@ def source_product_id_from_url(source_url: str) -> str | None:
 
 
 def listing_url_for_page(page: int) -> str:
+    """Gebruik de werkende Shopify-collectiepaginering.
+
+    De eerder opgegeven 3345-filterparameters geven momenteel HTTP 404.
+    Daarom halen we de gewone collectie op en dwingen we formaat en
+    publiceerbaarheid lokaal per productkaart af.
+    """
     query = urlencode(
         {
-            "format": "_Format_LP",
-            "sort": "price-descending",
-            "stock": "true",
             "page": max(1, page),
         }
     )
@@ -366,6 +369,60 @@ def extract_title(anchor: Tag, card: Tag) -> str | None:
     return None
 
 
+def extract_listing_format(card: Tag) -> str | None:
+    """Lees het zichtbare fysieke formaat uit de productkaart.
+
+    We accepteren LP en meervoudige LP-sets zoals 2XLP en 3XLP.
+    CD, cassette, 7-inch, 10-inch, 12-inch, merchandise en accessoires
+    worden niet als LP gepubliceerd.
+    """
+    texts: list[str] = []
+
+    selectors = (
+        "[data-format]",
+        ".product-format",
+        ".card__format",
+        ".product-card__format",
+        ".product-item__format",
+        ".caption-with-letter-spacing",
+        ".card-information",
+    )
+
+    for selector in selectors:
+        for node in card.select(selector):
+            if not isinstance(node, Tag):
+                continue
+
+            value = clean(
+                node.get("data-format")
+                or node.get_text(" ", strip=True)
+            )
+
+            if value:
+                texts.append(value)
+
+    # De volledige kaarttekst is alleen een laatste lokale bron.
+    texts.append(clean(card.get_text(" ", strip=True)))
+
+    for value in texts:
+        match = re.search(
+            r"(?<![A-Z0-9])(?:(\d+)\s*[X×]\s*)?LP(?![A-Z0-9])",
+            value.upper(),
+        )
+
+        if not match:
+            continue
+
+        quantity = match.group(1)
+
+        if quantity:
+            return f"{quantity}XLP"
+
+        return "LP"
+
+    return None
+
+
 def extract_price(card: Tag) -> str | None:
     # Prijzen worden uitsluitend binnen de bewezen unieke productkaart gelezen.
     for selector in PRICE_SELECTORS:
@@ -458,6 +515,24 @@ def parse_listing_page(
 
         artist = extract_artist(card)
         card_text = clean(card.get_text(" ", strip=True))
+        listing_format = extract_listing_format(card)
+
+        # De normale collectie bevat ook cd's, singles, merchandise,
+        # accessoires en cadeaubonnen. Alleen LP-formaten gaan verder.
+        if listing_format is None:
+            if debug:
+                print(
+                    "[3345-LISTING-SKIP]",
+                    {
+                        "page": page,
+                        "url": source_url,
+                        "title": title,
+                        "reason": "not_lp",
+                    },
+                    flush=True,
+                )
+            continue
+
         add_to_cart = has_active_add_to_cart(card)
         source_availability = detect_source_availability(card)
         secondhand = detect_secondhand(
@@ -476,13 +551,13 @@ def parse_listing_page(
         position += 1
 
         payload: dict[str, Any] = {
-            "source": "shop3345_filtered_lp_listing",
+            "source": "shop3345_all_collection_local_lp_filter",
             "discovery_url": listing_url,
             "page": page,
             "listing_position": position,
             "artist": artist,
             "title": title,
-            "format": "LP",
+            "format": listing_format,
             "price": price,
             "currency": "EUR",
             "price_source": "listing",
@@ -532,6 +607,7 @@ def parse_listing_page(
                     "url": source_url,
                     "artist": artist,
                     "title": title,
+                    "format": listing_format,
                     "price": price,
                     "source_availability": source_availability,
                     "availability": availability,
