@@ -5,6 +5,7 @@ import argparse
 import re
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urljoin, urlparse
 
@@ -1005,32 +1006,6 @@ def main() -> int:
                     flush=True,
                 )
 
-            if args.debug and page == args.start_page:
-                debug_dir = Path("output/usf-shop3345")
-                debug_dir.mkdir(parents=True, exist_ok=True)
-
-                html_path = debug_dir / "listing-page-1.html"
-                html_path.write_text(
-                    response.text,
-                    encoding="utf-8",
-                )
-
-                print(
-                    "[3345-LISTING-HTML]",
-                    {
-                        "path": str(html_path),
-                        "bytes": len(response.content),
-                        "contains_euro": "€" in response.text,
-                        "contains_product_bottom": (
-                            "data-product-bottom" in response.text
-                        ),
-                        "contains_2499": (
-                            "24,99" in response.text
-                            or "24.99" in response.text
-                        ),
-                    },
-                    flush=True,
-                )
         except requests.RequestException as exc:
             consecutive_failures += 1
 
