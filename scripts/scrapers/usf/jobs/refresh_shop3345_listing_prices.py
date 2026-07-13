@@ -37,14 +37,15 @@ COLLECTION_URL = "https://3345.nl/collections/all"
 
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (compatible; Vinylofy-USF/1.0; "
-        "+https://vinylofy.nl)"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/145.0.0.0 Safari/537.36"
     ),
     "Accept": (
         "text/html,application/xhtml+xml,application/xml;q=0.9,"
         "image/avif,image/webp,*/*;q=0.8"
     ),
-    "Accept-Language": "nl-NL,nl;q=0.9,en;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,nl;q=0.8",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
 }
@@ -1098,6 +1099,13 @@ def main() -> int:
         },
         flush=True,
     )
+
+    if all_links and not all_offers:
+        raise SystemExit(
+            "[ERROR] De 3345-scan vond productlinks maar geen enkele "
+            "listingprijs. De ontvangen collectie-HTML bevat vermoedelijk "
+            "niet de normale prijsdragende productkaarten."
+        )
 
     if not all_links:
         raise SystemExit(
