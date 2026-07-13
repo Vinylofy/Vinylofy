@@ -1,0 +1,218 @@
+name: USF - 3345
+
+on:
+  schedule:
+    - cron: "37 1 * * *"
+
+  workflow_dispatch:
+    inputs:
+      listing_max_pages:
+        description: "0 = volledige collectie; gebruik 2 voor eerste test"
+        required: true
+        default: "2"
+        type: string
+
+      run_detail:
+        description: "Details, stage, promote en quarantine uitvoeren"
+        required: true
+        default: true
+        type: boolean
+
+      detail_limit:
+        description: "Maximumaantal detailpagina's"
+        required: true
+        default: "25"
+        type: string
+
+      debug_listing:
+        description: "Uitgebreide listingdiagnose tonen"
+        required: true
+        default: true
+        type: boolean
+
+      write:
+        description: "Werkelijke databasewrites uitvoeren"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usf-shop3345-production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate 3345 USF
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+
+          if [ -f requirements-scrapers.txt ]; then
+            pip install -r requirements-scrapers.txt
+          fi
+
+          pip install \
+            requests \
+            beautifulsoup4 \
+            "psycopg[binary]" \
+            python-dotenv
+
+      - name: Compile 3345 modules
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m py_compile \
+            scripts/scrapers/usf/jobs/refresh_shop3345_listing_prices.py \
+            scripts/scrapers/usf/jobs/detail_shop3345.py \
+            scripts/scrapers/usf/jobs/stage_shop3345.py \
+            scripts/scrapers/usf/jobs/promote_shop3345.py \
+            scripts/scrapers/usf/jobs/quarantine_shop3345.py \
+            scripts/scrapers/usf/jobs/run_shop3345_pipeline.py
+
+      - name: Validate CLIs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m scripts.scrapers.usf.jobs.refresh_shop3345_listing_prices --help >/dev/null
+          python -m scripts.scrapers.usf.jobs.detail_shop3345 --help >/dev/null
+          python -m scripts.scrapers.usf.jobs.stage_shop3345 --help >/dev/null
+          python -m scripts.scrapers.usf.jobs.promote_shop3345 --help >/dev/null
+          python -m scripts.scrapers.usf.jobs.quarantine_shop3345 --help >/dev/null
+          python -m scripts.scrapers.usf.jobs.run_shop3345_pipeline --help >/dev/null
+
+  pipeline:
+    name: Run 3345 USF
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+
+          if [ -f requirements-scrapers.txt ]; then
+            pip install -r requirements-scrapers.txt
+          fi
+
+          pip install \
+            requests \
+            beautifulsoup4 \
+            "psycopg[binary]" \
+            python-dotenv
+
+      - name: Validate database secret
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "[ERROR] DATABASE_URL secret ontbreekt."
+            exit 1
+          fi
+
+      - name: Run 3345 pipeline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p output/usf-shop3345
+
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            LISTING_MAX_PAGES="0"
+            RUN_DETAIL="true"
+            DETAIL_LIMIT="500"
+            DEBUG_LISTING="false"
+            WRITE="true"
+          else
+            LISTING_MAX_PAGES="${{ inputs.listing_max_pages }}"
+            RUN_DETAIL="${{ inputs.run_detail }}"
+            DETAIL_LIMIT="${{ inputs.detail_limit }}"
+            DEBUG_LISTING="${{ inputs.debug_listing }}"
+            WRITE="${{ inputs.write }}"
+          fi
+
+          COMMAND=(
+            python -u -m
+            scripts.scrapers.usf.jobs.run_shop3345_pipeline
+            --listing-start-page 1
+            --listing-max-pages "$LISTING_MAX_PAGES"
+            --listing-sleep 0.35
+            --max-page-failures 3
+            --detail-limit "$DETAIL_LIMIT"
+            --detail-sleep 0.50
+            --detail-retry-days 30
+            --stage-limit "$DETAIL_LIMIT"
+            --promote-limit "$DETAIL_LIMIT"
+            --quarantine-limit 100
+          )
+
+          if [ "$RUN_DETAIL" = "true" ]; then
+            COMMAND+=(--run-detail)
+          fi
+
+          if [ "$DEBUG_LISTING" = "true" ]; then
+            COMMAND+=(--debug-listing)
+          fi
+
+          if [ "$WRITE" = "true" ]; then
+            COMMAND+=(--write)
+          fi
+
+          printf '[WORKFLOW] Command:'
+          printf ' %q' "${COMMAND[@]}"
+          printf '\n'
+
+          "${COMMAND[@]}" 2>&1 |
+            tee output/usf-shop3345/pipeline.log
+
+      - name: Upload pipeline log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usf-shop3345-${{ github.run_id }}
+          path: output/usf-shop3345/**
+          if-no-files-found: warn
+          retention-days: 14
