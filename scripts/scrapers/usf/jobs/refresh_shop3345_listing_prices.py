@@ -213,7 +213,6 @@ def fetch_collection_json_prices(
 
         json_bases = (
             f"{COLLECTION_URL}/products.json",
-            f"{BASE_URL}/collections/all/products.json",
         )
 
         for json_base in json_bases:
@@ -321,6 +320,15 @@ def fetch_collection_json_prices(
 
                         if price is None:
                             continue
+
+                        variant_id = clean(
+                            variant.get("id")
+                        )
+
+                        if variant_id:
+                            catalog_prices[
+                                f"{source_url}#variant={variant_id}"
+                            ] = price
 
                         all_prices.append(price)
 
@@ -875,6 +883,46 @@ def extract_price(card: Tag) -> str | None:
 
     return None
 
+
+def listing_variant_price_key(
+    source_url: str,
+    variant_id: str,
+) -> str:
+    return f"{source_url}#variant={variant_id}"
+
+
+def extract_listing_variant_id(
+    card: Tag,
+) -> str | None:
+    """Lees de variant achter de Add to cart van de kaart."""
+
+    selectors = (
+        "form[action*='/cart/add'] input[name='id'][value]",
+        "input[name='id'][value]",
+        "[data-variant-id]",
+        "[data-product-variant-id]",
+    )
+
+    for selector in selectors:
+        for node in card.select(selector):
+            if not isinstance(node, Tag):
+                continue
+
+            raw_value = clean(
+                node.get("value")
+                or node.get("data-variant-id")
+                or node.get("data-product-variant-id")
+            )
+
+            match = re.search(r"\d+", raw_value)
+
+            if match:
+                return match.group(0)
+
+    return None
+
+
+
 def public_availability(
     *,
     source_availability: str,
@@ -975,7 +1023,64 @@ def parse_listing_page(
             listing_prices or {}
         ).get(source_url)
 
-        price = json_price or extract_price(card)
+        listing_variant_id = (
+            extract_listing_variant_id(card)
+        )
+
+        html_price = extract_price(card)
+
+        json_variant_price = None
+
+        if listing_variant_id:
+            json_variant_price = (
+                listing_prices or {}
+            ).get(
+                listing_variant_price_key(
+                    source_url,
+                    listing_variant_id,
+                )
+            )
+
+        selected_json_price = (
+            json_variant_price or json_price
+        )
+
+        price = html_price or selected_json_price
+
+        price_transport = (
+            "html"
+            if html_price is not None
+            else (
+                "nl_collection_variant_json"
+                if json_variant_price is not None
+                else (
+                    "nl_collection_product_json"
+                    if json_price is not None
+                    else None
+                )
+            )
+        )
+
+        if (
+            debug
+            and html_price is not None
+            and selected_json_price is not None
+            and html_price != selected_json_price
+        ):
+            print(
+                "[3345-PRICE-MISMATCH]",
+                {
+                    "url": source_url,
+                    "variant_id": listing_variant_id,
+                    "html_price": html_price,
+                    "json_variant_price": (
+                        json_variant_price
+                    ),
+                    "json_product_price": json_price,
+                    "selected_price": price,
+                },
+                flush=True,
+            )
 
         position += 1
 
@@ -990,11 +1095,11 @@ def parse_listing_page(
             "price": price,
             "currency": "EUR",
             "price_source": "listing",
-            "listing_price_transport": (
-                "collection_products_json"
-                if json_price is not None
-                else "html"
-            ),
+            "listing_price_transport": price_transport,
+            "listing_variant_id": listing_variant_id,
+            "html_listing_price": html_price,
+            "json_variant_price": json_variant_price,
+            "json_product_price": json_price,
             "source_availability": source_availability,
             "availability": availability,
             "listing_cta_add_to_cart": add_to_cart,
@@ -1043,6 +1148,11 @@ def parse_listing_page(
                     "title": title,
                     "format": listing_format,
                     "price": price,
+                    "html_price": html_price,
+                    "json_variant_price": json_variant_price,
+                    "json_product_price": json_price,
+                    "price_transport": price_transport,
+                    "variant_id": listing_variant_id,
                     "source_availability": source_availability,
                     "availability": availability,
                     "add_to_cart": add_to_cart,
