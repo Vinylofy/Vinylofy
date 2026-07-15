@@ -13,7 +13,6 @@ on:
           - groovespin
           - soundshaarlem
           - soundsvenlo
-          - shop3345
       skip_scrape:
         description: "Scraper overslaan en bestaand CSV gebruiken"
         required: true
@@ -44,7 +43,6 @@ jobs:
       VINYLOFY_SCRAPER_CMD_GROOVESPIN: python -u scripts/scrapers/groovespin_automation.py --mode full --output-dir data/raw/groovespin --max-pages 30 --limit-ean 250
       VINYLOFY_SCRAPER_CMD_SOUNDSHAARLEM: python -u scripts/scrapers/soundshaarlem.py --mode both --max-pages 13 --limit 192 --limit-details 25 --delay-seconds 0.5 --output-dir data/raw/soundshaarlem
       VINYLOFY_SCRAPER_CMD_SOUNDSVENLO: python -u scripts/scrapers/soundsvenlo.py --mode both --limit-detail 250 --output-dir data/raw/soundsvenlo
-      VINYLOFY_SCRAPER_CMD_SHOP3345: python -u scripts/scrapers/shop3345_automation.py --mode both --links-file data/raw/shop3345/3345_product_links.txt --csv-file data/raw/shop3345/3345_products.csv --max-pages 20 --limit-details 250
 
     steps:
       - name: Checkout
@@ -80,7 +78,6 @@ jobs:
           mkdir -p data/raw/soundshaarlem
           mkdir -p data/raw/soundsvenlo
           mkdir -p data/raw/recordsonvinyl
-          mkdir -p data/raw/shop3345
           mkdir -p output
 
       - name: Run pipeline

@@ -34,7 +34,7 @@ SHOP_COUNTRY = "NL"
 PRICE_AUTHORITY = "listing_html_only"
 
 BASE_URL = "https://3345.nl"
-COLLECTION_URL = "https://3345.nl/nl/collections/all"
+COLLECTION_URL = "https://3345.nl/collections/all"
 
 HEADERS = {
     "User-Agent": (
@@ -936,6 +936,122 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _3345_market(html: str) -> dict[str, str | None]:
+    values: dict[str, str | None] = {"country": None, "currency": None}
+    patterns = {
+        "country": (r"Shopify\.country\s*=\s*['\"]([A-Z]{2})", r"['\"]countryCode['\"]\s*:\s*['\"]([A-Z]{2})"),
+        "currency": (r"Shopify\.currency\.active\s*=\s*['\"]([A-Z]{3})", r"['\"]currency['\"]\s*:\s*['\"]([A-Z]{3})"),
+    }
+    for key, candidates in patterns.items():
+        for pattern in candidates:
+            match = re.search(pattern, html)
+            if match:
+                values[key] = match.group(1)
+                break
+    soup = BeautifulSoup(html, "html.parser")
+    html_node = soup.find("html")
+    values["html_lang"] = clean(html_node.get("lang")) if isinstance(html_node, Tag) else None
+    return values
+
+
+def _3345_metrics(html: str) -> dict[str, object]:
+    soup = BeautifulSoup(html, "html.parser")
+    product_urls: list[str] = []
+    seen_urls: set[str] = set()
+    cards: dict[int, tuple[str, Tag]] = {}
+
+    for anchor in soup.select('a[href*="/products/"]'):
+        href = clean(anchor.get("href"))
+        if not href:
+            continue
+        url = normalize_product_url(href)
+        if url not in seen_urls:
+            seen_urls.add(url)
+            product_urls.append(url)
+        card = find_product_card(anchor)
+        if card is not None:
+            cards.setdefault(id(card), (url, card))
+
+    add_to_cart_cards = 0
+    price_blocks = 0
+    linked_prices: list[dict[str, str]] = []
+    for url, card in cards.values():
+        if has_active_add_to_cart(card):
+            add_to_cart_cards += 1
+        amount = extract_price(card)
+        if amount is not None:
+            price_blocks += 1
+            if len(linked_prices) < 5:
+                linked_prices.append({"url": url, "price": str(amount)})
+
+    lower = html.lower()
+    return {
+        "html_bytes": len(html.encode("utf-8")),
+        "product_cards": len(cards),
+        "add_to_cart_cards": add_to_cart_cards,
+        "price_blocks": price_blocks,
+        "contains_euro": "€" in html or "&euro;" in lower or "eur" in lower,
+        "first_product_urls": product_urls[:5],
+        "first_linked_prices": linked_prices,
+    }
+
+
+def _3345_log_response(response: requests.Response, *, requested_url: str, purpose: str, page: int | None, attempt: int) -> dict[str, object]:
+    redirects = [{"status": item.status_code, "url": item.url, "location": clean(item.headers.get("location"))} for item in response.history]
+    headers = {name: clean(response.headers.get(name)) for name in ("content-type", "content-language", "cache-control", "cf-cache-status", "server", "vary", "x-request-id", "x-shopid", "x-shopify-stage", "x-sorting-hat-podid") if response.headers.get(name)}
+    metrics = _3345_metrics(response.text)
+    print("[3345-REQUEST]", {"purpose": purpose, "page": page, "attempt": attempt, "requested_url": requested_url}, flush=True)
+    print("[3345-REDIRECT]", {"purpose": purpose, "page": page, "attempt": attempt, "history": redirects, "final_url": response.url, "final_query": urlparse(response.url).query}, flush=True)
+    print("[3345-RESPONSE]", {"purpose": purpose, "page": page, "attempt": attempt, "status": response.status_code, "headers": headers, "response_cookie_names": sorted(response.cookies.keys()), "html_bytes": metrics["html_bytes"]}, flush=True)
+    print("[3345-MARKET]", {"purpose": purpose, "page": page, "attempt": attempt, **_3345_market(response.text)}, flush=True)
+    print("[3345-PRICE-MARKERS]", {"purpose": purpose, "page": page, "attempt": attempt, **metrics}, flush=True)
+    return metrics
+
+
+def _3345_save_html(response: requests.Response, name: str, *, debug: bool) -> None:
+    if not debug:
+        return
+    directory = Path("output/usf-shop3345")
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / name
+    target.write_text(response.text, encoding="utf-8")
+    print("[3345-LISTING-HTML]", {"path": str(target), "bytes": len(response.content), "final_url": response.url}, flush=True)
+
+
+def build_3345_session(*, debug: bool) -> requests.Session:
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    print("[3345-SESSION]", {"user_agent": session.headers.get("User-Agent"), "accept": session.headers.get("Accept"), "accept_language": session.headers.get("Accept-Language"), "header_names": sorted(session.headers.keys()), "cookie_names_before": sorted(session.cookies.keys())}, flush=True)
+    home_url = f"{BASE_URL}/"
+    try:
+        response = session.get(home_url, timeout=45, allow_redirects=True)
+        response.raise_for_status()
+        _3345_log_response(response, requested_url=home_url, purpose="home_bootstrap", page=None, attempt=1)
+        _3345_save_html(response, "home-bootstrap.html", debug=debug)
+    except requests.RequestException as exc:
+        print("[3345-SESSION][WARN]", {"home_url": home_url, "error": str(exc)}, flush=True)
+    print("[3345-SESSION]", {"cookie_names_after_bootstrap": sorted(session.cookies.keys())}, flush=True)
+    return session
+
+
+def fetch_3345_listing(session: requests.Session, listing_url: str, *, page: int, debug: bool) -> requests.Response:
+    response: requests.Response | None = None
+    referer = f"{BASE_URL}/"
+    for attempt in (1, 2):
+        response = session.get(listing_url, headers={"Referer": referer}, timeout=45, allow_redirects=True)
+        response.raise_for_status()
+        metrics = _3345_log_response(response, requested_url=listing_url, purpose="listing", page=page, attempt=attempt)
+        print("[3345-RESPONSE]", {"purpose": "listing_session", "page": page, "attempt": attempt, "session_cookie_names": sorted(session.cookies.keys())}, flush=True)
+        _3345_save_html(response, f"listing-page-{page}-attempt-{attempt}.html", debug=debug)
+        if int(metrics["product_cards"]) > 0 and int(metrics["price_blocks"]) > 0 and bool(metrics["contains_euro"]):
+            break
+        referer = response.url
+        time.sleep(0.75)
+    if response is None:
+        raise RuntimeError("3345 listingrequest leverde geen response op")
+    _3345_save_html(response, f"listing-page-{page}.html", debug=debug)
+    return response
+
 def main() -> int:
     args = build_parser().parse_args()
 
@@ -959,8 +1075,7 @@ def main() -> int:
             "[ERROR] --max-page-failures moet minimaal 1 zijn."
         )
 
-    session = requests.Session()
-    session.headers.update(HEADERS)
+    session = build_3345_session(debug=args.debug)
 
     run_started_at = datetime.now(timezone.utc)
 
@@ -987,38 +1102,7 @@ def main() -> int:
         )
 
         try:
-            response = session.get(
-                listing_url,
-                timeout=45,
-            )
-            response.raise_for_status()
-
-            if args.debug and page == args.start_page:
-                debug_dir = Path("output/usf-shop3345")
-                debug_dir.mkdir(parents=True, exist_ok=True)
-
-                html_path = debug_dir / "listing-page-1.html"
-                html_path.write_text(
-                    response.text,
-                    encoding="utf-8",
-                )
-
-                print(
-                    "[3345-LISTING-HTML]",
-                    {
-                        "path": str(html_path),
-                        "bytes": len(response.content),
-                        "contains_euro": "€" in response.text,
-                        "contains_product_bottom": (
-                            "data-product-bottom" in response.text
-                        ),
-                        "contains_2499": (
-                            "24,99" in response.text
-                            or "24.99" in response.text
-                        ),
-                    },
-                    flush=True,
-                )
+            response = fetch_3345_listing(session, listing_url, page=page, debug=args.debug)
 
         except requests.RequestException as exc:
             consecutive_failures += 1
@@ -1114,6 +1198,26 @@ def main() -> int:
         flush=True,
     )
 
+    transport_counts: dict[str, int] = {}
+    non_html_price_urls: list[str] = []
+    arctic_am: list[dict[str, object]] = []
+    samples: list[tuple[str, object, str]] = []
+    for offer in all_offers.values():
+        raw = offer.raw if isinstance(offer.raw, dict) else {}
+        mode = clean(raw.get("listing_price_transport")) or "missing"
+        transport_counts[mode] = transport_counts.get(mode, 0) + 1
+        if mode != "html":
+            non_html_price_urls.append(offer.source_url)
+        if len(samples) < 5:
+            samples.append((offer.source_url, offer.price, mode))
+        artist_key = clean(raw.get("artist")).lower()
+        title_key = clean(raw.get("title")).lower()
+        if artist_key == "arctic monkeys" and title_key in {"am", "arctic monkeys - am"}:
+            arctic_am.append({"url": offer.source_url, "price": offer.price, "html_price": raw.get("html_listing_price"), "price_transport": mode})
+    print("[3345-LISTING-SOURCE]", {"authority": PRICE_AUTHORITY, "transport_counts": transport_counts, "non_html_price_urls": non_html_price_urls[:10], "first_five_prices": samples}, flush=True)
+    print("[3345-ARCTIC-AM]", {"status": "found" if arctic_am else "not_seen_in_scanned_pages", "matches": arctic_am}, flush=True)
+    if non_html_price_urls:
+        raise SystemExit("[ERROR] Een geprijsd 3345-offer gebruikt geen listing-HTML.")
     missing_publishable_html_prices = sorted(
         link.source_url
         for link in all_links.values()
