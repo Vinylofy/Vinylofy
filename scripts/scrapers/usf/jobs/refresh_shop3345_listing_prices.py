@@ -31,6 +31,7 @@ SHOP_ID = "shop3345"
 SHOP_NAME = "3345"
 SHOP_DOMAIN = "3345.nl"
 SHOP_COUNTRY = "NL"
+PRICE_AUTHORITY = "listing_html_only"
 
 BASE_URL = "https://3345.nl"
 COLLECTION_URL = "https://3345.nl/nl/collections/all"
@@ -169,261 +170,6 @@ def normalize_price(value: object) -> str | None:
 
     whole, cents = amount.split(".", 1)
     return f"{whole}.{cents[:2].ljust(2, '0')}"
-
-
-
-def fetch_collection_json_prices(
-    session: requests.Session,
-    *,
-    html: str,
-    page: int,
-    debug: bool,
-) -> dict[str, str]:
-    """Scan de volledige collectie-JSON en koppel op product-URL."""
-
-    soup = BeautifulSoup(html, "html.parser")
-
-    needed_urls = {
-        normalize_product_url(anchor.get("href"))
-        for anchor in soup.select("a[href*='/products/']")
-        if isinstance(anchor, Tag)
-    }
-    needed_urls.discard("")
-
-    if not needed_urls:
-        print(
-            "[3345-COLLECTION-JSON][WARN]",
-            {
-                "page": page,
-                "reason": "geen product-URL's in collectie-HTML",
-            },
-            flush=True,
-        )
-        return {}
-
-    cached_prices = getattr(
-        fetch_collection_json_prices,
-        "_catalog_prices",
-        None,
-    )
-
-    if not isinstance(cached_prices, dict):
-        catalog_prices: dict[str, str] = {}
-        endpoint_results: list[dict[str, object]] = []
-
-        json_bases = (
-            f"{COLLECTION_URL}/products.json",
-        )
-
-        for json_base in json_bases:
-            seen_signatures: set[tuple[str, ...]] = set()
-            endpoint_pages = 0
-            endpoint_products = 0
-            endpoint_prices = 0
-            completed = False
-            error: str | None = None
-
-            for json_page in range(1, 151):
-                query = urlencode(
-                    {
-                        "limit": 250,
-                        "page": json_page,
-                    }
-                )
-                json_url = f"{json_base}?{query}"
-
-                try:
-                    response = session.get(
-                        json_url,
-                        headers={
-                            "Accept": "application/json",
-                            "X-Requested-With": "XMLHttpRequest",
-                            "Referer": listing_url_for_page(page),
-                        },
-                        timeout=45,
-                    )
-                    response.raise_for_status()
-                    payload = response.json()
-
-                except (
-                    requests.RequestException,
-                    ValueError,
-                    TypeError,
-                ) as exc:
-                    error = str(exc)
-                    break
-
-                products = payload.get("products")
-
-                if not isinstance(products, list):
-                    error = "JSON bevat geen products-lijst"
-                    break
-
-                if not products:
-                    completed = True
-                    break
-
-                handles = tuple(
-                    sorted(
-                        clean(product.get("handle"))
-                        for product in products
-                        if isinstance(product, dict)
-                        and clean(product.get("handle"))
-                    )
-                )
-
-                if not handles:
-                    completed = True
-                    break
-
-                if handles in seen_signatures:
-                    completed = True
-                    break
-
-                seen_signatures.add(handles)
-                endpoint_pages += 1
-                endpoint_products += len(products)
-
-                new_prices = 0
-
-                for product in products:
-                    if not isinstance(product, dict):
-                        continue
-
-                    handle = clean(product.get("handle"))
-
-                    if not handle:
-                        continue
-
-                    source_url = normalize_product_url(
-                        f"/products/{handle}"
-                    )
-
-                    if not source_url:
-                        continue
-
-                    variants = product.get("variants")
-
-                    if not isinstance(variants, list):
-                        continue
-
-                    available_prices: list[str] = []
-                    all_prices: list[str] = []
-
-                    for variant in variants:
-                        if not isinstance(variant, dict):
-                            continue
-
-                        price = normalize_price(
-                            variant.get("price")
-                        )
-
-                        if price is None:
-                            continue
-
-                        variant_id = clean(
-                            variant.get("id")
-                        )
-
-                        if variant_id:
-                            catalog_prices[
-                                f"{source_url}#variant={variant_id}"
-                            ] = price
-
-                        all_prices.append(price)
-
-                        if variant.get("available") is True:
-                            available_prices.append(price)
-
-                    candidates = available_prices or all_prices
-
-                    if not candidates:
-                        continue
-
-                    selected_price = min(
-                        candidates,
-                        key=lambda value: int(
-                            value.replace(".", "")
-                        ),
-                    )
-
-                    if source_url not in catalog_prices:
-                        new_prices += 1
-                        endpoint_prices += 1
-
-                    catalog_prices[source_url] = selected_price
-
-                if debug:
-                    print(
-                        "[3345-COLLECTION-JSON-SCAN]",
-                        {
-                            "endpoint": json_base,
-                            "json_page": json_page,
-                            "products": len(products),
-                            "new_prices": new_prices,
-                            "catalog_prices": len(
-                                catalog_prices
-                            ),
-                        },
-                        flush=True,
-                    )
-
-                time.sleep(0.03)
-
-            endpoint_results.append(
-                {
-                    "endpoint": json_base,
-                    "pages": endpoint_pages,
-                    "products": endpoint_products,
-                    "prices": endpoint_prices,
-                    "completed": completed,
-                    "error": error,
-                }
-            )
-
-        cached_prices = catalog_prices
-
-        setattr(
-            fetch_collection_json_prices,
-            "_catalog_prices",
-            cached_prices,
-        )
-
-        print(
-            "[3345-COLLECTION-JSON-CACHE]",
-            {
-                "catalog_prices": len(cached_prices),
-                "endpoints": endpoint_results,
-            },
-            flush=True,
-        )
-
-    matched = {
-        source_url: cached_prices[source_url]
-        for source_url in needed_urls
-        if source_url in cached_prices
-    }
-
-    missing = sorted(
-        source_url
-        for source_url in needed_urls
-        if source_url not in matched
-    )
-
-    print(
-        "[3345-COLLECTION-JSON]",
-        {
-            "page": page,
-            "needed": len(needed_urls),
-            "matched": len(matched),
-            "missing": len(missing),
-            "sample": next(iter(matched.items()), None),
-            "missing_sample": missing[:5],
-        },
-        flush=True,
-    )
-
-    return matched
 
 
 
@@ -884,45 +630,6 @@ def extract_price(card: Tag) -> str | None:
     return None
 
 
-def listing_variant_price_key(
-    source_url: str,
-    variant_id: str,
-) -> str:
-    return f"{source_url}#variant={variant_id}"
-
-
-def extract_listing_variant_id(
-    card: Tag,
-) -> str | None:
-    """Lees de variant achter de Add to cart van de kaart."""
-
-    selectors = (
-        "form[action*='/cart/add'] input[name='id'][value]",
-        "input[name='id'][value]",
-        "[data-variant-id]",
-        "[data-product-variant-id]",
-    )
-
-    for selector in selectors:
-        for node in card.select(selector):
-            if not isinstance(node, Tag):
-                continue
-
-            raw_value = clean(
-                node.get("value")
-                or node.get("data-variant-id")
-                or node.get("data-product-variant-id")
-            )
-
-            match = re.search(r"\d+", raw_value)
-
-            if match:
-                return match.group(0)
-
-    return None
-
-
-
 def public_availability(
     *,
     source_availability: str,
@@ -945,7 +652,6 @@ def parse_listing_page(
     listing_url: str,
     seen_at: datetime,
     debug: bool,
-    listing_prices: dict[str, str] | None = None,
 ) -> tuple[list[DiscoveredLink], list[ListingOffer]]:
     soup = BeautifulSoup(html, "html.parser")
 
@@ -1019,68 +725,13 @@ def parse_listing_page(
             secondhand=secondhand,
             add_to_cart=add_to_cart,
         )
-        json_price = (
-            listing_prices or {}
-        ).get(source_url)
-
-        listing_variant_id = (
-            extract_listing_variant_id(card)
-        )
-
         html_price = extract_price(card)
-
-        json_variant_price = None
-
-        if listing_variant_id:
-            json_variant_price = (
-                listing_prices or {}
-            ).get(
-                listing_variant_price_key(
-                    source_url,
-                    listing_variant_id,
-                )
-            )
-
-        selected_json_price = (
-            json_variant_price or json_price
-        )
-
-        price = html_price or selected_json_price
-
+        price = html_price
         price_transport = (
             "html"
             if html_price is not None
-            else (
-                "nl_collection_variant_json"
-                if json_variant_price is not None
-                else (
-                    "nl_collection_product_json"
-                    if json_price is not None
-                    else None
-                )
-            )
+            else None
         )
-
-        if (
-            debug
-            and html_price is not None
-            and selected_json_price is not None
-            and html_price != selected_json_price
-        ):
-            print(
-                "[3345-PRICE-MISMATCH]",
-                {
-                    "url": source_url,
-                    "variant_id": listing_variant_id,
-                    "html_price": html_price,
-                    "json_variant_price": (
-                        json_variant_price
-                    ),
-                    "json_product_price": json_price,
-                    "selected_price": price,
-                },
-                flush=True,
-            )
 
         position += 1
 
@@ -1096,10 +747,7 @@ def parse_listing_page(
             "currency": "EUR",
             "price_source": "listing",
             "listing_price_transport": price_transport,
-            "listing_variant_id": listing_variant_id,
             "html_listing_price": html_price,
-            "json_variant_price": json_variant_price,
-            "json_product_price": json_price,
             "source_availability": source_availability,
             "availability": availability,
             "listing_cta_add_to_cart": add_to_cart,
@@ -1149,10 +797,7 @@ def parse_listing_page(
                     "format": listing_format,
                     "price": price,
                     "html_price": html_price,
-                    "json_variant_price": json_variant_price,
-                    "json_product_price": json_price,
                     "price_transport": price_transport,
-                    "variant_id": listing_variant_id,
                     "source_availability": source_availability,
                     "availability": availability,
                     "add_to_cart": add_to_cart,
@@ -1396,12 +1041,6 @@ def main() -> int:
 
         consecutive_failures = 0
 
-        listing_prices = fetch_collection_json_prices(
-            session,
-            html=response.text,
-            page=page,
-            debug=args.debug,
-        )
 
         links, offers = parse_listing_page(
             response.text,
@@ -1409,7 +1048,6 @@ def main() -> int:
             listing_url=listing_url,
             seen_at=run_started_at,
             debug=args.debug,
-            listing_prices=listing_prices,
         )
 
         signature = tuple(
@@ -1475,6 +1113,45 @@ def main() -> int:
         },
         flush=True,
     )
+
+    missing_publishable_html_prices = sorted(
+        link.source_url
+        for link in all_links.values()
+        if isinstance(link.payload, dict)
+        and link.payload.get("availability") == "in_stock"
+        and bool(
+            link.payload.get(
+                "listing_cta_add_to_cart"
+            )
+        )
+        and not bool(
+            link.payload.get(
+                "is_secondhand"
+            )
+        )
+        and link.payload.get("price") is None
+    )
+
+    print(
+        "[3345-HTML-PRICE-COVERAGE]",
+        {
+            "authority": PRICE_AUTHORITY,
+            "missing_publishable_prices": len(
+                missing_publishable_html_prices
+            ),
+            "sample": (
+                missing_publishable_html_prices[:10]
+            ),
+        },
+        flush=True,
+    )
+
+    if missing_publishable_html_prices:
+        raise SystemExit(
+            "[ERROR] De 3345-run bevat bestelbare LP's "
+            "zonder zichtbare listingprijs. "
+            "Er worden geen databasewrites uitgevoerd."
+        )
 
     if all_links and not all_offers:
         raise SystemExit(

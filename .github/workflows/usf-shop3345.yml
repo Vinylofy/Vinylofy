@@ -92,6 +92,22 @@ jobs:
             scripts/scrapers/usf/jobs/quarantine_shop3345.py \
             scripts/scrapers/usf/jobs/run_shop3345_pipeline.py
 
+      - name: Verify 3345 HTML-only price authority
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TARGET="scripts/scrapers/usf/jobs/refresh_shop3345_listing_prices.py"
+
+          grep -q             'PRICE_AUTHORITY = "listing_html_only"'             "$TARGET"
+
+          if grep -Eq             'fetch_collection_json_prices|selected_json_price|json_product_price|json_variant_price|collection_products_json'             "$TARGET"; then
+            echo "[ERROR] JSON-prijsfallback is opnieuw aanwezig."
+            exit 1
+          fi
+
+          echo "[OK] 3345 gebruikt uitsluitend listing-HTML."
+
       - name: Validate CLIs
         shell: bash
         run: |
