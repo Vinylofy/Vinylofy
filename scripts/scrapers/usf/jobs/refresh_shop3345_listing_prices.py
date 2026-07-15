@@ -34,7 +34,7 @@ SHOP_COUNTRY = "NL"
 PRICE_AUTHORITY = "listing_html_only"
 
 BASE_URL = "https://3345.nl"
-COLLECTION_URL = "https://3345.nl/collections/all"
+COLLECTION_URL = "https://3345.nl/nl/collections/all"
 
 HEADERS = {
     "User-Agent": (
@@ -937,20 +937,44 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _3345_market(html: str) -> dict[str, str | None]:
-    values: dict[str, str | None] = {"country": None, "currency": None}
-    patterns = {
-        "country": (r"Shopify\.country\s*=\s*['\"]([A-Z]{2})", r"['\"]countryCode['\"]\s*:\s*['\"]([A-Z]{2})"),
-        "currency": (r"Shopify\.currency\.active\s*=\s*['\"]([A-Z]{3})", r"['\"]currency['\"]\s*:\s*['\"]([A-Z]{3})"),
+    """Lees alleen expliciet actieve Shopify-marketwaarden.
+
+    Generieke JSON-velden met valuta zijn onbruikbaar, omdat de
+    storefront ook lijsten met beschikbare valuta bevat.
+    """
+    values: dict[str, str | None] = {
+        "country": None,
+        "currency": None,
     }
+
+    patterns = {
+        "country": (
+            r"(?:window\.)?Shopify\.country\s*=\s*"
+            r"['\"]([A-Z]{2})",
+        ),
+        "currency": (
+            r"(?:window\.)?Shopify\.currency\.active\s*=\s*"
+            r"['\"]([A-Z]{3})",
+        ),
+    }
+
     for key, candidates in patterns.items():
         for pattern in candidates:
             match = re.search(pattern, html)
+
             if match:
                 values[key] = match.group(1)
                 break
+
     soup = BeautifulSoup(html, "html.parser")
     html_node = soup.find("html")
-    values["html_lang"] = clean(html_node.get("lang")) if isinstance(html_node, Tag) else None
+
+    values["html_lang"] = (
+        clean(html_node.get("lang"))
+        if isinstance(html_node, Tag)
+        else None
+    )
+
     return values
 
 
@@ -1021,16 +1045,188 @@ def _3345_save_html(response: requests.Response, name: str, *, debug: bool) -> N
 def build_3345_session(*, debug: bool) -> requests.Session:
     session = requests.Session()
     session.headers.update(HEADERS)
-    print("[3345-SESSION]", {"user_agent": session.headers.get("User-Agent"), "accept": session.headers.get("Accept"), "accept_language": session.headers.get("Accept-Language"), "header_names": sorted(session.headers.keys()), "cookie_names_before": sorted(session.cookies.keys())}, flush=True)
+
+    print(
+        "[3345-SESSION]",
+        {
+            "user_agent": session.headers.get("User-Agent"),
+            "accept": session.headers.get("Accept"),
+            "accept_language": session.headers.get(
+                "Accept-Language"
+            ),
+            "header_names": sorted(session.headers.keys()),
+            "cookie_names_before": sorted(
+                session.cookies.keys()
+            ),
+        },
+        flush=True,
+    )
+
     home_url = f"{BASE_URL}/"
-    try:
-        response = session.get(home_url, timeout=45, allow_redirects=True)
-        response.raise_for_status()
-        _3345_log_response(response, requested_url=home_url, purpose="home_bootstrap", page=None, attempt=1)
-        _3345_save_html(response, "home-bootstrap.html", debug=debug)
-    except requests.RequestException as exc:
-        print("[3345-SESSION][WARN]", {"home_url": home_url, "error": str(exc)}, flush=True)
-    print("[3345-SESSION]", {"cookie_names_after_bootstrap": sorted(session.cookies.keys())}, flush=True)
+
+    home_response = session.get(
+        home_url,
+        timeout=45,
+        allow_redirects=True,
+    )
+    home_response.raise_for_status()
+
+    _3345_log_response(
+        home_response,
+        requested_url=home_url,
+        purpose="home_bootstrap",
+        page=None,
+        attempt=1,
+    )
+    _3345_save_html(
+        home_response,
+        "home-bootstrap.html",
+        debug=debug,
+    )
+
+    localization_url = f"{BASE_URL}/localization"
+
+    payload = {
+        "_method": "PUT",
+        "country_code": "NL",
+        "language_code": "nl",
+        "return_to": "/nl",
+    }
+
+    print(
+        "[3345-LOCALIZATION]",
+        {
+            "url": localization_url,
+            "method": "POST",
+            "payload_fields": sorted(payload),
+            "target_country": "NL",
+            "target_language": "nl",
+            "return_to": "/nl",
+            "cookie_names_before": sorted(
+                session.cookies.keys()
+            ),
+        },
+        flush=True,
+    )
+
+    localized_response = session.post(
+        localization_url,
+        data=payload,
+        headers={
+            "Origin": BASE_URL,
+            "Referer": home_response.url,
+        },
+        timeout=45,
+        allow_redirects=True,
+    )
+    localized_response.raise_for_status()
+
+    _3345_log_response(
+        localized_response,
+        requested_url=localization_url,
+        purpose="localization_post",
+        page=None,
+        attempt=1,
+    )
+    _3345_save_html(
+        localized_response,
+        "localized-bootstrap.html",
+        debug=debug,
+    )
+
+    market = _3345_market(localized_response.text)
+
+    country = clean(
+        market.get("country")
+    ).upper()
+
+    html_lang = clean(
+        market.get("html_lang")
+    ).lower()
+
+    content_language = clean(
+        localized_response.headers.get("content-language")
+    ).lower()
+
+    final_path = urlparse(
+        localized_response.url
+    ).path
+
+    cart_currency_values = sorted({
+        clean(cookie.value).upper()
+        for cookie in session.cookies
+        if (
+            cookie.name == "cart_currency"
+            and clean(cookie.value)
+        )
+    })
+
+    localization_values = sorted({
+        clean(cookie.value).upper()
+        for cookie in session.cookies
+        if (
+            cookie.name == "localization"
+            and clean(cookie.value)
+        )
+    })
+
+    active_currency = (
+        cart_currency_values[0]
+        if len(cart_currency_values) == 1
+        else None
+    )
+
+    print(
+        "[3345-LOCALIZATION-RESULT]",
+        {
+            "final_url": localized_response.url,
+            "final_path": final_path,
+            "country": country or None,
+            "currency": active_currency,
+            "currency_source": "cart_currency_cookie",
+            "cart_currency_values": cart_currency_values,
+            "localization_values": localization_values,
+            "content_language": content_language or None,
+            "html_lang": html_lang or None,
+            "cookie_names_after": sorted(
+                session.cookies.keys()
+            ),
+        },
+        flush=True,
+    )
+
+    if country != "NL":
+        raise SystemExit(
+            "[ERROR] Shopify-localization activeerde niet "
+            f"de Nederlandse market: {market!r}"
+        )
+
+    if cart_currency_values != ["EUR"]:
+        raise SystemExit(
+            "[ERROR] Actieve cart_currency-cookie is niet "
+            f"eenduidig EUR: {cart_currency_values!r}"
+        )
+
+    if not html_lang.startswith("nl"):
+        raise SystemExit(
+            "[ERROR] Shopify-localization activeerde niet "
+            f"de Nederlandse HTML-taal: {market!r}"
+        )
+
+    if not content_language.startswith("nl"):
+        raise SystemExit(
+            "[ERROR] Shopify-localization gaf geen "
+            f"Nederlandse Content-Language: "
+            f"{content_language!r}"
+        )
+
+    if not final_path.startswith("/nl"):
+        raise SystemExit(
+            "[ERROR] Shopify-localization eindigde niet "
+            f"op de Nederlandse route: "
+            f"{localized_response.url!r}"
+        )
+
     return session
 
 
