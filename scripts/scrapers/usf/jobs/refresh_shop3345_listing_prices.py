@@ -82,9 +82,9 @@ SECONDHAND_ARTIST_MARKERS = (
     "3345 secondhand",
 )
 
-SECONDHAND_GENERAL_PATTERNS = (
-    r"\bused\b",
-    r"\bsecond[\s-]?hand\b",
+SECONDHAND_TITLE_PREFIX_PATTERN = re.compile(
+    r"^\s*used\s*-\s*",
+    flags=re.IGNORECASE,
 )
 
 
@@ -255,6 +255,7 @@ def node_is_hidden_or_disabled(node: Tag) -> bool:
     return any(
         (
             node.has_attr("disabled"),
+            node.has_attr("hidden"),
             clean(node.get("aria-disabled")).lower() == "true",
             clean(node.get("aria-hidden")).lower() == "true",
             "disabled" in classes,
@@ -263,35 +264,124 @@ def node_is_hidden_or_disabled(node: Tag) -> bool:
     )
 
 
+def variant_availability_from_product(
+    product: dict[str, Any],
+) -> str:
+    """Bepaal uitsluitend availability uit Shopify-variantdata.
+
+    Prijsvelden uit Shopify JSON zijn nadrukkelijk geen prijsautoriteit.
+    """
+    raw_tags = product.get("tags")
+
+    if isinstance(raw_tags, str):
+        tags = [
+            part.strip().lower()
+            for part in raw_tags.split(",")
+            if part.strip()
+        ]
+    elif isinstance(raw_tags, list):
+        tags = [
+            str(tag).strip().lower()
+            for tag in raw_tags
+            if str(tag).strip()
+        ]
+    else:
+        tags = []
+
+    normalized_tags = {
+        re.sub(r"[\s_-]+", " ", tag).strip()
+        for tag in tags
+    }
+
+    if normalized_tags.intersection(
+        {
+            "coming soon",
+            "pre order",
+            "preorder",
+        }
+    ):
+        return "preorder"
+
+    variants = product.get("variants")
+
+    if not isinstance(variants, list) or not variants:
+        return "unknown"
+
+    availability_values: list[bool] = []
+
+    for variant in variants:
+        if not isinstance(variant, dict):
+            return "unknown"
+
+        available = variant.get("available")
+
+        if not isinstance(available, bool):
+            return "unknown"
+
+        availability_values.append(available)
+
+    if any(availability_values):
+        return "in_stock"
+
+    return "out_of_stock"
+
+
+def variant_availability_index_from_payload(
+    payload: dict[str, Any],
+) -> dict[str, str]:
+    """Bouw een handle→availability-index uit Shopify-productdata.
+
+    Alleen variantavailability en statustags worden gelezen.
+    Prijsvelden worden volledig genegeerd.
+    """
+    products = payload.get("products")
+
+    if not isinstance(products, list):
+        return {}
+
+    index: dict[str, str] = {}
+
+    for product in products:
+        if not isinstance(product, dict):
+            continue
+
+        handle = str(product.get("handle") or "").strip().lower()
+
+        if not handle:
+            continue
+
+        index[handle] = variant_availability_from_product(
+            product
+        )
+
+    return index
+
+
 def has_active_add_to_cart(card: Tag) -> bool:
+    add_markers = (
+        "add to cart",
+        "add to chart",
+        "toevoegen aan winkelwagen",
+        "in winkelwagen",
+    )
+    unavailable_markers = (
+        "sold out",
+        "out of stock",
+        "uitverkocht",
+        "niet op voorraad",
+        "coming soon",
+    )
+
     card_text = clean(
         card.get_text(" ", strip=True)
     ).lower()
 
-    # Op 3345 kan de quick-addtekst buiten het feitelijke button-element
-    # staan, maar wel binnen dezelfde productkaart.
-    if any(
-        marker in card_text
-        for marker in (
-            "add to cart",
-            "add to chart",
-            "toevoegen aan winkelwagen",
-            "in winkelwagen",
-        )
-    ):
-        if not any(
-            marker in card_text
-            for marker in (
-                "sold out",
-                "out of stock",
-                "uitverkocht",
-                "niet op voorraad",
-                "coming soon",
-            )
-        ):
-            return True
+    # Expliciete niet-bestelbaarheid gaat altijd vóór quick-addtekst.
+    if any(marker in card_text for marker in unavailable_markers):
+        return False
 
     selectors = (
+        "cart-add-button[data-id][data-purchase-type='instant']",
         "form[action*='/cart/add'] button",
         "button[name='add']",
         "button",
@@ -313,15 +403,24 @@ def has_active_add_to_cart(card: Tag) -> bool:
                 or node.get("aria-label")
             ).lower()
 
-            if any(
-                marker in node_text
-                for marker in (
-                    "add to cart",
-                    "add to chart",
-                    "toevoegen aan winkelwagen",
-                    "in winkelwagen",
-                )
-            ):
+            if any(marker in node_text for marker in add_markers):
+                return True
+
+            # Op 3345 kan het zichtbare quick-addlabel naast de actieve
+            # button staan, maar wel binnen hetzelfde /cart/add-formulier.
+            form = node.find_parent("form")
+            if not isinstance(form, Tag):
+                continue
+
+            form_action = clean(form.get("action")).lower()
+            if "/cart/add" not in form_action:
+                continue
+
+            form_text = clean(
+                form.get_text(" ", strip=True)
+            ).lower()
+
+            if any(marker in form_text for marker in add_markers):
                 return True
 
     return False
@@ -360,6 +459,36 @@ def detect_source_availability(card: Tag) -> str:
     return "out_of_stock"
 
 
+def storefront_secondhand_from_product(
+    product: dict[str, Any],
+) -> bool:
+    """Herken tweedehands uitsluitend via bewezen Storefront-tags."""
+    raw_tags = product.get("tags")
+
+    if isinstance(raw_tags, str):
+        tags = [
+            part
+            for part in raw_tags.split(",")
+            if clean(part)
+        ]
+    elif isinstance(raw_tags, list):
+        tags = raw_tags
+    else:
+        tags = []
+
+    normalized_tags = {
+        re.sub(
+            r"[\s_-]+",
+            " ",
+            clean(tag).lower(),
+        ).strip()
+        for tag in tags
+        if clean(tag)
+    }
+
+    return "used base" in normalized_tags
+
+
 def detect_secondhand(
     *,
     artist: str | None,
@@ -367,6 +496,11 @@ def detect_secondhand(
     card_text: str,
     source_url: str,
 ) -> bool:
+    """Conservatieve HTML-fallback voor expliciete USED-producten.
+
+    Woorden die toevallig in een artiest- of albumtitel voorkomen zijn
+    nadrukkelijk geen tweedehandsbewijs.
+    """
     artist_text = clean(artist).lower()
 
     if any(
@@ -375,19 +509,27 @@ def detect_secondhand(
     ):
         return True
 
-    combined = " ".join(
-        (
-            clean(artist),
-            clean(title),
-            clean(card_text),
-            clean(source_url),
-        )
-    ).lower()
+    title_text = clean(title)
+
+    if SECONDHAND_TITLE_PREFIX_PATTERN.search(title_text):
+        return True
+
+    handle = source_product_id_from_url(source_url)
+    normalized_handle = clean(handle).lower()
+
+    if normalized_handle.startswith("used-"):
+        return True
+
+    # Alleen een expliciete 3345-aanduiding in de kaarttekst geldt
+    # nog als fallback; gewone woorden "used" en "second hand" niet.
+    normalized_card_text = clean(card_text).lower()
 
     return any(
-        re.search(pattern, combined, flags=re.IGNORECASE)
-        for pattern in SECONDHAND_GENERAL_PATTERNS
+        marker in normalized_card_text
+        for marker in SECONDHAND_ARTIST_MARKERS
     )
+
+
 
 
 def extract_artist(card: Tag) -> str | None:
@@ -636,13 +778,24 @@ def public_availability(
     secondhand: bool,
     add_to_cart: bool,
 ) -> str:
+    """Vertaal de bewezen bronstatus naar publieke availability.
+
+    De listing-CTA is alleen diagnostiek en geen voorraadautoriteit.
+    """
+    del add_to_cart
+
     if secondhand:
         return "out_of_stock"
 
-    if source_availability == "in_stock" and add_to_cart:
-        return "in_stock"
+    if source_availability in {
+        "in_stock",
+        "out_of_stock",
+        "preorder",
+        "unknown",
+    }:
+        return source_availability
 
-    return "out_of_stock"
+    return "unknown"
 
 
 def parse_listing_page(
@@ -652,6 +805,8 @@ def parse_listing_page(
     listing_url: str,
     seen_at: datetime,
     debug: bool,
+    variant_availability_by_handle: dict[str, str] | None = None,
+    secondhand_by_handle: dict[str, bool] | None = None,
 ) -> tuple[list[DiscoveredLink], list[ListingOffer]]:
     soup = BeautifulSoup(html, "html.parser")
 
@@ -713,13 +868,35 @@ def parse_listing_page(
             continue
 
         add_to_cart = has_active_add_to_cart(card)
-        source_availability = detect_source_availability(card)
-        secondhand = detect_secondhand(
-            artist=artist,
-            title=title,
-            card_text=card_text,
-            source_url=source_url,
-        )
+        handle = source_product_id_from_url(source_url)
+        normalized_handle = clean(handle).lower()
+
+        if variant_availability_by_handle is None:
+            source_availability = detect_source_availability(card)
+        else:
+            source_availability = (
+                variant_availability_by_handle.get(
+                    normalized_handle,
+                    "unknown",
+                )
+                if normalized_handle
+                else "unknown"
+            )
+
+        if (
+            secondhand_by_handle is not None
+            and normalized_handle in secondhand_by_handle
+        ):
+            secondhand = bool(
+                secondhand_by_handle[normalized_handle]
+            )
+        else:
+            secondhand = detect_secondhand(
+                artist=artist,
+                title=title,
+                card_text=card_text,
+                source_url=source_url,
+            )
         availability = public_availability(
             source_availability=source_availability,
             secondhand=secondhand,
@@ -911,6 +1088,98 @@ def sync_offers(
         },
         flush=True,
     )
+
+
+def sync_registry_out_of_stock_prices(
+    *,
+    write: bool,
+) -> dict[str, int]:
+    """Werk uitsluitend bestaande 3345-prijsregels bij naar out_of_stock.
+
+    De laatst bekende prijs, valuta, product-URL en is_active blijven
+    ongewijzigd. De registry-last_seen_at bepaalt de waarnemingstijd.
+    """
+
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select count(*)
+                from public.prices pr
+                join public.shops sh
+                  on sh.id = pr.shop_id
+                join public.shop_product_links spl
+                  on spl.shop_id = %s
+                 and trim(
+                       trailing '/'
+                       from split_part(spl.source_url, '?', 1)
+                     )
+                   = trim(
+                       trailing '/'
+                       from split_part(pr.product_url, '?', 1)
+                     )
+                where sh.domain = %s
+                  and coalesce(
+                        spl.payload->>'availability',
+                        'unknown'
+                      ) = 'out_of_stock'
+                  and pr.availability <> 'out_of_stock'
+                """,
+                (
+                    SHOP_ID,
+                    SHOP_DOMAIN,
+                ),
+            )
+
+            row = cur.fetchone()
+            candidates = int((row or (0,))[0] or 0)
+
+            if not write:
+                return {
+                    "candidates": candidates,
+                    "updated": 0,
+                }
+
+            cur.execute(
+                """
+                update public.prices pr
+                set availability = 'out_of_stock',
+                    last_seen_at = greatest(
+                        pr.last_seen_at,
+                        spl.last_seen_at
+                    ),
+                    updated_at = now()
+                from public.shops sh,
+                     public.shop_product_links spl
+                where pr.shop_id = sh.id
+                  and sh.domain = %s
+                  and spl.shop_id = %s
+                  and trim(
+                        trailing '/'
+                        from split_part(spl.source_url, '?', 1)
+                      )
+                    = trim(
+                        trailing '/'
+                        from split_part(pr.product_url, '?', 1)
+                      )
+                  and coalesce(
+                        spl.payload->>'availability',
+                        'unknown'
+                      ) = 'out_of_stock'
+                  and pr.availability <> 'out_of_stock'
+                """,
+                (
+                    SHOP_DOMAIN,
+                    SHOP_ID,
+                ),
+            )
+
+            updated = int(cur.rowcount or 0)
+
+    return {
+        "candidates": candidates,
+        "updated": updated,
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1230,23 +1499,618 @@ def build_3345_session(*, debug: bool) -> requests.Session:
     return session
 
 
-def fetch_3345_listing(session: requests.Session, listing_url: str, *, page: int, debug: bool) -> requests.Response:
+def extract_storefront_config_from_javascript(
+    javascript: str,
+) -> tuple[str, str]:
+    """Lees de publieke Shopify Storefront-configuratie uit main.js."""
+    matches = re.findall(
+        r"""apiVersion\s*:\s*["']([^"']+)["']\s*,\s*"""
+        r"""publicAccessToken\s*:\s*["']([^"']+)["']""",
+        javascript,
+    )
+
+    unique_configs = {
+        (
+            clean(api_version),
+            clean(public_token),
+        )
+        for api_version, public_token in matches
+        if clean(api_version) and clean(public_token)
+    }
+
+    if len(unique_configs) != 1:
+        raise RuntimeError(
+            "Storefront-configuratie niet eenduidig gevonden: "
+            f"{len(unique_configs)} configuraties"
+        )
+
+    return next(iter(unique_configs))
+
+
+def fetch_storefront_config(
+    session: requests.Session,
+) -> tuple[str, str]:
+    """Haal de publieke Storefront-configuratie één keer op."""
+    homepage_url = f"{BASE_URL}/nl"
+
+    homepage_response = session.get(
+        homepage_url,
+        headers={
+            "Accept": (
+                "text/html,application/xhtml+xml,"
+                "application/xml;q=0.9,*/*;q=0.8"
+            ),
+            "Referer": f"{BASE_URL}/",
+        },
+        timeout=45,
+        allow_redirects=True,
+    )
+    homepage_response.raise_for_status()
+
+    soup = BeautifulSoup(
+        homepage_response.text,
+        "html.parser",
+    )
+
+    main_javascript_url = next(
+        (
+            urljoin(
+                BASE_URL,
+                clean(script.get("src")),
+            )
+            for script in soup.select("script[src]")
+            if "/assets/main.js" in clean(
+                script.get("src")
+            )
+        ),
+        None,
+    )
+
+    if not main_javascript_url:
+        raise RuntimeError(
+            "Storefront main.js niet gevonden"
+        )
+
+    main_response = session.get(
+        main_javascript_url,
+        headers={
+            "Accept": (
+                "application/javascript,text/javascript,"
+                "*/*;q=0.8"
+            ),
+            "Referer": homepage_response.url,
+        },
+        timeout=45,
+        allow_redirects=True,
+    )
+    main_response.raise_for_status()
+
+    config = extract_storefront_config_from_javascript(
+        main_response.text
+    )
+
+    print(
+        "[3345-STOREFRONT-CONFIG]",
+        {
+            "api_version": config[0],
+            "public_token_present": bool(config[1]),
+        },
+        flush=True,
+    )
+
+    return config
+
+
+def extract_listing_handles(html: str) -> list[str]:
+    """Haal unieke Shopify-handles in zichtbare listingvolgorde op."""
+    soup = BeautifulSoup(html, "html.parser")
+    handles: list[str] = []
+    seen: set[str] = set()
+
+    for anchor in soup.select("a[href*='/products/']"):
+        source_url = normalize_product_url(
+            anchor.get("href")
+        )
+
+        if not source_url:
+            continue
+
+        handle = source_product_id_from_url(source_url)
+
+        if not handle:
+            continue
+
+        normalized = clean(handle).lower()
+
+        if not normalized or normalized in seen:
+            continue
+
+        seen.add(normalized)
+        handles.append(normalized)
+
+    return handles
+
+
+def fetch_variant_availability_for_handles(
+    session: requests.Session,
+    *,
+    handles: list[str],
+    api_version: str,
+    public_access_token: str,
+    secondhand_by_handle: dict[str, bool] | None = None,
+) -> dict[str, str]:
+    """Controleer uitsluitend producten van één listingpagina."""
+    unique_handles: list[str] = []
+    seen: set[str] = set()
+
+    for handle in handles:
+        normalized = clean(handle).lower()
+
+        if not normalized or normalized in seen:
+            continue
+
+        seen.add(normalized)
+        unique_handles.append(normalized)
+
+    if not unique_handles:
+        return {}
+
+    variable_definitions = ", ".join(
+        f"$handle{index}: String!"
+        for index in range(len(unique_handles))
+    )
+
+    selections = []
+
+    for index in range(len(unique_handles)):
+        selections.append(
+            f"""
+  p{index}: productByHandle(handle: $handle{index}) {{
+    handle
+    tags
+    availableForSale
+    variants(first: 250) {{
+      nodes {{
+        availableForSale
+      }}
+    }}
+  }}"""
+        )
+
+    query = (
+        f"query ListingProductAvailability("
+        f"{variable_definitions}"
+        f") @inContext(country: NL) {{"
+        + "".join(selections)
+        + "\n}"
+    )
+
+    variables = {
+        f"handle{index}": handle
+        for index, handle in enumerate(unique_handles)
+    }
+
+    endpoint = (
+        f"{BASE_URL}/api/"
+        f"{api_version}/graphql.json"
+    )
+
+    response = session.post(
+        endpoint,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "X-Shopify-Storefront-Access-Token": (
+                public_access_token
+            ),
+            "Referer": COLLECTION_URL,
+        },
+        json={
+            "query": query,
+            "variables": variables,
+        },
+        timeout=45,
+        allow_redirects=True,
+    )
+    response.raise_for_status()
+
+    payload = response.json()
+
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            "Storefront-response is geen object"
+        )
+
+    errors = payload.get("errors")
+
+    if errors:
+        raise RuntimeError(
+            f"Storefront GraphQL-errors: {errors!r}"
+        )
+
+    data = payload.get("data")
+
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            "Storefront-response bevat geen geldige data"
+        )
+
+    result: dict[str, str] = {}
+
+    if secondhand_by_handle is not None:
+        secondhand_by_handle.clear()
+
+    for index, requested_handle in enumerate(
+        unique_handles
+    ):
+        product = data.get(f"p{index}")
+
+        if product is None:
+            continue
+
+        if not isinstance(product, dict):
+            raise RuntimeError(
+                "Storefront-product is geen object"
+            )
+
+        returned_handle = clean(
+            product.get("handle")
+        ).lower()
+
+        if not returned_handle:
+            returned_handle = requested_handle
+
+        variants_connection = product.get("variants")
+        variant_nodes = (
+            variants_connection.get("nodes")
+            if isinstance(variants_connection, dict)
+            else None
+        )
+
+        if not isinstance(variant_nodes, list):
+            variant_nodes = []
+
+        normalized_product = {
+            "handle": returned_handle,
+            "tags": product.get("tags"),
+            "variants": [
+                {
+                    "available": variant.get(
+                        "availableForSale"
+                    ),
+                }
+                for variant in variant_nodes
+                if isinstance(variant, dict)
+            ],
+        }
+
+        result[returned_handle] = (
+            variant_availability_from_product(
+                normalized_product
+            )
+        )
+
+        if secondhand_by_handle is not None:
+            secondhand_by_handle[returned_handle] = (
+                storefront_secondhand_from_product(
+                    normalized_product
+                )
+            )
+
+    storefront_match_count = len(result)
+    ajax_match_count = 0
+
+    # Start zonder vertraging; activeer pacing na een 429.
+    ajax_pacing_seconds = 0.0
+
+    for requested_handle in unique_handles:
+        if ajax_pacing_seconds > 0:
+            time.sleep(ajax_pacing_seconds)
+
+        if requested_handle in result:
+            continue
+
+        ajax_url = (
+            f"{BASE_URL}/products/"
+            f"{requested_handle}.js"
+        )
+
+        ajax_response: requests.Response | None = None
+
+        for ajax_attempt in (1, 2, 3):
+            ajax_response = session.get(
+                ajax_url,
+                headers={
+                    "Accept": (
+                        "application/json,"
+                        "text/javascript,*/*"
+                    ),
+                    "Referer": COLLECTION_URL,
+                },
+                timeout=45,
+                allow_redirects=True,
+            )
+
+            retryable_statuses = {
+                429,
+                502,
+                503,
+                504,
+            }
+
+            if (
+                ajax_response.status_code
+                not in retryable_statuses
+            ):
+                break
+
+            # Na drie tijdelijke fouten stoppen we hard. We gokken
+            # geen availability en verwerken het product niet als
+            # unknown.
+            if ajax_attempt == 3:
+                ajax_response.raise_for_status()
+
+            raw_retry_after = clean(
+                ajax_response.headers.get(
+                    "Retry-After"
+                )
+            )
+
+            if ajax_response.status_code == 429:
+                # Vertraag volgende Ajax-productrequests op deze pagina.
+                ajax_pacing_seconds = 1.0
+
+            try:
+                retry_after = float(
+                    raw_retry_after
+                )
+            except (TypeError, ValueError):
+                if ajax_response.status_code == 429:
+                    retry_after = (
+                        10.0
+                        if ajax_attempt == 1
+                        else 30.0
+                    )
+                else:
+                    retry_after = float(
+                        5 * (
+                            2 ** (
+                                ajax_attempt - 1
+                            )
+                        )
+                    )
+
+            # Voorkom zowel een nul-wacht als een buitensporige
+            # pauze uit een onbetrouwbare responseheader.
+            retry_after = max(
+                1.0,
+                min(retry_after, 30.0),
+            )
+
+            print(
+                "[3345-AJAX-RETRY]",
+                {
+                    "handle": requested_handle,
+                    "attempt": ajax_attempt,
+                    "status": (
+                        ajax_response.status_code
+                    ),
+                    "retry_after_seconds": (
+                        retry_after
+                    ),
+                },
+                flush=True,
+            )
+
+            time.sleep(retry_after)
+
+        if ajax_response is None:
+            raise RuntimeError(
+                "3345 Ajax-productrequest leverde "
+                f"geen response voor {requested_handle}"
+            )
+
+        # Een werkelijk ontbrekend product blijft conservatief
+        # unresolved en wordt later door de parser unknown.
+        if ajax_response.status_code == 404:
+            continue
+
+        # Andere HTTP-fouten worden niet opnieuw geprobeerd.
+        ajax_response.raise_for_status()
+
+        try:
+            ajax_product = ajax_response.json()
+        except Exception as exc:
+            raise RuntimeError(
+                "3345 Ajax-productresponse bevat "
+                f"ongeldige JSON voor {requested_handle}"
+            ) from exc
+
+        if not isinstance(ajax_product, dict):
+            raise RuntimeError(
+                "3345 Ajax-productresponse is geen object "
+                f"voor {requested_handle}"
+            )
+
+        ajax_status = (
+            variant_availability_from_product(
+                ajax_product
+            )
+        )
+
+        if ajax_status not in {
+            "in_stock",
+            "out_of_stock",
+            "preorder",
+        }:
+            continue
+
+        # Bewust koppelen aan de aangevraagde listinghandle.
+        # Geen enkel JSON-prijsveld wordt gelezen of opgeslagen.
+        result[requested_handle] = ajax_status
+        ajax_match_count += 1
+
+        if secondhand_by_handle is not None:
+            secondhand_by_handle[requested_handle] = (
+                storefront_secondhand_from_product(
+                    ajax_product
+                )
+            )
+
+    print(
+        "[3345-AVAILABILITY-PAGE]",
+        {
+            "transport": (
+                "storefront_product_by_handle"
+                "_with_ajax_fallback"
+            ),
+            "requested_handles": len(unique_handles),
+            "storefront_matches": (
+                storefront_match_count
+            ),
+            "ajax_matches": ajax_match_count,
+            "matched_handles": len(result),
+            "missing_handles": (
+                len(unique_handles) - len(result)
+            ),
+        },
+        flush=True,
+    )
+
+    return result
+
+
+
+
+
+
+def fetch_3345_listing(
+    session: requests.Session,
+    listing_url: str,
+    *,
+    page: int,
+    debug: bool,
+) -> requests.Response:
     response: requests.Response | None = None
     referer = f"{BASE_URL}/"
+
+    # De buitenste pogingen blijven bedoeld voor onvolledige of
+    # onverwachte listing-HTML. Een 429 krijgt daarbinnen een
+    # afzonderlijke, begrensde retry.
     for attempt in (1, 2):
-        response = session.get(listing_url, headers={"Referer": referer}, timeout=45, allow_redirects=True)
+        for rate_attempt in (1, 2, 3):
+            response = session.get(
+                listing_url,
+                headers={
+                    "Referer": referer,
+                },
+                timeout=45,
+                allow_redirects=True,
+            )
+
+            if response.status_code != 429:
+                break
+
+            # Na de derde 429 stoppen we hard. De pagina wordt niet
+            # overgeslagen en de scan wordt niet als compleet gezien.
+            if rate_attempt == 3:
+                response.raise_for_status()
+
+            raw_retry_after = clean(
+                response.headers.get(
+                    "Retry-After"
+                )
+            )
+
+            try:
+                retry_after = float(
+                    raw_retry_after
+                )
+            except (TypeError, ValueError):
+                # Listing-rate-limits vragen een ruimere pauze dan
+                # individuele Ajax-productrequests.
+                retry_after = float(
+                    10 * (2 ** (rate_attempt - 1))
+                )
+
+            retry_after = max(
+                1.0,
+                min(retry_after, 60.0),
+            )
+
+            print(
+                "[3345-LISTING-RETRY]",
+                {
+                    "page": page,
+                    "attempt": rate_attempt,
+                    "status": 429,
+                    "retry_after_seconds": retry_after,
+                },
+                flush=True,
+            )
+
+            time.sleep(retry_after)
+
+        if response is None:
+            raise RuntimeError(
+                "3345 listingrequest leverde "
+                f"geen response op voor pagina {page}"
+            )
+
+        # Niet-429 HTTP-fouten blijven onmiddellijk fataal.
         response.raise_for_status()
-        metrics = _3345_log_response(response, requested_url=listing_url, purpose="listing", page=page, attempt=attempt)
-        print("[3345-RESPONSE]", {"purpose": "listing_session", "page": page, "attempt": attempt, "session_cookie_names": sorted(session.cookies.keys())}, flush=True)
-        _3345_save_html(response, f"listing-page-{page}-attempt-{attempt}.html", debug=debug)
-        if int(metrics["product_cards"]) > 0 and int(metrics["price_blocks"]) > 0 and bool(metrics["contains_euro"]):
+
+        metrics = _3345_log_response(
+            response,
+            requested_url=listing_url,
+            purpose="listing",
+            page=page,
+            attempt=attempt,
+        )
+
+        print(
+            "[3345-RESPONSE]",
+            {
+                "purpose": "listing_session",
+                "page": page,
+                "attempt": attempt,
+                "session_cookie_names": sorted(
+                    session.cookies.keys()
+                ),
+            },
+            flush=True,
+        )
+
+        _3345_save_html(
+            response,
+            f"listing-page-{page}-attempt-{attempt}.html",
+            debug=debug,
+        )
+
+        if (
+            int(metrics["product_cards"]) > 0
+            and int(metrics["price_blocks"]) > 0
+            and bool(metrics["contains_euro"])
+        ):
             break
+
         referer = response.url
         time.sleep(0.75)
+
     if response is None:
-        raise RuntimeError("3345 listingrequest leverde geen response op")
-    _3345_save_html(response, f"listing-page-{page}.html", debug=debug)
+        raise RuntimeError(
+            "3345 listingrequest leverde geen response op"
+        )
+
+    _3345_save_html(
+        response,
+        f"listing-page-{page}.html",
+        debug=debug,
+    )
+
     return response
+
+
 
 def main() -> int:
     args = build_parser().parse_args()
@@ -1272,6 +2136,11 @@ def main() -> int:
         )
 
     session = build_3345_session(debug=args.debug)
+
+    (
+        storefront_api_version,
+        storefront_public_access_token,
+    ) = fetch_storefront_config(session)
 
     run_started_at = datetime.now(timezone.utc)
 
@@ -1321,6 +2190,23 @@ def main() -> int:
 
         consecutive_failures = 0
 
+        listing_handles = extract_listing_handles(
+            response.text
+        )
+
+        secondhand_by_handle: dict[str, bool] = {}
+
+        variant_availability_by_handle = (
+            fetch_variant_availability_for_handles(
+                session,
+                handles=listing_handles,
+                api_version=storefront_api_version,
+                public_access_token=(
+                    storefront_public_access_token
+                ),
+                secondhand_by_handle=secondhand_by_handle,
+            )
+        )
 
         links, offers = parse_listing_page(
             response.text,
@@ -1328,6 +2214,10 @@ def main() -> int:
             listing_url=listing_url,
             seen_at=run_started_at,
             debug=args.debug,
+            variant_availability_by_handle=(
+                variant_availability_by_handle
+            ),
+            secondhand_by_handle=secondhand_by_handle,
         )
 
         signature = tuple(
@@ -1465,6 +2355,19 @@ def main() -> int:
             "[ERROR] De 3345-scan leverde geen productlinks op."
         )
 
+    # Bij max_pages=0 is een volledige catalogusscan gevraagd.
+    # Alleen een lege of herhaalde eindpagina bewijst dan dat de scan
+    # veilig compleet is. Iedere andere voortijdige stop blokkeert
+    # zowel dry-run-succes als alle databasewrites.
+    if args.max_pages == 0 and not scan_completed_safely:
+        print(
+            "[3345-LISTING][ERROR] volledige scan is voortijdig "
+            "afgebroken; geen registry-, prijs- of "
+            "delistingwrites uitgevoerd.",
+            flush=True,
+        )
+        return 1
+
     if not args.write:
         print(
             "[3345-LISTING] dry-run compleet; "
@@ -1525,6 +2428,16 @@ def main() -> int:
             "de scan was niet aantoonbaar volledig.",
             flush=True,
         )
+
+    out_of_stock_result = sync_registry_out_of_stock_prices(
+        write=True,
+    )
+
+    print(
+        "[3345-LISTING-OUT-OF-STOCK]",
+        out_of_stock_result,
+        flush=True,
+    )
 
     return 0
 
