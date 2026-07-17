@@ -92,6 +92,45 @@ def split_artist_title(text: str) -> tuple[str | None, str | None]:
             return clean(a) or None, clean(t) or None
     return None, text or None
 
+
+def extract_listing_card_prices(anchor) -> list[str]:
+    """
+    Lees uitsluitend prijzen uit de kleinste DOM-scope rond de
+    productlink die exact één productprijs bevat.
+
+    Een bovenliggende scope met meerdere ItemTile-prijzen is ambigu
+    en mag nooit als prijsbron worden gebruikt.
+    """
+    candidates = [anchor, *list(anchor.parents)[:8]]
+
+    for candidate in candidates:
+        price_nodes = candidate.select(
+            '[class*="itemTilePrice"]'
+        )
+
+        if not price_nodes:
+            continue
+
+        if len(price_nodes) != 1:
+            return []
+
+        price_text = clean(
+            price_nodes[0].get_text(" ", strip=True)
+        )
+
+        raw_prices = re.findall(
+            r"(?<!\d)([0-9]{1,5})"
+            r"(?:,([0-9]{2})|,-)(?!\d)",
+            price_text,
+        )
+
+        return [
+            f"{int(euros)}.{cents or '00'}"
+            for euros, cents in raw_prices
+        ]
+
+    return []
+
 def parse_listing_page(html: str, *, listing_url: str, page: int, seen_at: datetime):
     soup = BeautifulSoup(html, "html.parser")
     links: dict[str, DiscoveredLink] = {}
@@ -154,9 +193,17 @@ def parse_listing_page(html: str, *, listing_url: str, page: int, seen_at: datet
                 break
 
         text = clean(item.get_text(" ", strip=True))
-        raw_prices = re.findall(r"\b([0-9]{1,5})(?:,([0-9]{2})|,-)\b", text)
-        prices = [f"{int(e)}.{c or '00'}" for e, c in raw_prices]
+
+        # Prijs uitsluitend uit de eigen producttegel lezen.
+        # Nooit uit de bredere parent met naburige/gerelateerde producten.
+        prices = extract_listing_card_prices(a)
         if not prices:
+            print(
+                "[MYRECORDSTORE-LISTING-WARN] "
+                "missing_or_ambiguous_card_price",
+                {"url": source_url},
+                flush=True,
+            )
             continue
 
         price = prices[-1]
@@ -198,6 +245,8 @@ def parse_listing_page(html: str, *, listing_url: str, page: int, seen_at: datet
             "title_raw": title_raw,
             "artist_raw": artist_raw,
             "price": price,
+            "price_candidates": prices,
+            "price_selector": '[class*="itemTilePrice"]',
             "price_source": "listing",
             "sale_price": sale_price,
             "original_price": original_price,
