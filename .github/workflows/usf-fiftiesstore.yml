@@ -79,6 +79,17 @@ jobs:
           if [ "${{ steps.settings.outputs.write }}" = "true" ]; then cmd+=(--write); fi
           "${cmd[@]}"
 
+      - name: Sync FiftiesStore listing prices to live prices
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/scrapers/usf/jobs/sync_fiftiesstore_listing_prices.py
+          ARGS=(--limit 10000)
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" || "${{ github.event.inputs.write }}" == "true" ]]; then
+            ARGS+=(--write)
+          fi
+          python -u -m scripts.scrapers.usf.jobs.sync_fiftiesstore_listing_prices "${ARGS[@]}"
+
       - name: Stage
         run: |
           cmd=(python -u -m scripts.scrapers.usf.jobs.stage_fiftiesstore --limit "${{ steps.settings.outputs.stage_limit }}")
