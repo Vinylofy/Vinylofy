@@ -16,7 +16,7 @@ const links: QuickLink[] = [
   {
     href: "/top-33",
     label: "Top 33",
-    imageSrc: "/home-cards/top-25-white.png",
+    imageSrc: "/home-cards/Top33.png",
   },
   {
     href: "/topdeals",
