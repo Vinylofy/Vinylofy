@@ -96,18 +96,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           TARGET="scripts/scrapers/usf/jobs/refresh_cdhal_listing_prices.py"
 
-          grep -q             'PRICE_AUTHORITY = "listing_html_only"'             "$TARGET"
-
-          if grep -Eq             'fetch_collection_json_prices|selected_json_price|json_product_price|json_variant_price|collection_products_json'             "$TARGET"; then
-            echo "[ERROR] JSON-prijsfallback is opnieuw aanwezig."
+          if grep -Eq 'fetch_collection_json_prices|selected_json_price|json_product_price|json_variant_price|collection_products_json' "$TARGET"; then
+            echo "[ERROR] JSON-prijsfallback is aanwezig."
             exit 1
           fi
 
-          echo "[OK] CD Hal Ruinen gebruikt uitsluitend listing-HTML."
+          grep -q 'BeautifulSoup' "$TARGET"
+          grep -q 'product-item' "$TARGET"
 
+          echo "[OK] CD Hal Ruinen gebruikt listing-HTML zonder JSON-prijsfallback."
       - name: Validate CLIs
         shell: bash
         run: |
