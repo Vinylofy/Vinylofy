@@ -1,78 +1,170 @@
-name: USF Everything Jazz listing validation
+name: USF - Everything Jazz Listing
 
 on:
   workflow_dispatch:
     inputs:
       max_pages:
-        description: "0 = volledige scan; gebruik 2 voor eerste dry-run"
+        description: "Maximum aantal collectiepagina's"
         required: true
-        default: "2"
+        default: "40"
         type: string
       page_size:
-        description: "Shopify page size; maximaal 100"
+        description: "Shopify-producten per pagina; maximaal 100"
         required: true
         default: "50"
         type: string
       write:
-        description: "Schrijf registry/prijzen; standaard uit"
+        description: "Database daadwerkelijk bijwerken"
         required: true
         default: false
         type: boolean
       debug:
-        description: "Toon productdebug"
+        description: "Uitgebreide listingdiagnostiek"
         required: true
         default: false
         type: boolean
+
+  schedule:
+    # 03:12 Nederlandse zomertijd / 02:12 wintertijd
+    - cron: "12 1 * * *"
+
+    # 11:12 Nederlandse zomertijd / 10:12 wintertijd
+    - cron: "12 9 * * *"
+
+    # 19:12 Nederlandse zomertijd / 18:12 wintertijd
+    - cron: "12 17 * * *"
 
 permissions:
   contents: read
 
 concurrency:
-  group: usf-everythingjazz
+  group: vinylofy-everythingjazz
   cancel-in-progress: false
 
 jobs:
   listing:
+    name: Refresh listing prices and availability
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
+
     env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      PYTHONUNBUFFERED: "1"
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-          cache: pip
+
       - name: Install dependencies
-        run: python -m pip install --upgrade pip && pip install -r requirements.txt
-      - name: Validate Everything Jazz modules
-        run: |
-          python -m py_compile \
-            scripts/scrapers/usf/jobs/refresh_everythingjazz_listing_prices.py \
-            scripts/scrapers/usf/jobs/detail_everythingjazz.py \
-            scripts/scrapers/usf/jobs/stage_everythingjazz.py \
-            scripts/scrapers/usf/jobs/promote_everythingjazz.py \
-            scripts/scrapers/usf/jobs/quarantine_everythingjazz.py \
-            scripts/scrapers/usf/jobs/run_everythingjazz_pipeline.py
-          python -m scripts.scrapers.usf.jobs.refresh_everythingjazz_listing_prices --help >/dev/null
-          python -m scripts.scrapers.usf.jobs.run_everythingjazz_pipeline --help >/dev/null
-      - name: Run listing validation
         shell: bash
         run: |
-          set -euo pipefail
-          flags=()
-          if [[ "${{ inputs.write }}" == "true" ]]; then flags+=(--write); fi
-          if [[ "${{ inputs.debug }}" == "true" ]]; then flags+=(--debug); fi
-          python -m scripts.scrapers.usf.jobs.run_everythingjazz_pipeline \
-            --mode listing \
-            --listing-max-pages "${{ inputs.max_pages }}" \
-            --listing-page-size "${{ inputs.page_size }}" \
-            "${flags[@]}"
-      - name: Upload validation output
+          python -m pip install --upgrade pip
+
+          if [[ -f requirements.txt ]]; then
+            python -m pip install -r requirements.txt
+          fi
+
+          if [[ -f requirements-scrapers.txt ]]; then
+            python -m pip install -r requirements-scrapers.txt
+          fi
+
+          python -m pip install \
+            requests \
+            beautifulsoup4 \
+            "psycopg[binary]" \
+            python-dotenv
+
+      - name: Resolve configuration
+        id: config
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            echo "max_pages=40" >> "$GITHUB_OUTPUT"
+            echo "page_size=50" >> "$GITHUB_OUTPUT"
+            echo "write=true" >> "$GITHUB_OUTPUT"
+            echo "debug=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "max_pages=${{ inputs.max_pages }}" >> "$GITHUB_OUTPUT"
+            echo "page_size=${{ inputs.page_size }}" >> "$GITHUB_OUTPUT"
+            echo "write=${{ inputs.write }}" >> "$GITHUB_OUTPUT"
+            echo "debug=${{ inputs.debug }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate configuration and modules
+        shell: bash
+        run: |
+          MAX_PAGES="${{ steps.config.outputs.max_pages }}"
+          PAGE_SIZE="${{ steps.config.outputs.page_size }}"
+
+          if [[ -z "${DATABASE_URL:-}" ]]; then
+            echo "[ERROR] GitHub Secret DATABASE_URL ontbreekt."
+            exit 1
+          fi
+
+          if ! [[ "$MAX_PAGES" =~ ^[0-9]+$ ]] || (( MAX_PAGES < 1 || MAX_PAGES > 100 )); then
+            echo "[ERROR] max_pages moet tussen 1 en 100 liggen."
+            exit 1
+          fi
+
+          if ! [[ "$PAGE_SIZE" =~ ^[0-9]+$ ]] || (( PAGE_SIZE < 1 || PAGE_SIZE > 100 )); then
+            echo "[ERROR] page_size moet tussen 1 en 100 liggen."
+            exit 1
+          fi
+
+          python -m py_compile \
+            scripts/scrapers/usf/jobs/everythingjazz_product_type.py \
+            scripts/scrapers/usf/jobs/refresh_everythingjazz_listing_prices.py
+
+          python -m scripts.scrapers.usf.jobs.refresh_everythingjazz_listing_prices \
+            --help >/dev/null
+
+      - name: Run Everything Jazz listing refresh
+        shell: bash
+        run: |
+          set -o pipefail
+
+          mkdir -p output/everythingjazz
+
+          LOG="output/everythingjazz/listing-${{ github.run_id }}.log"
+
+          CMD=(
+            python -u -m
+            scripts.scrapers.usf.jobs.refresh_everythingjazz_listing_prices
+            --start-page 1
+            --max-pages "${{ steps.config.outputs.max_pages }}"
+            --page-size "${{ steps.config.outputs.page_size }}"
+            --sleep 0.25
+          )
+
+          if [[ "${{ steps.config.outputs.write }}" == "true" ]]; then
+            CMD+=(--write)
+          fi
+
+          if [[ "${{ steps.config.outputs.debug }}" == "true" ]]; then
+            CMD+=(--debug)
+          fi
+
+          echo "Event: ${{ github.event_name }}"
+          echo "Write: ${{ steps.config.outputs.write }}"
+          echo "Max pages: ${{ steps.config.outputs.max_pages }}"
+          echo "Page size: ${{ steps.config.outputs.page_size }}"
+
+          printf "Command:"
+          printf " %q" "${CMD[@]}"
+          echo
+
+          "${CMD[@]}" 2>&1 | tee "$LOG"
+
+      - name: Upload listing log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
-          name: usf-everythingjazz-listing-${{ github.run_id }}
-          path: output/usf-everythingjazz/
+          name: everythingjazz-listing-${{ github.run_id }}
+          path: output/everythingjazz/
           if-no-files-found: warn
+          retention-days: 7

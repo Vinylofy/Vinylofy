@@ -1,92 +1,200 @@
-name: USF Everything Jazz detail validation
+name: USF - Everything Jazz Detail
 
 on:
   workflow_dispatch:
     inputs:
-      detail_limit:
-        description: "Aantal detailrecords"
+      limit:
+        description: "Maximum aantal detailproducten"
         required: true
-        default: "10"
-        type: string
-      stage_limit:
-        description: "Aantal te stagen records"
-        required: true
-        default: "10"
-        type: string
-      promote_limit:
-        description: "Aantal te promoten records"
-        required: true
-        default: "10"
-        type: string
-      quarantine_limit:
-        description: "Aantal quarantainerecords"
-        required: true
-        default: "25"
+        default: "100"
         type: string
       write:
-        description: "Schrijf raw/stage/promote/quarantine; standaard uit"
+        description: "Detail, stage, promote en quarantine daadwerkelijk schrijven"
         required: true
         default: false
         type: boolean
       debug:
-        description: "Toon detaildebug"
+        description: "Uitgebreide detaildiagnostiek"
         required: true
-        default: true
+        default: false
         type: boolean
+
+  schedule:
+    # Dinsdag en vrijdag:
+    # 06:27 Nederlandse zomertijd / 05:27 wintertijd
+    - cron: "27 4 * * 2,5"
 
 permissions:
   contents: read
 
 concurrency:
-  group: usf-everythingjazz
+  group: vinylofy-everythingjazz
   cancel-in-progress: false
 
 jobs:
   detail:
+    name: Detail, stage, promote and quarantine
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
+
     env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      PYTHONUNBUFFERED: "1"
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-          cache: pip
+
       - name: Install dependencies
-        run: python -m pip install --upgrade pip && pip install -r requirements.txt
-      - name: Validate Everything Jazz modules
+        shell: bash
         run: |
+          python -m pip install --upgrade pip
+
+          if [[ -f requirements.txt ]]; then
+            python -m pip install -r requirements.txt
+          fi
+
+          if [[ -f requirements-scrapers.txt ]]; then
+            python -m pip install -r requirements-scrapers.txt
+          fi
+
+          python -m pip install \
+            requests \
+            beautifulsoup4 \
+            "psycopg[binary]" \
+            python-dotenv
+
+      - name: Resolve configuration
+        id: config
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            echo "limit=250" >> "$GITHUB_OUTPUT"
+            echo "write=true" >> "$GITHUB_OUTPUT"
+            echo "debug=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "limit=${{ inputs.limit }}" >> "$GITHUB_OUTPUT"
+            echo "write=${{ inputs.write }}" >> "$GITHUB_OUTPUT"
+            echo "debug=${{ inputs.debug }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate configuration and modules
+        shell: bash
+        run: |
+          LIMIT="${{ steps.config.outputs.limit }}"
+
+          if [[ -z "${DATABASE_URL:-}" ]]; then
+            echo "[ERROR] GitHub Secret DATABASE_URL ontbreekt."
+            exit 1
+          fi
+
+          if ! [[ "$LIMIT" =~ ^[0-9]+$ ]] || (( LIMIT < 1 || LIMIT > 1000 )); then
+            echo "[ERROR] limit moet tussen 1 en 1000 liggen."
+            exit 1
+          fi
+
           python -m py_compile \
-            scripts/scrapers/usf/jobs/refresh_everythingjazz_listing_prices.py \
+            scripts/scrapers/usf/jobs/everythingjazz_product_type.py \
             scripts/scrapers/usf/jobs/detail_everythingjazz.py \
             scripts/scrapers/usf/jobs/stage_everythingjazz.py \
             scripts/scrapers/usf/jobs/promote_everythingjazz.py \
-            scripts/scrapers/usf/jobs/quarantine_everythingjazz.py \
-            scripts/scrapers/usf/jobs/run_everythingjazz_pipeline.py
+            scripts/scrapers/usf/jobs/quarantine_everythingjazz.py
+
           python -m scripts.scrapers.usf.jobs.detail_everythingjazz --help >/dev/null
           python -m scripts.scrapers.usf.jobs.stage_everythingjazz --help >/dev/null
           python -m scripts.scrapers.usf.jobs.promote_everythingjazz --help >/dev/null
           python -m scripts.scrapers.usf.jobs.quarantine_everythingjazz --help >/dev/null
-      - name: Run detail validation
+
+      - name: Run Everything Jazz detail pipeline
         shell: bash
         run: |
           set -euo pipefail
-          flags=()
-          if [[ "${{ inputs.write }}" == "true" ]]; then flags+=(--write); fi
-          if [[ "${{ inputs.debug }}" == "true" ]]; then flags+=(--debug); fi
-          python -m scripts.scrapers.usf.jobs.run_everythingjazz_pipeline \
-            --mode detail \
-            --detail-limit "${{ inputs.detail_limit }}" \
-            --stage-limit "${{ inputs.stage_limit }}" \
-            --promote-limit "${{ inputs.promote_limit }}" \
-            --quarantine-limit "${{ inputs.quarantine_limit }}" \
-            "${flags[@]}"
-      - name: Upload validation output
+
+          mkdir -p output/everythingjazz
+
+          LIMIT="${{ steps.config.outputs.limit }}"
+          WRITE="${{ steps.config.outputs.write }}"
+          DEBUG="${{ steps.config.outputs.debug }}"
+
+          LOG="output/everythingjazz/detail-pipeline-${{ github.run_id }}.log"
+          OUT="output/everythingjazz/detail-${{ github.run_id }}.json"
+
+          DETAIL_CMD=(
+            python -u -m
+            scripts.scrapers.usf.jobs.detail_everythingjazz
+            --limit "$LIMIT"
+            --retry-days 30
+            --refresh-days 180
+            --max-missing-ean-attempts 3
+            --sleep 0.35
+            --timeout 45
+            --output "$OUT"
+          )
+
+          if [[ "$WRITE" == "true" ]]; then
+            DETAIL_CMD+=(--write)
+          fi
+
+          if [[ "$DEBUG" == "true" ]]; then
+            DETAIL_CMD+=(--debug)
+          fi
+
+          echo "Event: ${{ github.event_name }}" | tee "$LOG"
+          echo "Limit: $LIMIT" | tee -a "$LOG"
+          echo "Write: $WRITE" | tee -a "$LOG"
+
+          printf "Detail command:" | tee -a "$LOG"
+          printf " %q" "${DETAIL_CMD[@]}" | tee -a "$LOG"
+          echo | tee -a "$LOG"
+
+          "${DETAIL_CMD[@]}" 2>&1 | tee -a "$LOG"
+
+          STAGE_CMD=(
+            python -u -m
+            scripts.scrapers.usf.jobs.stage_everythingjazz
+            --limit "$LIMIT"
+          )
+
+          PROMOTE_CMD=(
+            python -u -m
+            scripts.scrapers.usf.jobs.promote_everythingjazz
+            --limit "$LIMIT"
+          )
+
+          QUARANTINE_CMD=(
+            python -u -m
+            scripts.scrapers.usf.jobs.quarantine_everythingjazz
+            --limit "$LIMIT"
+          )
+
+          if [[ "$WRITE" == "true" ]]; then
+            STAGE_CMD+=(--write)
+            PROMOTE_CMD+=(--write)
+            QUARANTINE_CMD+=(--write)
+          fi
+
+          echo | tee -a "$LOG"
+          echo "== STAGE ==" | tee -a "$LOG"
+          "${STAGE_CMD[@]}" 2>&1 | tee -a "$LOG"
+
+          echo | tee -a "$LOG"
+          echo "== PROMOTE ==" | tee -a "$LOG"
+          "${PROMOTE_CMD[@]}" 2>&1 | tee -a "$LOG"
+
+          echo | tee -a "$LOG"
+          echo "== QUARANTINE ==" | tee -a "$LOG"
+          "${QUARANTINE_CMD[@]}" 2>&1 | tee -a "$LOG"
+
+      - name: Upload detail pipeline log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
-          name: usf-everythingjazz-detail-${{ github.run_id }}
-          path: output/usf-everythingjazz/
+          name: everythingjazz-detail-${{ github.run_id }}
+          path: output/everythingjazz/
           if-no-files-found: warn
+          retention-days: 7
