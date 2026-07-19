@@ -1,0 +1,92 @@
+name: USF Everything Jazz detail validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      detail_limit:
+        description: "Aantal detailrecords"
+        required: true
+        default: "10"
+        type: string
+      stage_limit:
+        description: "Aantal te stagen records"
+        required: true
+        default: "10"
+        type: string
+      promote_limit:
+        description: "Aantal te promoten records"
+        required: true
+        default: "10"
+        type: string
+      quarantine_limit:
+        description: "Aantal quarantainerecords"
+        required: true
+        default: "25"
+        type: string
+      write:
+        description: "Schrijf raw/stage/promote/quarantine; standaard uit"
+        required: true
+        default: false
+        type: boolean
+      debug:
+        description: "Toon detaildebug"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usf-everythingjazz
+  cancel-in-progress: false
+
+jobs:
+  detail:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+      - name: Validate Everything Jazz modules
+        run: |
+          python -m py_compile \
+            scripts/scrapers/usf/jobs/refresh_everythingjazz_listing_prices.py \
+            scripts/scrapers/usf/jobs/detail_everythingjazz.py \
+            scripts/scrapers/usf/jobs/stage_everythingjazz.py \
+            scripts/scrapers/usf/jobs/promote_everythingjazz.py \
+            scripts/scrapers/usf/jobs/quarantine_everythingjazz.py \
+            scripts/scrapers/usf/jobs/run_everythingjazz_pipeline.py
+          python -m scripts.scrapers.usf.jobs.detail_everythingjazz --help >/dev/null
+          python -m scripts.scrapers.usf.jobs.stage_everythingjazz --help >/dev/null
+          python -m scripts.scrapers.usf.jobs.promote_everythingjazz --help >/dev/null
+          python -m scripts.scrapers.usf.jobs.quarantine_everythingjazz --help >/dev/null
+      - name: Run detail validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          flags=()
+          if [[ "${{ inputs.write }}" == "true" ]]; then flags+=(--write); fi
+          if [[ "${{ inputs.debug }}" == "true" ]]; then flags+=(--debug); fi
+          python -m scripts.scrapers.usf.jobs.run_everythingjazz_pipeline \
+            --mode detail \
+            --detail-limit "${{ inputs.detail_limit }}" \
+            --stage-limit "${{ inputs.stage_limit }}" \
+            --promote-limit "${{ inputs.promote_limit }}" \
+            --quarantine-limit "${{ inputs.quarantine_limit }}" \
+            "${flags[@]}"
+      - name: Upload validation output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usf-everythingjazz-detail-${{ github.run_id }}
+          path: output/usf-everythingjazz/
+          if-no-files-found: warn

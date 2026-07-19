@@ -1,0 +1,78 @@
+name: USF Everything Jazz listing validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_pages:
+        description: "0 = volledige scan; gebruik 2 voor eerste dry-run"
+        required: true
+        default: "2"
+        type: string
+      page_size:
+        description: "Shopify page size; maximaal 100"
+        required: true
+        default: "50"
+        type: string
+      write:
+        description: "Schrijf registry/prijzen; standaard uit"
+        required: true
+        default: false
+        type: boolean
+      debug:
+        description: "Toon productdebug"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usf-everythingjazz
+  cancel-in-progress: false
+
+jobs:
+  listing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+      - name: Validate Everything Jazz modules
+        run: |
+          python -m py_compile \
+            scripts/scrapers/usf/jobs/refresh_everythingjazz_listing_prices.py \
+            scripts/scrapers/usf/jobs/detail_everythingjazz.py \
+            scripts/scrapers/usf/jobs/stage_everythingjazz.py \
+            scripts/scrapers/usf/jobs/promote_everythingjazz.py \
+            scripts/scrapers/usf/jobs/quarantine_everythingjazz.py \
+            scripts/scrapers/usf/jobs/run_everythingjazz_pipeline.py
+          python -m scripts.scrapers.usf.jobs.refresh_everythingjazz_listing_prices --help >/dev/null
+          python -m scripts.scrapers.usf.jobs.run_everythingjazz_pipeline --help >/dev/null
+      - name: Run listing validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          flags=()
+          if [[ "${{ inputs.write }}" == "true" ]]; then flags+=(--write); fi
+          if [[ "${{ inputs.debug }}" == "true" ]]; then flags+=(--debug); fi
+          python -m scripts.scrapers.usf.jobs.run_everythingjazz_pipeline \
+            --mode listing \
+            --listing-max-pages "${{ inputs.max_pages }}" \
+            --listing-page-size "${{ inputs.page_size }}" \
+            "${flags[@]}"
+      - name: Upload validation output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usf-everythingjazz-listing-${{ github.run_id }}
+          path: output/usf-everythingjazz/
+          if-no-files-found: warn
