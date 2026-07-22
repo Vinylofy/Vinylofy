@@ -403,6 +403,8 @@ def parse_listing_page(
     ] = {}
 
     missing_price_urls: list[str] = []
+    skipped_cards: list[dict[str, Any]] = []
+    duplicate_cards: list[dict[str, Any]] = []
     availability_counts: dict[str, int] = {}
     sale_count = 0
 
@@ -410,29 +412,122 @@ def parse_listing_page(
         cards,
         start=1,
     ):
-        anchors = [
+        all_anchors = [
             anchor
             for anchor in card.select("a[href]")
-            if (
-                isinstance(anchor, Tag)
-                and normalize_product_url(
-                    anchor.get("href")
-                )
-            )
+            if isinstance(anchor, Tag)
         ]
 
-        if not anchors:
-            continue
+        normalized_by_anchor = [
+            (
+                anchor,
+                normalize_product_url(
+                    anchor.get("href")
+                ),
+            )
+            for anchor in all_anchors
+        ]
 
-        anchor = anchors[0]
-        source_url = normalize_product_url(
-            anchor.get("href")
+        normalized_urls = sorted(
+            {
+                normalized
+                for _, normalized in normalized_by_anchor
+                if normalized
+            }
         )
 
-        if (
-            not source_url
-            or source_url in links_by_url
-        ):
+        raw_hrefs = [
+            clean(anchor.get("href"))
+            for anchor in all_anchors
+            if clean(anchor.get("href"))
+        ]
+
+        if len(normalized_urls) != 1:
+            skip_record = {
+                "page": page,
+                "position": position,
+                "reason": (
+                    "no_product_url"
+                    if not normalized_urls
+                    else "multiple_product_urls"
+                ),
+                "normalized_urls": normalized_urls,
+                "raw_hrefs": raw_hrefs[:20],
+                "card_classes": (
+                    card.get("class")
+                    or []
+                ),
+                "card_text": clean(
+                    card.get_text(
+                        " ",
+                        strip=True,
+                    )
+                )[:800],
+            }
+
+            skipped_cards.append(
+                skip_record
+            )
+
+            if debug:
+                print(
+                    "[COLOUREDVINYL-LISTING-SKIP]",
+                    json.dumps(
+                        skip_record,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+
+            continue
+
+        source_url = normalized_urls[0]
+
+        anchor = next(
+            anchor
+            for anchor, normalized
+            in normalized_by_anchor
+            if normalized == source_url
+        )
+
+        if source_url in links_by_url:
+            duplicate_record = {
+                "page": page,
+                "position": position,
+                "reason": (
+                    "duplicate_product_url_"
+                    "within_page"
+                ),
+                "source_url": source_url,
+                "raw_hrefs": raw_hrefs[:20],
+                "card_classes": (
+                    card.get("class")
+                    or []
+                ),
+                "card_text": clean(
+                    card.get_text(
+                        " ",
+                        strip=True,
+                    )
+                )[:800],
+            }
+
+            duplicate_cards.append(
+                duplicate_record
+            )
+
+            if debug:
+                print(
+                    "[COLOUREDVINYL-LISTING-SKIP]",
+                    json.dumps(
+                        duplicate_record,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+
             continue
 
         title = extract_title(
@@ -576,6 +671,18 @@ def parse_listing_page(
             availability_counts
         ),
         "sale_count": sale_count,
+        "skipped_cards": len(
+            skipped_cards
+        ),
+        "skipped_card_sample": (
+            skipped_cards[:10]
+        ),
+        "duplicate_cards": len(
+            duplicate_cards
+        ),
+        "duplicate_card_sample": (
+            duplicate_cards[:10]
+        ),
         "declared_last_page": (
             declared_last_page
         ),
@@ -922,10 +1029,7 @@ def main() -> int:
 
         consecutive_failures = 0
 
-        if (
-            args.debug
-            and page == args.start_page
-        ):
+        if args.debug:
             debug_dir = Path(
                 "output/usf-colouredvinyl"
             )
@@ -936,7 +1040,7 @@ def main() -> int:
 
             html_path = (
                 debug_dir
-                / "listing-page-1.html"
+                / f"listing-page-{page}.html"
             )
 
             html_path.write_text(
