@@ -1,0 +1,300 @@
+name: Debug - Coloured Vinyl Network
+
+run-name: Coloured Vinyl network probe
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: debug-colouredvinyl-network-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  network-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+
+    steps:
+      - name: Probe Coloured Vinyl
+        shell: bash
+        run: |
+          mkdir -p output
+          LOG="output/network.log"
+
+          exec > >(tee "$LOG") 2>&1
+
+          echo "========================================"
+          echo "COLOURED VINYL — ACTIONS NETWERKPROBE"
+          echo "========================================"
+          echo "UTC: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "Runner: $RUNNER_NAME"
+          echo "OS: $RUNNER_OS"
+          echo
+
+          echo "== DNS =="
+          echo
+          echo "-- www.colouredvinyl.nl --"
+          getent ahosts www.colouredvinyl.nl || true
+
+          echo
+          echo "-- colouredvinyl.nl --"
+          getent ahosts colouredvinyl.nl || true
+
+          echo
+          echo "== Python DNS en TCP =="
+
+          python3 - <<'PY'
+          import socket
+          import time
+
+          for hostname in (
+              "www.colouredvinyl.nl",
+              "colouredvinyl.nl",
+          ):
+              print(f"\nHOST: {hostname}")
+
+              try:
+                  records = socket.getaddrinfo(
+                      hostname,
+                      443,
+                      type=socket.SOCK_STREAM,
+                  )
+              except Exception as exc:
+                  print(
+                      "DNS_FAIL",
+                      type(exc).__name__,
+                      str(exc),
+                  )
+                  continue
+
+              seen = set()
+
+              for family, _, _, _, sockaddr in records:
+                  ip = sockaddr[0]
+
+                  if (family, ip) in seen:
+                      continue
+
+                  seen.add((family, ip))
+
+                  family_name = {
+                      socket.AF_INET: "IPv4",
+                      socket.AF_INET6: "IPv6",
+                  }.get(family, str(family))
+
+                  print("DNS", family_name, ip)
+
+              started = time.monotonic()
+
+              try:
+                  sock = socket.create_connection(
+                      (hostname, 443),
+                      timeout=15,
+                  )
+              except Exception as exc:
+                  elapsed = time.monotonic() - started
+                  print(
+                      f"TCP_FAIL after={elapsed:.2f}s",
+                      type(exc).__name__,
+                      str(exc),
+                  )
+              else:
+                  elapsed = time.monotonic() - started
+                  print(
+                      f"TCP_OK after={elapsed:.2f}s",
+                      "peer=",
+                      sock.getpeername(),
+                  )
+                  sock.close()
+          PY
+
+          run_curl() {
+            LABEL="$1"
+            URL="$2"
+            shift 2
+
+            BODY="output/${LABEL}.html"
+            HEADERS="output/${LABEL}.headers"
+            ERROR="output/${LABEL}.error"
+
+            echo
+            echo "== CURL: $LABEL =="
+            echo "URL: $URL"
+
+            curl \
+              "$@" \
+              --location \
+              --silent \
+              --show-error \
+              --connect-timeout 15 \
+              --max-time 30 \
+              --retry 1 \
+              --retry-delay 2 \
+              --user-agent \
+              "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/145 Safari/537.36 Vinylofy/1.0" \
+              --header "Accept-Language: nl-NL,nl;q=0.9,en;q=0.8" \
+              --output "$BODY" \
+              --dump-header "$HEADERS" \
+              --write-out \
+              "label=${LABEL} http=%{http_code} remote_ip=%{remote_ip} connect=%{time_connect}s starttransfer=%{time_starttransfer}s total=%{time_total}s bytes=%{size_download} redirects=%{num_redirects}\n" \
+              "$URL" \
+              2>"$ERROR"
+
+            STATUS=$?
+
+            echo "curl_exit=$STATUS"
+
+            if [ -s "$ERROR" ]; then
+              echo "curl_error:"
+              cat "$ERROR"
+            fi
+
+            if [ -s "$HEADERS" ]; then
+              echo "response_headers:"
+              sed -n '1,40p' "$HEADERS"
+            fi
+
+            if [ -s "$BODY" ]; then
+              echo "body_bytes=$(wc -c < "$BODY")"
+
+              echo "html_markers:"
+              grep -Eio \
+                'woocommerce|woocommerce-loop-product|page-numbers|uitverkocht|op voorraad|products' \
+                "$BODY" |
+                sort |
+                uniq -c |
+                head -n 30 || true
+            fi
+
+            printf '%s=%s\n' "$LABEL" "$STATUS" \
+              >> output/curl-statuses.txt
+          }
+
+          run_curl \
+            "www-normal" \
+            "https://www.colouredvinyl.nl/vinyl/"
+
+          run_curl \
+            "www-ipv4" \
+            "https://www.colouredvinyl.nl/vinyl/" \
+            --ipv4
+
+          run_curl \
+            "apex-ipv4" \
+            "https://colouredvinyl.nl/vinyl/" \
+            --ipv4
+
+          run_curl \
+            "robots-www-ipv4" \
+            "https://www.colouredvinyl.nl/robots.txt" \
+            --ipv4
+
+          echo
+          echo "== Python urllib =="
+
+          python3 - <<'PY'
+          import ssl
+          import urllib.request
+
+          url = "https://www.colouredvinyl.nl/vinyl/"
+
+          request = urllib.request.Request(
+              url,
+              headers={
+                  "User-Agent": (
+                      "Mozilla/5.0 (X11; Linux x86_64) "
+                      "AppleWebKit/537.36 Chrome/145 Safari/537.36"
+                  ),
+                  "Accept-Language": "nl-NL,nl;q=0.9,en;q=0.8",
+              },
+          )
+
+          try:
+              with urllib.request.urlopen(
+                  request,
+                  timeout=30,
+                  context=ssl.create_default_context(),
+              ) as response:
+                  body = response.read()
+                  print(
+                      "URLLIB_OK",
+                      "status=",
+                      response.status,
+                      "final_url=",
+                      response.url,
+                      "bytes=",
+                      len(body),
+                  )
+          except Exception as exc:
+              print(
+                  "URLLIB_FAIL",
+                  type(exc).__name__,
+                  str(exc),
+              )
+          PY
+
+          WWW_NORMAL="$(
+            sed -n 's/^www-normal=//p' \
+              output/curl-statuses.txt |
+              tail -n 1
+          )"
+
+          WWW_IPV4="$(
+            sed -n 's/^www-ipv4=//p' \
+              output/curl-statuses.txt |
+              tail -n 1
+          )"
+
+          APEX_IPV4="$(
+            sed -n 's/^apex-ipv4=//p' \
+              output/curl-statuses.txt |
+              tail -n 1
+          )"
+
+          ROBOTS_IPV4="$(
+            sed -n 's/^robots-www-ipv4=//p' \
+              output/curl-statuses.txt |
+              tail -n 1
+          )"
+
+          {
+            echo "========================================"
+            echo "GITHUB ACTIONS NETWERKRESULTAAT"
+            echo "========================================"
+            echo "www normaal:  curl exit ${WWW_NORMAL:-onbekend}"
+            echo "www IPv4:     curl exit ${WWW_IPV4:-onbekend}"
+            echo "zonder www:   curl exit ${APEX_IPV4:-onbekend}"
+            echo "robots IPv4:  curl exit ${ROBOTS_IPV4:-onbekend}"
+
+            if [ "${WWW_IPV4:-1}" = "0" ]; then
+              echo
+              echo "CONCLUSIE: GitHub Actions kan www.colouredvinyl.nl via IPv4 bereiken."
+              echo "Codespaces is dan het geblokkeerde of onbereikbare netwerkpad."
+            elif [ "${APEX_IPV4:-1}" = "0" ]; then
+              echo
+              echo "CONCLUSIE: GitHub Actions bereikt alleen het domein zonder www."
+            elif [ "${WWW_NORMAL:-1}" = "0" ]; then
+              echo
+              echo "CONCLUSIE: GitHub Actions kan de website normaal bereiken."
+            else
+              echo
+              echo "CONCLUSIE: ook GitHub Actions kan Coloured Vinyl niet bereiken."
+              echo "Een normale GitHub-hosted scraper is dan niet betrouwbaar inzetbaar."
+            fi
+          } | tee output/network-summary.txt
+
+          # De diagnostische workflow zelf blijft succesvol.
+          # De afzonderlijke curl-exitcodes staan in het artifact.
+          exit 0
+
+      - name: Upload network diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: colouredvinyl-network-diagnostics
+          path: output/
+          if-no-files-found: error
+          retention-days: 7
