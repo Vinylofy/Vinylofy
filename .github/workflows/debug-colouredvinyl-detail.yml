@@ -1,0 +1,189 @@
+name: Debug - Coloured Vinyl Detail
+
+run-name: Coloured Vinyl detail dry-run 25
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: debug-colouredvinyl-detail-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detail-dry-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            python -m pip install -r requirements.txt
+          fi
+
+          if [ -f requirements-scrapers.txt ]; then
+            python -m pip install -r requirements-scrapers.txt
+          fi
+
+          python -m pip install \
+            requests \
+            beautifulsoup4 \
+            "psycopg[binary]" \
+            python-dotenv
+
+      - name: Validate module
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m py_compile \
+            scripts/scrapers/usf/jobs/detail_colouredvinyl.py
+
+          python -m \
+            scripts.scrapers.usf.jobs.detail_colouredvinyl \
+            --help >/dev/null
+
+          grep -q \
+            'listing_price_and_' \
+            scripts/scrapers/usf/jobs/detail_colouredvinyl.py
+
+          grep -q \
+            'image_url_raw=None' \
+            scripts/scrapers/usf/jobs/detail_colouredvinyl.py
+
+      - name: Validate database secret
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "[ERROR] DATABASE_URL ontbreekt."
+            exit 1
+          fi
+
+      - name: Run 25-detail dry-run
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p output/usf-colouredvinyl
+
+          python -u -m \
+            scripts.scrapers.usf.jobs.detail_colouredvinyl \
+            --limit 25 \
+            --sleep 0.35 \
+            --retry-days 30 \
+            --debug \
+            2>&1 | tee \
+              output/usf-colouredvinyl/detail.log
+
+      - name: Validate diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path(
+              "output/usf-colouredvinyl/"
+              "detail-diagnostics.json"
+          )
+
+          if not path.exists():
+              raise SystemExit(
+                  "detail-diagnostics.json ontbreekt."
+              )
+
+          data = json.loads(
+              path.read_text(
+                  encoding="utf-8"
+              )
+          )
+
+          summary = data.get(
+              "summary",
+              {}
+          )
+
+          print(summary)
+
+          if summary.get("write") is not False:
+              raise SystemExit(
+                  "Dry-run heeft write=true."
+              )
+
+          if summary.get(
+              "price_authority"
+          ) != "listing":
+              raise SystemExit(
+                  "Prijsautoriteit is niet listing."
+              )
+
+          if summary.get(
+              "availability_authority"
+          ) != "listing":
+              raise SystemExit(
+                  "Voorraadautoriteit is niet listing."
+              )
+
+          if summary.get(
+              "image_stored"
+          ) is not False:
+              raise SystemExit(
+                  "Detailcrawler bewaart een shopafbeelding."
+              )
+
+          if int(
+              summary.get("fetched", 0)
+          ) <= 0:
+              raise SystemExit(
+                  "Geen detailpagina's opgehaald."
+              )
+
+          if int(
+              summary.get("parsed", 0)
+          ) <= 0:
+              raise SystemExit(
+                  "Geen detailpagina's geparsed."
+              )
+
+          if int(
+              summary.get(
+                  "ean_found",
+                  0
+              )
+          ) <= 0:
+              raise SystemExit(
+                  "Geen enkele EAN gevonden."
+              )
+          PY
+
+      - name: Upload detail diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: colouredvinyl-detail-dry-run
+          path: output/usf-colouredvinyl/**
+          if-no-files-found: error
+          retention-days: 7
