@@ -1,0 +1,578 @@
+name: Debug - Coloured Vinyl Duplicate
+
+run-name: Coloured Vinyl duplicate probe
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: debug-colouredvinyl-duplicate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  duplicate-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install \
+            requests \
+            beautifulsoup4
+
+      - name: Inspect duplicate WooCommerce products
+        shell: bash
+        run: |
+          mkdir -p output/colouredvinyl-duplicate
+
+          python - <<'PY' \
+            2>&1 | tee output/colouredvinyl-duplicate/probe.log
+          from __future__ import annotations
+
+          import json
+          import re
+          from pathlib import Path
+          from typing import Any
+          from urllib.parse import urljoin
+
+          import requests
+          from bs4 import BeautifulSoup
+
+          BASE = "https://www.colouredvinyl.nl"
+          LISTING_URL = f"{BASE}/vinyl/page/2/"
+          PRODUCT_IDS = ("11761", "11762")
+
+          HEADERS = {
+              "User-Agent": (
+                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/145.0.0.0 Safari/537.36"
+              ),
+              "Accept": (
+                  "text/html,application/xhtml+xml,"
+                  "application/json;q=0.9,*/*;q=0.8"
+              ),
+              "Accept-Language": (
+                  "nl-NL,nl;q=0.9,en;q=0.8"
+              ),
+              "Cache-Control": "no-cache",
+          }
+
+          session = requests.Session()
+          session.headers.update(HEADERS)
+
+          output = Path(
+              "output/colouredvinyl-duplicate"
+          )
+          output.mkdir(
+              parents=True,
+              exist_ok=True,
+          )
+
+          result: dict[str, Any] = {
+              "listing_url": LISTING_URL,
+              "listing_cards": [],
+              "api_requests": [],
+              "detail_pages": [],
+          }
+
+
+          def fetch(
+              url: str,
+              *,
+              label: str,
+          ) -> requests.Response | None:
+              try:
+                  response = session.get(
+                      url,
+                      timeout=(15, 60),
+                      allow_redirects=True,
+                  )
+              except Exception as exc:
+                  print(
+                      "[FETCH-ERROR]",
+                      {
+                          "label": label,
+                          "url": url,
+                          "error_type": (
+                              type(exc).__name__
+                          ),
+                          "error": str(exc),
+                      },
+                  )
+                  return None
+
+              print(
+                  "[FETCH]",
+                  {
+                      "label": label,
+                      "requested_url": url,
+                      "final_url": response.url,
+                      "status": response.status_code,
+                      "bytes": len(response.content),
+                      "content_type": (
+                          response.headers.get(
+                              "content-type"
+                          )
+                      ),
+                  },
+              )
+
+              return response
+
+
+          listing_response = fetch(
+              LISTING_URL,
+              label="listing-page-2",
+          )
+
+          detail_urls: set[str] = set()
+
+          if (
+              listing_response is not None
+              and listing_response.status_code == 200
+          ):
+              listing_html = listing_response.text
+
+              (
+                  output / "listing-page-2.html"
+              ).write_text(
+                  listing_html,
+                  encoding="utf-8",
+              )
+
+              soup = BeautifulSoup(
+                  listing_html,
+                  "html.parser",
+              )
+
+              for card in soup.select(
+                  "li.product, "
+                  ".product-small, "
+                  "article.product"
+              ):
+                  classes = [
+                      str(value)
+                      for value in card.get(
+                          "class",
+                          [],
+                      )
+                  ]
+
+                  post_ids = []
+
+                  for class_name in classes:
+                      match = re.fullmatch(
+                          r"post-(\d+)",
+                          class_name,
+                      )
+                      if match:
+                          post_ids.append(
+                              match.group(1)
+                          )
+
+                  if not set(
+                      PRODUCT_IDS
+                  ).intersection(post_ids):
+                      continue
+
+                  links = []
+
+                  for anchor in card.select(
+                      "a[href]"
+                  ):
+                      href = anchor.get("href")
+
+                      links.append({
+                          "text": " ".join(
+                              anchor.get_text(
+                                  " ",
+                                  strip=True,
+                              ).split()
+                          ),
+                          "href": href,
+                          "class": anchor.get(
+                              "class",
+                              [],
+                          ),
+                          "data_product_id": (
+                              anchor.get(
+                                  "data-product_id"
+                              )
+                          ),
+                          "data_product_sku": (
+                              anchor.get(
+                                  "data-product_sku"
+                              )
+                          ),
+                      })
+
+                      absolute = urljoin(
+                          listing_response.url,
+                          str(href or ""),
+                      )
+
+                      if (
+                          "/vinyl/" in absolute
+                          and "add-to-cart" not in absolute
+                          and "/page/" not in absolute
+                      ):
+                          detail_urls.add(absolute)
+
+                  price_node = card.select_one(
+                      ".price"
+                  )
+
+                  result[
+                      "listing_cards"
+                  ].append({
+                      "post_ids": post_ids,
+                      "classes": classes,
+                      "text": " ".join(
+                          card.get_text(
+                              " ",
+                              strip=True,
+                          ).split()
+                      ),
+                      "title": (
+                          card.select_one(
+                              ".woocommerce-loop-"
+                              "product__title"
+                          ).get_text(
+                              " ",
+                              strip=True,
+                          )
+                          if card.select_one(
+                              ".woocommerce-loop-"
+                              "product__title"
+                          )
+                          else None
+                      ),
+                      "price": (
+                          price_node.get_text(
+                              " ",
+                              strip=True,
+                          )
+                          if price_node
+                          else None
+                      ),
+                      "regular_price": (
+                          card.select_one(
+                              ".price del"
+                          ).get_text(
+                              " ",
+                              strip=True,
+                          )
+                          if card.select_one(
+                              ".price del"
+                          )
+                          else None
+                      ),
+                      "sale_price": (
+                          card.select_one(
+                              ".price ins"
+                          ).get_text(
+                              " ",
+                              strip=True,
+                          )
+                          if card.select_one(
+                              ".price ins"
+                          )
+                          else None
+                      ),
+                      "links": links,
+                  })
+
+
+          api_urls = []
+
+          for product_id in PRODUCT_IDS:
+              api_urls.extend([
+                  (
+                      product_id,
+                      "wc-store-single",
+                      f"{BASE}/wp-json/wc/store/"
+                      f"v1/products/{product_id}",
+                  ),
+                  (
+                      product_id,
+                      "wp-product-single",
+                      f"{BASE}/wp-json/wp/v2/"
+                      f"product/{product_id}",
+                  ),
+              ])
+
+          api_urls.append((
+              "11761,11762",
+              "wc-store-include",
+              f"{BASE}/wp-json/wc/store/v1/"
+              "products?include=11761,11762",
+          ))
+
+          for product_id, kind, url in api_urls:
+              response = fetch(
+                  url,
+                  label=f"{kind}-{product_id}",
+              )
+
+              record: dict[str, Any] = {
+                  "product_id": product_id,
+                  "kind": kind,
+                  "url": url,
+              }
+
+              if response is None:
+                  record["request_error"] = True
+                  result["api_requests"].append(
+                      record
+                  )
+                  continue
+
+              record.update({
+                  "status": response.status_code,
+                  "final_url": response.url,
+                  "content_type": (
+                      response.headers.get(
+                          "content-type"
+                      )
+                  ),
+                  "bytes": len(response.content),
+              })
+
+              try:
+                  payload = response.json()
+              except ValueError:
+                  record["body_preview"] = (
+                      response.text[:3000]
+                  )
+              else:
+                  record["json"] = payload
+
+              result["api_requests"].append(
+                  record
+              )
+
+
+          ean_pattern = re.compile(
+              r"\b(?:EAN|GTIN|UPC)"
+              r"\s*:?\s*"
+              r"([0-9][0-9\s-]{6,20}[0-9])\b",
+              re.IGNORECASE,
+          )
+
+          for index, detail_url in enumerate(
+              sorted(detail_urls),
+              start=1,
+          ):
+              response = fetch(
+                  detail_url,
+                  label=f"detail-{index}",
+              )
+
+              if response is None:
+                  continue
+
+              detail_record: dict[str, Any] = {
+                  "requested_url": detail_url,
+                  "final_url": response.url,
+                  "status": response.status_code,
+                  "bytes": len(response.content),
+              }
+
+              if response.status_code == 200:
+                  (
+                      output
+                      / f"detail-{index}.html"
+                  ).write_text(
+                      response.text,
+                      encoding="utf-8",
+                  )
+
+                  soup = BeautifulSoup(
+                      response.text,
+                      "html.parser",
+                  )
+
+                  text = " ".join(
+                      soup.stripped_strings
+                  )
+
+                  eans = set()
+
+                  for match in ean_pattern.finditer(
+                      text
+                  ):
+                      digits = re.sub(
+                          r"\D",
+                          "",
+                          match.group(1),
+                      )
+
+                      if 8 <= len(digits) <= 14:
+                          eans.add(digits)
+
+                  forms = []
+
+                  for form in soup.select("form"):
+                      hidden = {}
+
+                      for node in form.select(
+                          'input[type="hidden"][name]'
+                      ):
+                          hidden[str(
+                              node.get("name")
+                          )] = node.get("value")
+
+                      if hidden:
+                          forms.append(hidden)
+
+                  structured = []
+
+                  for node in soup.select(
+                      'script[type="application/ld+json"]'
+                  ):
+                      raw = (
+                          node.string
+                          or node.get_text()
+                          or ""
+                      ).strip()
+
+                      if raw:
+                          structured.append(
+                              raw[:15000]
+                          )
+
+                  detail_record.update({
+                      "h1": (
+                          soup.select_one(
+                              "h1"
+                          ).get_text(
+                              " ",
+                              strip=True,
+                          )
+                          if soup.select_one("h1")
+                          else None
+                      ),
+                      "price": (
+                          soup.select_one(
+                              ".summary .price"
+                          ).get_text(
+                              " ",
+                              strip=True,
+                          )
+                          if soup.select_one(
+                              ".summary .price"
+                          )
+                          else None
+                      ),
+                      "eans": sorted(eans),
+                      "hidden_forms": forms[:20],
+                      "structured_data": (
+                          structured[:10]
+                      ),
+                  })
+
+              result["detail_pages"].append(
+                  detail_record
+              )
+
+
+          result_path = (
+              output / "duplicate-probe.json"
+          )
+
+          result_path.write_text(
+              json.dumps(
+                  result,
+                  indent=2,
+                  ensure_ascii=False,
+                  sort_keys=True,
+              ),
+              encoding="utf-8",
+          )
+
+          print()
+          print("================================")
+          print("DUPLICATE PROBE SUMMARY")
+          print("================================")
+
+          print(
+              json.dumps(
+                  {
+                      "listing_cards": (
+                          result["listing_cards"]
+                      ),
+                      "api": [
+                          {
+                              "product_id": item.get(
+                                  "product_id"
+                              ),
+                              "kind": item.get("kind"),
+                              "status": item.get(
+                                  "status"
+                              ),
+                              "content_type": item.get(
+                                  "content_type"
+                              ),
+                              "json_type": (
+                                  type(
+                                      item.get("json")
+                                  ).__name__
+                                  if "json" in item
+                                  else None
+                              ),
+                          }
+                          for item
+                          in result["api_requests"]
+                      ],
+                      "detail_pages": [
+                          {
+                              "final_url": item.get(
+                                  "final_url"
+                              ),
+                              "status": item.get(
+                                  "status"
+                              ),
+                              "h1": item.get("h1"),
+                              "price": item.get(
+                                  "price"
+                              ),
+                              "eans": item.get("eans"),
+                              "hidden_forms": item.get(
+                                  "hidden_forms"
+                              ),
+                          }
+                          for item
+                          in result["detail_pages"]
+                      ],
+                  },
+                  indent=2,
+                  ensure_ascii=False,
+              )
+          )
+
+          print()
+          print("Resultaat:", result_path)
+          PY
+
+      - name: Upload duplicate diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: colouredvinyl-duplicate-probe
+          path: output/colouredvinyl-duplicate/**
+          if-no-files-found: error
+          retention-days: 7
