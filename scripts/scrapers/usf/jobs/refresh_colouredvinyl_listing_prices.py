@@ -32,6 +32,8 @@ SHOP_NAME = "Coloured Vinyl"
 SHOP_DOMAIN = "colouredvinyl.nl"
 SHOP_COUNTRY = "NL"
 
+# SAFETY_MARKER: shared_product_url_multiple_variants
+
 BASE_URL = "https://www.colouredvinyl.nl"
 CATALOG_URL = f"{BASE_URL}/vinyl/"
 
