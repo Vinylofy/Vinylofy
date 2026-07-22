@@ -1,0 +1,202 @@
+name: Debug - Coloured Vinyl Transport
+
+run-name: Coloured Vinyl resilient transport dry-run
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: debug-colouredvinyl-resilient-transport-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detail-transport:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            python -m pip install -r requirements.txt
+          fi
+
+          if [ -f requirements-scrapers.txt ]; then
+            python -m pip install -r requirements-scrapers.txt
+          fi
+
+          python -m pip install \
+            requests \
+            beautifulsoup4 \
+            "psycopg[binary]" \
+            python-dotenv
+
+      - name: Validate module
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m py_compile \
+            scripts/scrapers/usf/jobs/detail_colouredvinyl.py
+
+          python -m \
+            scripts.scrapers.usf.jobs.detail_colouredvinyl \
+            --help >/dev/null
+
+          grep -q \
+            'MAX_CONSECUTIVE_TRANSPORT_FAILURES = 3' \
+            scripts/scrapers/usf/jobs/detail_colouredvinyl.py
+
+          grep -q \
+            'COLOUREDVINYL-DETAIL-ABORT' \
+            scripts/scrapers/usf/jobs/detail_colouredvinyl.py
+
+      - name: Validate database secret
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "[ERROR] DATABASE_URL ontbreekt."
+            exit 1
+          fi
+
+      - name: Run resilient three-record dry-run
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p output/usf-colouredvinyl
+
+          python -u -m \
+            scripts.scrapers.usf.jobs.detail_colouredvinyl \
+            --limit 3 \
+            --retry-days 30 \
+            --sleep 3.0 \
+            --debug \
+            2>&1 | tee \
+              output/usf-colouredvinyl/transport-detail.log
+
+      - name: Validate transport result
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY' \
+            2>&1 | tee \
+              output/usf-colouredvinyl/transport-analysis.log
+          import json
+          from pathlib import Path
+
+
+          path = Path(
+              "output/usf-colouredvinyl/"
+              "detail-diagnostics.json"
+          )
+
+          if not path.exists():
+              raise SystemExit(
+                  "detail-diagnostics.json ontbreekt."
+              )
+
+          data = json.loads(
+              path.read_text(encoding="utf-8")
+          )
+
+          summary = data.get("summary", {})
+
+          print(
+              json.dumps(
+                  summary,
+                  indent=2,
+                  ensure_ascii=False,
+              )
+          )
+
+          if summary.get("write") is not False:
+              raise SystemExit(
+                  "Transporttest heeft write=true."
+              )
+
+          if int(summary.get("stored", 0)) != 0:
+              raise SystemExit(
+                  "Transporttest heeft raw rows geschreven."
+              )
+
+          if summary.get("image_stored") is not False:
+              raise SystemExit(
+                  "Er is een shopafbeelding opgeslagen."
+              )
+
+          if summary.get("price_authority") != "listing":
+              raise SystemExit(
+                  "Listingprijs is niet leidend."
+              )
+
+          if (
+              summary.get("availability_authority")
+              != "listing"
+          ):
+              raise SystemExit(
+                  "Listingvoorraad is niet leidend."
+              )
+
+          if summary.get("transport_aborted") is True:
+              raise SystemExit(
+                  "Transport is na opeenvolgende "
+                  "verbindingsfouten veilig afgebroken."
+              )
+
+          if int(summary.get("fetched", 0)) != 3:
+              raise SystemExit(
+                  "Niet alle drie detailpagina's opgehaald."
+              )
+
+          if int(summary.get("parsed", 0)) != 3:
+              raise SystemExit(
+                  "Niet alle drie detailpagina's geparsed."
+              )
+
+          if int(summary.get("ean_found", 0)) != 3:
+              raise SystemExit(
+                  "Niet alle drie EAN's gevonden."
+              )
+
+          if int(summary.get("request_failed", 0)) != 0:
+              raise SystemExit(
+                  "Minimaal één detailrequest bleef mislukken."
+              )
+
+          print(
+              "[OK] Drie detailrequests zijn "
+              "read-only en stabiel verwerkt."
+          )
+          PY
+
+      - name: Upload transport diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: colouredvinyl-transport-dry-run
+          path: output/usf-colouredvinyl/**
+          if-no-files-found: error
+          retention-days: 7
