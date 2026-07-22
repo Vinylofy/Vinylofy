@@ -1,0 +1,208 @@
+name: Debug - Coloured Vinyl Full Scan
+
+run-name: Coloured Vinyl full listing dry-run
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: debug-colouredvinyl-full-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full-listing-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            python -m pip install -r requirements.txt
+          fi
+
+          if [ -f requirements-scrapers.txt ]; then
+            python -m pip install -r requirements-scrapers.txt
+          fi
+
+          python -m pip install \
+            requests \
+            beautifulsoup4 \
+            "psycopg[binary]" \
+            python-dotenv
+
+      - name: Compile and validate CLI
+        shell: bash
+        run: |
+          python -m py_compile \
+            scripts/scrapers/usf/jobs/refresh_colouredvinyl_listing_prices.py
+
+          python -m \
+            scripts.scrapers.usf.jobs.refresh_colouredvinyl_listing_prices \
+            --help >/dev/null
+
+      - name: Run complete read-only listing scan
+        shell: bash
+        run: |
+          mkdir -p output/usf-colouredvinyl
+
+          set +e
+
+          python -u -m \
+            scripts.scrapers.usf.jobs.refresh_colouredvinyl_listing_prices \
+            --start-page 1 \
+            --max-pages 0 \
+            --sleep 0.35 \
+            --max-page-failures 2 \
+            2>&1 | tee output/usf-colouredvinyl/full-listing-dry-run.log
+
+          STATUS=${PIPESTATUS[0]}
+
+          printf '%s\n' "$STATUS" \
+            > output/usf-colouredvinyl/full-scan-exit-code.txt
+
+          echo "Full-scan exitcode: $STATUS"
+          exit "$STATUS"
+
+      - name: Probe beyond declared last page
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' \
+            2>&1 | tee output/usf-colouredvinyl/beyond-last-page.log
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+          from urllib.parse import urljoin, urlparse
+
+          import requests
+          from bs4 import BeautifulSoup
+
+          from scripts.scrapers.usf.jobs.refresh_colouredvinyl_listing_prices import (
+              HEADERS,
+          )
+
+          base = "https://www.colouredvinyl.nl"
+          urls = [
+              f"{base}/vinyl/page/50/",
+              f"{base}/vinyl/page/9999/",
+          ]
+
+          results = []
+
+          for url in urls:
+              try:
+                  response = requests.get(
+                      url,
+                      headers=HEADERS,
+                      timeout=(15, 60),
+                      allow_redirects=True,
+                  )
+              except Exception as exc:
+                  results.append({
+                      "requested_url": url,
+                      "error_type": type(exc).__name__,
+                      "error": str(exc),
+                  })
+                  continue
+
+              soup = BeautifulSoup(
+                  response.text,
+                  "html.parser",
+              )
+
+              cards = soup.select(
+                  "ul.products > li.product, "
+                  ".product-small.product, "
+                  "article.product"
+              )
+
+              product_urls = set()
+
+              for anchor in soup.select("a[href]"):
+                  absolute = urljoin(
+                      response.url,
+                      anchor.get("href"),
+                  )
+                  parsed = urlparse(absolute)
+                  parts = [
+                      part
+                      for part in parsed.path.split("/")
+                      if part
+                  ]
+
+                  if (
+                      parsed.netloc
+                      in {
+                          "colouredvinyl.nl",
+                          "www.colouredvinyl.nl",
+                      }
+                      and len(parts) >= 3
+                      and parts[0] == "vinyl"
+                      and parts[1] != "page"
+                  ):
+                      product_urls.add(
+                          f"{base}/{'/'.join(parts)}/"
+                      )
+
+              results.append({
+                  "requested_url": url,
+                  "status": response.status_code,
+                  "final_url": response.url,
+                  "bytes": len(response.content),
+                  "cards": len(cards),
+                  "unique_product_urls": len(
+                      product_urls
+                  ),
+                  "first_product_urls": sorted(
+                      product_urls
+                  )[:5],
+              })
+
+          path = Path(
+              "output/usf-colouredvinyl/"
+              "beyond-last-page.json"
+          )
+
+          path.write_text(
+              json.dumps(
+                  results,
+                  indent=2,
+                  ensure_ascii=False,
+                  sort_keys=True,
+              ),
+              encoding="utf-8",
+          )
+
+          print(
+              json.dumps(
+                  results,
+                  indent=2,
+                  ensure_ascii=False,
+              )
+          )
+          PY
+
+      - name: Upload full-scan diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: colouredvinyl-full-listing-dry-run
+          path: output/usf-colouredvinyl/**
+          if-no-files-found: error
+          retention-days: 7

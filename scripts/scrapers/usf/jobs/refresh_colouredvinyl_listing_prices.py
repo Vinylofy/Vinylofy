@@ -249,6 +249,65 @@ def extract_artist(card: Tag) -> str | None:
     return None
 
 
+def extract_woocommerce_product_id(
+    card: Tag,
+) -> str | None:
+    candidates: list[str] = []
+
+    for class_name in card.get("class", []):
+        match = re.fullmatch(
+            r"post-(\\d+)",
+            str(class_name),
+        )
+
+        if match:
+            candidates.append(
+                match.group(1)
+            )
+
+    for node in card.select(
+        "[data-product_id]"
+    ):
+        value = clean(
+            node.get("data-product_id")
+        )
+
+        if value.isdigit():
+            candidates.append(value)
+
+    unique = list(dict.fromkeys(candidates))
+    return unique[0] if len(unique) == 1 else None
+
+
+def extract_listing_sku(
+    card: Tag,
+) -> str | None:
+    values = [
+        clean(node.get("data-product_sku"))
+        for node in card.select(
+            "[data-product_sku]"
+        )
+        if clean(
+            node.get("data-product_sku")
+        )
+    ]
+
+    unique = list(dict.fromkeys(values))
+    return unique[0] if len(unique) == 1 else None
+
+
+def extract_listing_image_alt(
+    card: Tag,
+) -> str | None:
+    for image in card.select("img"):
+        value = clean(image.get("alt"))
+
+        if value:
+            return value
+
+    return None
+
+
 def detect_availability(
     card: Tag,
 ) -> tuple[str, str]:
@@ -491,37 +550,277 @@ def parse_listing_page(
             if normalized == source_url
         )
 
+        card_title = extract_title(
+            card,
+            anchor,
+        )
+        card_artist = extract_artist(card)
+
+        (
+            card_price,
+            card_original_price,
+        ) = extract_prices(card)
+
+        (
+            card_availability,
+            card_availability_evidence,
+        ) = detect_availability(card)
+
+        card_product_id = (
+            extract_woocommerce_product_id(
+                card
+            )
+        )
+        card_sku = extract_listing_sku(
+            card
+        )
+        card_image_alt = (
+            extract_listing_image_alt(
+                card
+            )
+        )
+
+        availability_counts[
+            card_availability
+        ] = (
+            availability_counts.get(
+                card_availability,
+                0,
+            )
+            + 1
+        )
+
+        if card_original_price is not None:
+            sale_count += 1
+
         if source_url in links_by_url:
-            duplicate_record = {
+            existing_link = (
+                links_by_url[source_url]
+            )
+            existing_payload = dict(
+                existing_link.payload
+                if isinstance(
+                    existing_link.payload,
+                    dict,
+                )
+                else {}
+            )
+
+            existing_variants = (
+                existing_payload.get(
+                    "url_collision_variants"
+                )
+            )
+
+            if not isinstance(
+                existing_variants,
+                list,
+            ):
+                existing_variants = [{
+                    "page": (
+                        existing_payload.get(
+                            "page"
+                        )
+                    ),
+                    "listing_position": (
+                        existing_payload.get(
+                            "listing_position"
+                        )
+                    ),
+                    "woocommerce_product_id": (
+                        existing_payload.get(
+                            "woocommerce_product_id"
+                        )
+                    ),
+                    "sku": (
+                        existing_payload.get(
+                            "source_sku"
+                        )
+                    ),
+                    "artist": (
+                        existing_payload.get(
+                            "artist"
+                        )
+                    ),
+                    "title": (
+                        existing_payload.get(
+                            "title"
+                        )
+                    ),
+                    "price": (
+                        existing_payload.get(
+                            "price"
+                        )
+                    ),
+                    "original_price": (
+                        existing_payload.get(
+                            "original_price"
+                        )
+                    ),
+                    "availability": (
+                        existing_payload.get(
+                            "availability"
+                        )
+                    ),
+                    "image_alt": (
+                        existing_payload.get(
+                            "image_alt"
+                        )
+                    ),
+                }]
+
+            new_variant = {
+                "page": page,
+                "listing_position": position,
+                "woocommerce_product_id": (
+                    card_product_id
+                ),
+                "sku": card_sku,
+                "artist": card_artist,
+                "title": card_title,
+                "price": card_price,
+                "original_price": (
+                    card_original_price
+                ),
+                "availability": (
+                    card_availability
+                ),
+                "image_alt": card_image_alt,
+            }
+
+            variant_keys = {
+                json.dumps(
+                    variant,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                for variant in existing_variants
+                if isinstance(variant, dict)
+            }
+
+            new_variant_key = json.dumps(
+                new_variant,
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+
+            if new_variant_key not in variant_keys:
+                existing_variants.append(
+                    new_variant
+                )
+
+            collision_pages = sorted({
+                int(variant["page"])
+                for variant in existing_variants
+                if (
+                    isinstance(variant, dict)
+                    and isinstance(
+                        variant.get("page"),
+                        int,
+                    )
+                )
+            })
+
+            collision_payload: dict[
+                str,
+                Any,
+            ] = {
+                "source": (
+                    "colouredvinyl_vinyl_"
+                    "listing_html"
+                ),
+                "discovery_url": listing_url,
+                "pages": collision_pages,
+                "artist": (
+                    existing_payload.get(
+                        "artist"
+                    )
+                    or card_artist
+                ),
+                "title": (
+                    existing_payload.get(
+                        "title"
+                    )
+                    or card_title
+                ),
+                "price": None,
+                "original_price": None,
+                "currency": "EUR",
+                "price_source": "listing",
+                "availability": "unknown",
+                "source_availability": (
+                    "ambiguous"
+                ),
+                "availability_evidence": (
+                    "shared_url_multiple_"
+                    "woocommerce_products"
+                ),
+                "publish_eligible": False,
+                "url_collision": True,
+                "url_collision_count": len(
+                    existing_variants
+                ),
+                "url_collision_variants": (
+                    existing_variants
+                ),
+                "quarantine_reason": (
+                    "shared_product_url_"
+                    "multiple_variants"
+                ),
+                "listing_seen_at": (
+                    seen_at.isoformat()
+                ),
+            }
+
+            links_by_url[
+                source_url
+            ] = DiscoveredLink(
+                shop_id=SHOP_ID,
+                source_url=source_url,
+                source_product_id=None,
+                payload=collision_payload,
+            )
+
+            # Een gedeelde URL kan niet veilig
+            # aan één prijs, SKU of EAN worden
+            # gekoppeld. Verwijder daarom ook
+            # de eerder opgebouwde offer.
+            offers_by_url.pop(
+                source_url,
+                None,
+            )
+
+            collision_record = {
                 "page": page,
                 "position": position,
                 "reason": (
-                    "duplicate_product_url_"
-                    "within_page"
+                    "shared_product_url_"
+                    "multiple_variants"
                 ),
                 "source_url": source_url,
+                "variant_count": len(
+                    existing_variants
+                ),
+                "variants": (
+                    existing_variants
+                ),
                 "raw_hrefs": raw_hrefs[:20],
                 "card_classes": (
                     card.get("class")
                     or []
                 ),
-                "card_text": clean(
-                    card.get_text(
-                        " ",
-                        strip=True,
-                    )
-                )[:800],
             }
 
             duplicate_cards.append(
-                duplicate_record
+                collision_record
             )
 
             if debug:
                 print(
-                    "[COLOUREDVINYL-LISTING-SKIP]",
+                    "[COLOUREDVINYL-LISTING-"
+                    "COLLISION]",
                     json.dumps(
-                        duplicate_record,
+                        collision_record,
                         ensure_ascii=False,
                         sort_keys=True,
                     ),
@@ -530,33 +829,18 @@ def parse_listing_page(
 
             continue
 
-        title = extract_title(
-            card,
-            anchor,
+        title = card_title
+        artist = card_artist
+        price = card_price
+        original_price = (
+            card_original_price
         )
-        artist = extract_artist(card)
-
-        price, original_price = (
-            extract_prices(card)
+        availability = (
+            card_availability
         )
-
-        (
-            availability,
-            availability_evidence,
-        ) = detect_availability(card)
-
-        availability_counts[
-            availability
-        ] = (
-            availability_counts.get(
-                availability,
-                0,
-            )
-            + 1
+        availability_evidence = (
+            card_availability_evidence
         )
-
-        if original_price is not None:
-            sale_count += 1
 
         payload: dict[str, Any] = {
             "source": (
@@ -567,6 +851,12 @@ def parse_listing_page(
             "listing_position": position,
             "artist": artist,
             "title": title,
+            "woocommerce_product_id": (
+                card_product_id
+            ),
+            "source_sku": card_sku,
+            "image_alt": card_image_alt,
+            "url_collision": False,
             "price": price,
             "original_price": original_price,
             "currency": "EUR",
@@ -589,7 +879,8 @@ def parse_listing_page(
             shop_id=SHOP_ID,
             source_url=source_url,
             source_product_id=(
-                source_product_id_from_url(
+                card_product_id
+                or source_product_id_from_url(
                     source_url
                 )
             ),
@@ -1196,9 +1487,25 @@ def main() -> int:
 
     summary = {
         "pages_fetched": pages_fetched,
+        "raw_cards": sum(
+            int(item.get("raw_cards", 0))
+            for item in page_diagnostics
+        ),
         "links": len(all_links),
         "offers_with_price": (
             len(all_offers)
+        ),
+        "skipped_cards": sum(
+            int(item.get("skipped_cards", 0))
+            for item in page_diagnostics
+        ),
+        "url_collision_events": sum(
+            int(item.get("duplicate_cards", 0))
+            for item in page_diagnostics
+        ),
+        "sale_cards": sum(
+            int(item.get("sale_count", 0))
+            for item in page_diagnostics
         ),
         "declared_last_page": (
             declared_last_page
