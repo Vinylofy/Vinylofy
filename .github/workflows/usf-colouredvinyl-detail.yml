@@ -372,7 +372,11 @@ jobs:
           PY
 
       - name: Verify database write isolation
-        if: ${{ inputs.write }}
+        # Ook uitvoeren wanneer de voorafgaande
+        # diagnostiek een gedeeltelijke batch afkeurt.
+        # Eventuele reeds geschreven raw rows worden
+        # dan alsnog op isolatie en veiligheid getest.
+        if: ${{ always() && inputs.write }}
         shell: bash
         env:
           BASELINE_AT: ${{ steps.baseline.outputs.baseline_at }}

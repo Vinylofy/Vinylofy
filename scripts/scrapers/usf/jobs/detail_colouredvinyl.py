@@ -11,6 +11,8 @@ from typing import Any
 from urllib.parse import urlparse
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup, Tag
 from psycopg.rows import dict_row
 
@@ -30,6 +32,52 @@ DEFAULT_USER_AGENT = (
     "Chrome/145.0.0.0 Safari/537.36 "
     "Vinylofy/1.0"
 )
+
+
+CONNECT_TIMEOUT_SECONDS = 12
+READ_TIMEOUT_SECONDS = 60
+
+# Een URL wordt maximaal twee keer geprobeerd:
+# de eerste request plus één connect/statusretry.
+REQUEST_RETRIES = 1
+
+# Bij een bredere runner- of siteblokkade stoppen
+# we na drie volledig mislukte product-URL's.
+MAX_CONSECUTIVE_TRANSPORT_FAILURES = 3
+
+
+def configure_transport(
+    session: requests.Session,
+) -> None:
+    retries = Retry(
+        total=REQUEST_RETRIES,
+        connect=REQUEST_RETRIES,
+        read=REQUEST_RETRIES,
+        status=REQUEST_RETRIES,
+        redirect=2,
+        backoff_factor=3.0,
+        status_forcelist=(
+            429,
+            500,
+            502,
+            503,
+            504,
+        ),
+        allowed_methods=frozenset({"GET"}),
+        respect_retry_after_header=True,
+        raise_on_status=False,
+    )
+
+    adapter = HTTPAdapter(
+        max_retries=retries,
+        pool_connections=1,
+        pool_maxsize=1,
+    )
+
+    session.mount(
+        "https://",
+        adapter,
+    )
 
 
 def clean(value: object) -> str:
@@ -671,7 +719,11 @@ def main() -> int:
         "Accept-Language": (
             "nl-NL,nl;q=0.9,en;q=0.8"
         ),
+        "Referer": f"{BASE_URL}/vinyl/",
+        "Connection": "close",
     })
+
+    configure_transport(session)
 
     diagnostics: dict[str, Any] = {
         "summary": {},
@@ -691,7 +743,12 @@ def main() -> int:
         "http_failed": 0,
         "dead_links": 0,
         "listing_policy_blocks": 0,
+        "transport_aborted": False,
+        "transport_abort_reason": None,
+        "max_consecutive_transport_failures_seen": 0,
     }
+
+    consecutive_transport_failures = 0
 
     for index, row in enumerate(
         queue,
@@ -782,11 +839,27 @@ def main() -> int:
         try:
             response = session.get(
                 source_url,
-                timeout=(15, 60),
+                timeout=(
+                    CONNECT_TIMEOUT_SECONDS,
+                    READ_TIMEOUT_SECONDS,
+                ),
                 allow_redirects=True,
             )
         except requests.RequestException as exc:
             stats["request_failed"] += 1
+
+            consecutive_transport_failures += 1
+
+            stats[
+                "max_consecutive_transport_failures_seen"
+            ] = max(
+                int(
+                    stats[
+                        "max_consecutive_transport_failures_seen"
+                    ]
+                ),
+                consecutive_transport_failures,
+            )
 
             print(
                 "[COLOUREDVINYL-DETAIL-WARN]",
@@ -796,21 +869,84 @@ def main() -> int:
                         type(exc).__name__
                     ),
                     "error": str(exc),
+                    "consecutive_transport_failures": (
+                        consecutive_transport_failures
+                    ),
+                    "request_retries": (
+                        REQUEST_RETRIES
+                    ),
                 },
                 flush=True,
             )
 
+            if (
+                consecutive_transport_failures
+                >= MAX_CONSECUTIVE_TRANSPORT_FAILURES
+            ):
+                stats["transport_aborted"] = True
+                stats["transport_abort_reason"] = (
+                    "max_consecutive_transport_failures"
+                )
+
+                print(
+                    "[COLOUREDVINYL-DETAIL-ABORT]",
+                    {
+                        "reason": (
+                            "max_consecutive_transport_failures"
+                        ),
+                        "threshold": (
+                            MAX_CONSECUTIVE_TRANSPORT_FAILURES
+                        ),
+                        "processed_index": index,
+                        "remaining_queue": (
+                            len(queue) - index
+                        ),
+                        "action": (
+                            "stop_without_marking_or_writing"
+                        ),
+                    },
+                    flush=True,
+                )
+
+                break
+
+            failure_backoff = min(
+                30.0,
+                5.0
+                * consecutive_transport_failures,
+            )
+
+            print(
+                "[COLOUREDVINYL-DETAIL-BACKOFF]",
+                {
+                    "seconds": failure_backoff,
+                    "next_action": (
+                        "try_next_registry_link"
+                    ),
+                },
+                flush=True,
+            )
+
+            time.sleep(failure_backoff)
             continue
 
+        consecutive_transport_failures = 0
         stats["fetched"] += 1
 
         if response.status_code == 429:
+            stats["transport_aborted"] = True
+            stats["transport_abort_reason"] = (
+                "http_429"
+            )
+
             print(
                 "[COLOUREDVINYL-DETAIL-WARN]",
                 {
                     "url": source_url,
                     "status": 429,
-                    "action": "stop_safely",
+                    "action": (
+                        "stop_without_marking_or_writing"
+                    ),
                 },
                 flush=True,
             )
