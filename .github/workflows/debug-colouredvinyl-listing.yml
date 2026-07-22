@@ -1,0 +1,160 @@
+name: Debug - Coloured Vinyl Listing
+
+run-name: Coloured Vinyl two-page listing dry-run
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: debug-colouredvinyl-listing-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  listing-dry-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            python -m pip install -r requirements.txt
+          fi
+
+          if [ -f requirements-scrapers.txt ]; then
+            python -m pip install -r requirements-scrapers.txt
+          fi
+
+          python -m pip install \
+            requests \
+            beautifulsoup4 \
+            "psycopg[binary]" \
+            python-dotenv
+
+      - name: Compile and validate CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m py_compile \
+            scripts/scrapers/usf/jobs/refresh_colouredvinyl_listing_prices.py
+
+          python -m \
+            scripts.scrapers.usf.jobs.refresh_colouredvinyl_listing_prices \
+            --help >/dev/null
+
+      - name: Test exact requests transport
+        shell: bash
+        run: |
+          mkdir -p output/usf-colouredvinyl
+
+          python - <<'PY' \
+            2>&1 | tee output/usf-colouredvinyl/requests-probe.log
+          from pathlib import Path
+
+          import requests
+
+          from scripts.scrapers.usf.jobs.refresh_colouredvinyl_listing_prices import (
+              CATALOG_URL,
+              HEADERS,
+          )
+
+          output = Path("output/usf-colouredvinyl")
+          output.mkdir(parents=True, exist_ok=True)
+
+          try:
+              response = requests.get(
+                  CATALOG_URL,
+                  headers=HEADERS,
+                  timeout=(15, 60),
+                  allow_redirects=True,
+              )
+          except Exception as exc:
+              print(
+                  "[COLOUREDVINYL-REQUESTS-PROBE]",
+                  {
+                      "ok": False,
+                      "error_type": type(exc).__name__,
+                      "error": str(exc),
+                  },
+              )
+          else:
+              body = response.content
+
+              print(
+                  "[COLOUREDVINYL-REQUESTS-PROBE]",
+                  {
+                      "ok": response.status_code == 200,
+                      "status": response.status_code,
+                      "final_url": response.url,
+                      "bytes": len(body),
+                      "content_type": response.headers.get("content-type"),
+                      "server": response.headers.get("server"),
+                  },
+              )
+
+              Path(
+                  "output/usf-colouredvinyl/requests-page-1.html"
+              ).write_bytes(body)
+
+              Path(
+                  "output/usf-colouredvinyl/requests-headers.txt"
+              ).write_text(
+                  "\n".join(
+                      f"{key}: {value}"
+                      for key, value in sorted(response.headers.items())
+                  ),
+                  encoding="utf-8",
+              )
+          PY
+
+      - name: Run two-page listing dry-run
+        shell: bash
+        run: |
+          mkdir -p output/usf-colouredvinyl
+
+          set +e
+
+          python -u -m \
+            scripts.scrapers.usf.jobs.refresh_colouredvinyl_listing_prices \
+            --start-page 1 \
+            --max-pages 2 \
+            --sleep 0.5 \
+            --max-page-failures 2 \
+            --debug \
+            2>&1 | tee output/usf-colouredvinyl/listing-dry-run.log
+
+          STATUS=${PIPESTATUS[0]}
+
+          printf '%s\n' "$STATUS" \
+            > output/usf-colouredvinyl/run-exit-code.txt
+
+          echo
+          echo "Scraper-exitcode: $STATUS"
+
+          exit "$STATUS"
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: colouredvinyl-listing-dry-run
+          path: output/usf-colouredvinyl/**
+          if-no-files-found: warn
+          retention-days: 7
