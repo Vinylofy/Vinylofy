@@ -1,0 +1,331 @@
+name: Debug - Coloured Vinyl Full Readonly
+
+run-name: Coloured Vinyl complete catalogue dry-run
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: debug-colouredvinyl-full-readonly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  catalogue-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            python -m pip install -r requirements.txt
+          fi
+
+          if [ -f requirements-scrapers.txt ]; then
+            python -m pip install -r requirements-scrapers.txt
+          fi
+
+          python -m pip install \
+            requests \
+            beautifulsoup4 \
+            "psycopg[binary]" \
+            python-dotenv
+
+      - name: Validate scraper
+        shell: bash
+        run: |
+          python -m py_compile \
+            scripts/scrapers/usf/jobs/refresh_colouredvinyl_listing_prices.py
+
+          python -m \
+            scripts.scrapers.usf.jobs.refresh_colouredvinyl_listing_prices \
+            --help >/dev/null
+
+      - name: Run complete catalogue dry-run
+        id: scan
+        shell: bash
+        run: |
+          mkdir -p output/usf-colouredvinyl
+
+          set +e
+
+          python -u -m \
+            scripts.scrapers.usf.jobs.refresh_colouredvinyl_listing_prices \
+            --start-page 1 \
+            --max-pages 0 \
+            --sleep 0.35 \
+            --max-page-failures 2 \
+            2>&1 | tee \
+              output/usf-colouredvinyl/full-readonly.log
+
+          STATUS=${PIPESTATUS[0]}
+
+          echo "$STATUS" \
+            > output/usf-colouredvinyl/exit-code.txt
+
+          echo "status=$STATUS" \
+            >> "$GITHUB_OUTPUT"
+
+          echo
+          echo "Scraper-exitcode: $STATUS"
+
+          # Artifact moet ook bij een fout beschikbaar blijven.
+          exit 0
+
+      - name: Analyse diagnostics
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' \
+            2>&1 | tee output/usf-colouredvinyl/full-analysis.txt
+          import json
+          from pathlib import Path
+
+          path = Path(
+              "output/usf-colouredvinyl/"
+              "listing-diagnostics.json"
+          )
+
+          print("========================================")
+          print("FULL-SCAN ANALYSE")
+          print("========================================")
+
+          if not path.exists():
+              print("listing-diagnostics.json ontbreekt.")
+              raise SystemExit(0)
+
+          data = json.loads(
+              path.read_text(encoding="utf-8")
+          )
+
+          summary = data.get("summary", {})
+          pages = data.get("pages", [])
+
+          raw_cards = sum(
+              int(page.get("raw_cards", 0))
+              for page in pages
+          )
+
+          page_links = sum(
+              int(page.get("links", 0))
+              for page in pages
+          )
+
+          page_offers = sum(
+              int(
+                  page.get(
+                      "offers_with_price",
+                      0,
+                  )
+              )
+              for page in pages
+          )
+
+          missing_prices = sum(
+              int(
+                  page.get(
+                      "missing_in_stock_prices",
+                      0,
+                  )
+              )
+              for page in pages
+          )
+
+          skipped_cards = sum(
+              int(
+                  page.get(
+                      "skipped_cards",
+                      0,
+                  )
+              )
+              for page in pages
+          )
+
+          duplicate_cards = sum(
+              int(
+                  page.get(
+                      "duplicate_cards",
+                      0,
+                  )
+              )
+              for page in pages
+          )
+
+          sale_cards = sum(
+              int(page.get("sale_count", 0))
+              for page in pages
+          )
+
+          availability = {}
+
+          for page in pages:
+              page_availability = (
+                  page.get("availability")
+                  or {}
+              )
+
+              for key, value in (
+                  page_availability.items()
+              ):
+                  availability[key] = (
+                      availability.get(key, 0)
+                      + int(value)
+                  )
+
+          print("Summary:")
+          print(
+              json.dumps(
+                  summary,
+                  indent=2,
+                  ensure_ascii=False,
+              )
+          )
+
+          print()
+          print("Aggregates:")
+          print({
+              "diagnostic_pages": len(pages),
+              "raw_cards": raw_cards,
+              "page_links": page_links,
+              "page_offers": page_offers,
+              "missing_in_stock_prices": (
+                  missing_prices
+              ),
+              "skipped_cards": skipped_cards,
+              "duplicate_url_cards": (
+                  duplicate_cards
+              ),
+              "sale_cards": sale_cards,
+              "availability": availability,
+          })
+
+          print()
+          print("Pagina's met afwijkingen:")
+
+          anomaly_count = 0
+
+          for page in pages:
+              missing = int(
+                  page.get(
+                      "missing_in_stock_prices",
+                      0,
+                  )
+              )
+
+              skipped = int(
+                  page.get(
+                      "skipped_cards",
+                      0,
+                  )
+              )
+
+              duplicates = int(
+                  page.get(
+                      "duplicate_cards",
+                      0,
+                  )
+              )
+
+              raw = int(
+                  page.get("raw_cards", 0)
+              )
+
+              links = int(
+                  page.get("links", 0)
+              )
+
+              if (
+                  missing
+                  or skipped
+                  or duplicates
+                  or raw != links
+              ):
+                  anomaly_count += 1
+
+                  print({
+                      "page": page.get("page"),
+                      "status": page.get(
+                          "status"
+                      ),
+                      "raw_cards": raw,
+                      "links": links,
+                      "offers": page.get(
+                          "offers_with_price"
+                      ),
+                      "missing_prices": missing,
+                      "skipped_cards": skipped,
+                      "duplicate_cards": duplicates,
+                      "skipped_sample": page.get(
+                          "skipped_card_sample"
+                      ),
+                      "duplicate_sample": page.get(
+                          "duplicate_card_sample"
+                      ),
+                  })
+
+          if anomaly_count == 0:
+              print("Geen afwijkende pagina's.")
+
+          print()
+          print("Veiligheidscontrole:")
+          print({
+              "scan_completed_safely": (
+                  summary.get(
+                      "scan_completed_safely"
+                  )
+              ),
+              "stop_reason": summary.get(
+                  "stop_reason"
+              ),
+              "declared_last_page": (
+                  summary.get(
+                      "declared_last_page"
+                  )
+              ),
+              "pages_fetched": summary.get(
+                  "pages_fetched"
+              ),
+              "write": summary.get("write"),
+          })
+          PY
+
+      - name: Upload full-scan diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: colouredvinyl-full-readonly
+          path: output/usf-colouredvinyl/**
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Fail when scraper failed
+        if: always()
+        shell: bash
+        run: |
+          STATUS="${{ steps.scan.outputs.status }}"
+
+          if [ -z "$STATUS" ]; then
+            echo "FOUT: scraperstatus ontbreekt."
+            exit 1
+          fi
+
+          if [ "$STATUS" != "0" ]; then
+            echo "FOUT: scraper eindigde met code $STATUS."
+            exit "$STATUS"
+          fi
+
+          echo "Scraper eindigde succesvol."
