@@ -844,6 +844,22 @@ jobs:
                   before = existing.get(field)
                   after = product.get(field)
 
+                  # promotion-baseline.json bewaart
+                  # Decimal metadata_confidence als
+                  # JSON-string. De live databasequery
+                  # retourneert deze waarde numeriek.
+                  if field == "metadata_confidence":
+                      before = (
+                          None
+                          if before in (None, "")
+                          else int(before)
+                      )
+                      after = (
+                          None
+                          if after in (None, "")
+                          else int(after)
+                      )
+
                   if before not in (
                       None,
                       "",
