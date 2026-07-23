@@ -1,0 +1,551 @@
+name: Debug - Coloured Vinyl Promote
+
+run-name: Coloured Vinyl promotion dry-run
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: debug-colouredvinyl-promote-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  promotion-dry-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            python -m pip install -r requirements.txt
+          fi
+
+          if [ -f requirements-scrapers.txt ]; then
+            python -m pip install -r requirements-scrapers.txt
+          fi
+
+          python -m pip install \
+            "psycopg[binary]" \
+            python-dotenv
+
+      - name: Validate module
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m py_compile \
+            scripts/scrapers/usf/jobs/promote_colouredvinyl.py
+
+          python -m \
+            scripts.scrapers.usf.jobs.promote_colouredvinyl \
+            --help >/dev/null
+
+          grep -q \
+            'raw_payload_artist_title' \
+            scripts/scrapers/usf/jobs/promote_colouredvinyl.py
+
+          grep -q \
+            'require_artist=True' \
+            scripts/scrapers/usf/jobs/promote_colouredvinyl.py
+
+      - name: Validate database secret
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "[ERROR] DATABASE_URL ontbreekt."
+            exit 1
+          fi
+
+      - name: Capture target baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p output/usf-colouredvinyl
+
+          python - <<'PY' \
+            2>&1 | tee \
+              output/usf-colouredvinyl/promotion-baseline.log
+          import json
+          import os
+          from pathlib import Path
+
+          import psycopg
+          from psycopg.rows import dict_row
+
+          from scripts.importers.common import (
+              identifier_candidates,
+          )
+
+
+          database_url = os.environ["DATABASE_URL"]
+
+          with psycopg.connect(
+              database_url,
+              row_factory=dict_row,
+          ) as connection:
+              with connection.cursor() as cursor:
+                  cursor.execute(
+                      """
+                      select
+                        s.id::text
+                          as staged_offer_id,
+                        s.raw_scrape_id::text,
+                        s.source_url,
+                        s.source_product_id,
+                        s.ean_normalized,
+                        s.ean_match_key,
+                        s.price,
+                        s.currency,
+                        s.availability,
+                        s.stage_status,
+                        s.stage_reason,
+                        r.title_raw,
+                        r.payload->>'artist'
+                          as raw_artist,
+                        r.payload->>'title'
+                          as raw_title,
+                        r.payload->>'format'
+                          as raw_format
+                      from public.staged_offers s
+                      join public.raw_shop_scrapes r
+                        on r.id = s.raw_scrape_id
+                      where s.shop_id = 'colouredvinyl'
+                        and s.stage_status = 'staged'
+                      order by
+                        s.created_at asc,
+                        s.id asc
+                      limit 1
+                      """
+                  )
+
+                  target = cursor.fetchone()
+
+                  if target is None:
+                      raise SystemExit(
+                          "Geen staged Coloured Vinyl-offer."
+                      )
+
+                  target = dict(target)
+
+                  identifiers = identifier_candidates(
+                      target["ean_match_key"],
+                      target["ean_normalized"],
+                  )
+
+                  cursor.execute(
+                      """
+                      select
+                        p.id::text,
+                        p.ean,
+                        p.gtin_normalized,
+                        p.artist,
+                        p.title,
+                        p.format_label,
+                        p.cover_url,
+                        p.metadata_source,
+                        p.metadata_status,
+                        p.metadata_confidence,
+                        p.metadata_needs_review
+                      from public.products p
+                      where p.ean = any(%s)
+                         or p.gtin_normalized = any(%s)
+                      order by
+                        p.updated_at desc nulls last,
+                        p.created_at desc nulls last
+                      """,
+                      (
+                          identifiers,
+                          identifiers,
+                      ),
+                  )
+
+                  products = [
+                      dict(row)
+                      for row in cursor.fetchall()
+                  ]
+
+                  cursor.execute(
+                      """
+                      select id::text
+                      from public.shops
+                      where domain = 'colouredvinyl.nl'
+                      limit 1
+                      """
+                  )
+
+                  shop_row = cursor.fetchone()
+
+                  if shop_row is None:
+                      raise SystemExit(
+                          "Coloured Vinyl-shop ontbreekt."
+                      )
+
+                  shop_id = shop_row["id"]
+
+                  product_ids = [
+                      row["id"]
+                      for row in products
+                  ]
+
+                  if product_ids:
+                      cursor.execute(
+                          """
+                          select
+                            product_id::text,
+                            price,
+                            currency,
+                            product_url,
+                            availability,
+                            is_active
+                          from public.prices
+                          where shop_id = %s
+                            and product_id = any(%s::uuid[])
+                          """,
+                          (
+                              shop_id,
+                              product_ids,
+                          ),
+                      )
+
+                      prices = [
+                          dict(row)
+                          for row in cursor.fetchall()
+                      ]
+
+                      cursor.execute(
+                          """
+                          select
+                            product_id::text,
+                            count(*)::int as rows
+                          from public.price_history
+                          where shop_id = %s
+                            and product_id = any(%s::uuid[])
+                          group by product_id
+                          """,
+                          (
+                              shop_id,
+                              product_ids,
+                          ),
+                      )
+
+                      history = [
+                          dict(row)
+                          for row in cursor.fetchall()
+                      ]
+                  else:
+                      prices = []
+                      history = []
+
+          result = {
+              "target": target,
+              "identifier_candidates": (
+                  identifiers
+              ),
+              "existing_products": products,
+              "existing_shop_prices": prices,
+              "existing_shop_history": history,
+              "prediction": {
+                  "would_create_product": (
+                      len(products) == 0
+                  ),
+                  "would_insert_shop_price": (
+                      len(prices) == 0
+                  ),
+                  "would_create_cover_candidate": (
+                      False
+                  ),
+              },
+          }
+
+          print(
+              json.dumps(
+                  result,
+                  indent=2,
+                  ensure_ascii=False,
+                  default=str,
+              )
+          )
+
+          Path(
+              "output/usf-colouredvinyl/"
+              "promotion-baseline.json"
+          ).write_text(
+              json.dumps(
+                  result,
+                  indent=2,
+                  ensure_ascii=False,
+                  default=str,
+              ),
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Run promotion preview
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -u -m \
+            scripts.scrapers.usf.jobs.promote_colouredvinyl \
+            --limit 1 \
+            2>&1 | tee \
+              output/usf-colouredvinyl/promotion.log
+
+      - name: Validate preview and read-only isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY' \
+            2>&1 | tee \
+              output/usf-colouredvinyl/promotion-analysis.log
+          import json
+          import os
+          from pathlib import Path
+
+          import psycopg
+          from psycopg.rows import dict_row
+
+          from scripts.importers.common import (
+              identifier_candidates,
+          )
+
+
+          baseline = json.loads(
+              Path(
+                  "output/usf-colouredvinyl/"
+                  "promotion-baseline.json"
+              ).read_text(encoding="utf-8")
+          )
+
+          diagnostics = json.loads(
+              Path(
+                  "output/usf-colouredvinyl/"
+                  "promotion-diagnostics.json"
+              ).read_text(encoding="utf-8")
+          )
+
+          summary = diagnostics["summary"]
+          items = diagnostics["items"]
+          target = baseline["target"]
+
+          print(
+              json.dumps(
+                  {
+                      "baseline": baseline,
+                      "preview": diagnostics,
+                  },
+                  indent=2,
+                  ensure_ascii=False,
+              )
+          )
+
+          if summary != {
+              "shop": "colouredvinyl",
+              "queued": 1,
+              "valid": 1,
+              "invalid": 0,
+              "write": False,
+          }:
+              raise SystemExit(
+                  "Onverwachte promotiesamenvatting."
+              )
+
+          if len(items) != 1:
+              raise SystemExit(
+                  "Promotiepreview bevat niet exact één item."
+              )
+
+          item = items[0]
+
+          expected_ean = (
+              target["ean_match_key"]
+              or target["ean_normalized"]
+          )
+
+          if item["ean"] != expected_ean:
+              raise SystemExit(
+                  "Preview-EAN wijkt af van staged offer."
+              )
+
+          if item["artist"] != target["raw_artist"]:
+              raise SystemExit(
+                  "Preview-artiest wijkt af van raw payload."
+              )
+
+          if item["title"] != target["raw_title"]:
+              raise SystemExit(
+                  "Previewtitel wijkt af van raw payload."
+              )
+
+          if item["title_source"] != (
+              "raw_payload_artist_title"
+          ):
+              raise SystemExit(
+                  "Raw artist/title zijn niet gebruikt."
+              )
+
+          if float(item["price"]) != float(
+              target["price"]
+          ):
+              raise SystemExit(
+                  "Previewprijs wijkt af van staged offer."
+              )
+
+          if item["availability"] != (
+              target["availability"]
+          ):
+              raise SystemExit(
+                  "Previewvoorraad wijkt af."
+              )
+
+          if item["cover_url"] is not None:
+              raise SystemExit(
+                  "Preview bevat een productcover."
+              )
+
+          if item[
+              "cover_candidate_url"
+          ] is not None:
+              raise SystemExit(
+                  "Preview bevat een shopcoverkandidaat."
+              )
+
+          database_url = os.environ["DATABASE_URL"]
+
+          identifiers = identifier_candidates(
+              target["ean_match_key"],
+              target["ean_normalized"],
+          )
+
+          with psycopg.connect(
+              database_url,
+              row_factory=dict_row,
+          ) as connection:
+              with connection.cursor() as cursor:
+                  cursor.execute(
+                      """
+                      select
+                        stage_status,
+                        stage_reason
+                      from public.staged_offers
+                      where id = %s
+                      """,
+                      (
+                          target[
+                              "staged_offer_id"
+                          ],
+                      ),
+                  )
+
+                  staged_after = cursor.fetchone()
+
+                  cursor.execute(
+                      """
+                      select count(*)::int as count
+                      from public.products
+                      where ean = any(%s)
+                         or gtin_normalized = any(%s)
+                      """,
+                      (
+                          identifiers,
+                          identifiers,
+                      ),
+                  )
+
+                  product_count_after = int(
+                      cursor.fetchone()["count"]
+                  )
+
+                  cursor.execute(
+                      """
+                      select count(*)::int as count
+                      from public.prices p
+                      join public.shops s
+                        on s.id = p.shop_id
+                      join public.products product
+                        on product.id = p.product_id
+                      where s.domain = 'colouredvinyl.nl'
+                        and (
+                          product.ean = any(%s)
+                          or product.gtin_normalized
+                             = any(%s)
+                        )
+                      """,
+                      (
+                          identifiers,
+                          identifiers,
+                      ),
+                  )
+
+                  price_count_after = int(
+                      cursor.fetchone()["count"]
+                  )
+
+          if staged_after is None:
+              raise SystemExit(
+                  "Staged offer is verdwenen."
+              )
+
+          if staged_after["stage_status"] != "staged":
+              raise SystemExit(
+                  "Preview heeft staged status gewijzigd."
+              )
+
+          if staged_after["stage_reason"] is not None:
+              raise SystemExit(
+                  "Preview heeft stage_reason gewijzigd."
+              )
+
+          if product_count_after != len(
+              baseline["existing_products"]
+          ):
+              raise SystemExit(
+                  "Preview heeft products gewijzigd."
+              )
+
+          if price_count_after != len(
+              baseline["existing_shop_prices"]
+          ):
+              raise SystemExit(
+                  "Preview heeft publieke prijzen gewijzigd."
+              )
+
+          print(
+              "[OK] Promotionpreview is correct "
+              "en volledig read-only."
+          )
+          PY
+
+      - name: Upload promotion diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: colouredvinyl-promotion-dry-run
+          path: output/usf-colouredvinyl/**
+          if-no-files-found: error
+          retention-days: 7
