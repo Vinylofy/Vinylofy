@@ -233,6 +233,8 @@ jobs:
               ;;
           esac
 
+          mkdir -p output/usf-colouredvinyl
+
           python -u -m \
             scripts.scrapers.usf.jobs.run_colouredvinyl_pipeline \
             --mode "${{ inputs.mode }}" \
