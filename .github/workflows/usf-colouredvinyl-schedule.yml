@@ -1,0 +1,136 @@
+name: USF - Coloured Vinyl Schedule
+
+on:
+  schedule:
+    # Dagelijkse volledige listing- en prijsrefresh.
+    - cron: "37 6 * * *"
+      timezone: "Europe/Amsterdam"
+
+    # Detailverrijking op dinsdag en vrijdag.
+    - cron: "17 8 * * 2,5"
+      timezone: "Europe/Amsterdam"
+
+    # Stage/promote na de detailbatch.
+    - cron: "47 9 * * 2,5"
+      timezone: "Europe/Amsterdam"
+
+  workflow_dispatch:
+    inputs:
+      run_type:
+        description: "Geplande Coloured Vinyl-stap"
+        required: true
+        type: choice
+        default: listing
+        options:
+          - listing
+          - detail
+          - stage-promote
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: usf-colouredvinyl-scheduler
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    name: Dispatch Coloured Vinyl pipeline
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve run type and dispatch production workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          MANUAL_RUN_TYPE: ${{ inputs.run_type }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            RUN_TYPE="$MANUAL_RUN_TYPE"
+          else
+            case "$EVENT_SCHEDULE" in
+              "37 6 * * *")
+                RUN_TYPE="listing"
+                ;;
+              "17 8 * * 2,5")
+                RUN_TYPE="detail"
+                ;;
+              "47 9 * * 2,5")
+                RUN_TYPE="stage-promote"
+                ;;
+              *)
+                echo "Onbekend schedule: $EVENT_SCHEDULE"
+                exit 1
+                ;;
+            esac
+          fi
+
+          TARGET_PATH="$(
+            gh workflow list --all --json name,path \
+              --jq '.[] | select(.name == "USF - Coloured Vinyl Pipeline") | .path' \
+              | head -n 1
+          )"
+
+          test -n "$TARGET_PATH" || {
+            echo "Workflow 'USF - Coloured Vinyl Pipeline' niet gevonden."
+            exit 1
+          }
+
+          TARGET_FILE="${TARGET_PATH##*/}"
+          TARGET_YAML="$(gh workflow view "$TARGET_FILE" --ref main --yaml)"
+
+          has_input() {
+            grep -Eq "^[[:space:]]+$1:" <<< "$TARGET_YAML"
+          }
+
+          ARGS=(
+            --ref main
+            -f mode=write
+            -f scope="$RUN_TYPE"
+            -f write_confirmation=WRITE_COLOUREDVINYL_PIPELINE
+          )
+
+          add_input_when_present() {
+            local name="$1"
+            local value="$2"
+
+            if has_input "$name"; then
+              ARGS+=(-f "${name}=${value}")
+            fi
+          }
+
+          case "$RUN_TYPE" in
+            listing)
+              add_input_when_present listing_start_page 1
+              add_input_when_present listing_max_pages 0
+              add_input_when_present page_size 50
+              add_input_when_present listing_sleep_seconds 0.25
+              ;;
+
+            detail)
+              add_input_when_present detail_limit 250
+              add_input_when_present detail_retry_days 30
+              add_input_when_present detail_sleep_seconds 3.0
+              ;;
+
+            stage-promote)
+              add_input_when_present stage_limit 500
+              add_input_when_present promote_limit 500
+              add_input_when_present quarantine_limit 500
+              ;;
+
+            *)
+              echo "Ongeldig run type: $RUN_TYPE"
+              exit 1
+              ;;
+          esac
+
+          echo "Dispatch: $TARGET_FILE"
+          echo "Scope:    $RUN_TYPE"
+
+          gh workflow run "$TARGET_FILE" "${ARGS[@]}"
