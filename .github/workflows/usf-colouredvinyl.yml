@@ -1,0 +1,294 @@
+name: USF - Coloured Vinyl Pipeline
+
+run-name: >-
+  Coloured Vinyl • ${{ inputs.mode }} •
+  ${{ inputs.scope }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Uitvoermodus"
+        required: true
+        default: "dry-run"
+        type: choice
+        options:
+          - dry-run
+          - write
+
+      scope:
+        description: "Welke stappen uitvoeren"
+        required: true
+        default: "full"
+        type: choice
+        options:
+          - full
+          - listing
+          - detail
+          - stage
+          - promote
+          - listing-detail
+          - stage-promote
+
+      detail_limit:
+        description: "Maximumaantal detailpagina's"
+        required: true
+        default: "25"
+        type: string
+
+      detail_retry_days:
+        description: "Details pas na X dagen opnieuw"
+        required: true
+        default: "30"
+        type: string
+
+      detail_sleep_seconds:
+        description: "Pauze tussen detailrequests"
+        required: true
+        default: "3.0"
+        type: string
+
+      stage_limit:
+        description: "Maximumaantal stagingrecords"
+        required: true
+        default: "100"
+        type: string
+
+      promote_limit:
+        description: "Maximumaantal promoties"
+        required: true
+        default: "25"
+        type: string
+
+      write_confirmation:
+        description: >-
+          Bij write exact
+          WRITE_COLOUREDVINYL_PIPELINE invullen
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usf-colouredvinyl-production
+  cancel-in-progress: false
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            python -m pip install -r requirements.txt
+          fi
+
+          if [ -f requirements-scrapers.txt ]; then
+            python -m pip install \
+              -r requirements-scrapers.txt
+          fi
+
+          python -m pip install \
+            "psycopg[binary]" \
+            python-dotenv \
+            requests \
+            beautifulsoup4
+
+      - name: Validate modules and request
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MODULES=(
+            scripts/scrapers/usf/jobs/run_colouredvinyl_pipeline.py
+            scripts/scrapers/usf/jobs/refresh_colouredvinyl_listing_prices.py
+            scripts/scrapers/usf/jobs/detail_colouredvinyl.py
+            scripts/scrapers/usf/jobs/stage_colouredvinyl.py
+            scripts/scrapers/usf/jobs/promote_colouredvinyl.py
+          )
+
+          for MODULE in "${MODULES[@]}"; do
+            python -m py_compile "$MODULE"
+          done
+
+          MODE="${{ inputs.mode }}"
+          SCOPE="${{ inputs.scope }}"
+          CONFIRMATION="${{ inputs.write_confirmation }}"
+
+          DETAIL_LIMIT="${{ inputs.detail_limit }}"
+          RETRY_DAYS="${{ inputs.detail_retry_days }}"
+          SLEEP_SECONDS="${{ inputs.detail_sleep_seconds }}"
+          STAGE_LIMIT="${{ inputs.stage_limit }}"
+          PROMOTE_LIMIT="${{ inputs.promote_limit }}"
+
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "[ERROR] DATABASE_URL ontbreekt."
+            exit 1
+          fi
+
+          if [ "$MODE" = "write" ] &&
+             [ "$CONFIRMATION" != \
+               "WRITE_COLOUREDVINYL_PIPELINE" ]
+          then
+            echo "[ERROR] ongeldige writebevestiging."
+            exit 1
+          fi
+
+          case "$SCOPE" in
+            full|listing|detail|stage|promote|listing-detail|stage-promote)
+              ;;
+            *)
+              echo "[ERROR] ongeldige scope."
+              exit 1
+              ;;
+          esac
+
+          if ! [[ "$DETAIL_LIMIT" =~ ^[0-9]+$ ]] ||
+             [ "$DETAIL_LIMIT" -lt 1 ] ||
+             [ "$DETAIL_LIMIT" -gt 1000 ]
+          then
+            echo "[ERROR] detail_limit moet 1-1000 zijn."
+            exit 1
+          fi
+
+          if ! [[ "$RETRY_DAYS" =~ ^[0-9]+$ ]]; then
+            echo "[ERROR] detail_retry_days is ongeldig."
+            exit 1
+          fi
+
+          if ! [[ "$SLEEP_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+            echo "[ERROR] detail_sleep_seconds is ongeldig."
+            exit 1
+          fi
+
+          if ! [[ "$STAGE_LIMIT" =~ ^[0-9]+$ ]] ||
+             [ "$STAGE_LIMIT" -lt 1 ] ||
+             [ "$STAGE_LIMIT" -gt 1000 ]
+          then
+            echo "[ERROR] stage_limit moet 1-1000 zijn."
+            exit 1
+          fi
+
+          if ! [[ "$PROMOTE_LIMIT" =~ ^[0-9]+$ ]] ||
+             [ "$PROMOTE_LIMIT" -lt 1 ] ||
+             [ "$PROMOTE_LIMIT" -gt 1000 ]
+          then
+            echo "[ERROR] promote_limit moet 1-1000 zijn."
+            exit 1
+          fi
+
+          echo "[OK] Pipelineaanvraag gevalideerd."
+
+      - name: Run Coloured Vinyl pipeline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "${{ inputs.scope }}" in
+            full)
+              STEPS="listing,detail,stage,promote"
+              ;;
+            listing)
+              STEPS="listing"
+              ;;
+            detail)
+              STEPS="detail"
+              ;;
+            stage)
+              STEPS="stage"
+              ;;
+            promote)
+              STEPS="promote"
+              ;;
+            listing-detail)
+              STEPS="listing,detail"
+              ;;
+            stage-promote)
+              STEPS="stage,promote"
+              ;;
+            *)
+              echo "[ERROR] onbekende scope."
+              exit 1
+              ;;
+          esac
+
+          python -u -m \
+            scripts.scrapers.usf.jobs.run_colouredvinyl_pipeline \
+            --mode "${{ inputs.mode }}" \
+            --steps "$STEPS" \
+            --detail-limit "${{ inputs.detail_limit }}" \
+            --detail-retry-days "${{ inputs.detail_retry_days }}" \
+            --detail-sleep-seconds "${{ inputs.detail_sleep_seconds }}" \
+            --stage-limit "${{ inputs.stage_limit }}" \
+            --promote-limit "${{ inputs.promote_limit }}" \
+            2>&1 | tee \
+              output/usf-colouredvinyl/pipeline.log
+
+      - name: Validate pipeline summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+
+          path = Path(
+              "output/usf-colouredvinyl/"
+              "pipeline-summary.json"
+          )
+
+          if not path.exists():
+              raise SystemExit(
+                  "pipeline-summary.json ontbreekt."
+              )
+
+          data = json.loads(
+              path.read_text(encoding="utf-8")
+          )
+
+          print(
+              json.dumps(
+                  data,
+                  indent=2,
+                  ensure_ascii=False,
+              )
+          )
+
+          if data.get("success") is not True:
+              raise SystemExit(
+                  "Coloured Vinyl-pipeline faalde."
+              )
+          PY
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: colouredvinyl-pipeline-${{ github.run_id }}
+          path: output/usf-colouredvinyl/**
+          if-no-files-found: warn
+          retention-days: 14
