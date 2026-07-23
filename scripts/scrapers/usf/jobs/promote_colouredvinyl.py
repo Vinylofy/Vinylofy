@@ -51,6 +51,44 @@ def prepare_row(
     if not isinstance(payload, dict):
         payload = {}
 
+    # De centrale promotioncore leest format
+    # uit raw_payload.listing_payload.format.
+    # Coloured Vinyl bewaart het gevalideerde
+    # detailformaat daarnaast op raw_payload.format.
+    listing_payload = payload.get(
+        "listing_payload"
+    )
+
+    if not isinstance(
+        listing_payload,
+        dict,
+    ):
+        listing_payload = {}
+
+    raw_format = normalize_text(
+        payload.get("format")
+    )
+
+    if (
+        raw_format
+        and not normalize_text(
+            listing_payload.get("format")
+        )
+    ):
+        payload = dict(payload)
+        listing_payload = dict(
+            listing_payload
+        )
+        listing_payload["format"] = (
+            raw_format
+        )
+        payload["listing_payload"] = (
+            listing_payload
+        )
+        prepared["raw_payload"] = (
+            payload
+        )
+
     artist = normalize_text(
         payload.get("artist")
     )

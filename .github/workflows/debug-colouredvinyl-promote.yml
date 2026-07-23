@@ -409,6 +409,20 @@ jobs:
                   "Raw artist/title zijn niet gebruikt."
               )
 
+          if item["format_label"] != (
+              target["raw_format"]
+          ):
+              raise SystemExit(
+                  "Previewformaat wijkt af van "
+                  "de raw detailpayload."
+              )
+
+          if item["format_label"] != "1LP":
+              raise SystemExit(
+                  "Eerste preview heeft niet "
+                  "het verwachte formaat 1LP."
+              )
+
           if float(item["price"]) != float(
               target["price"]
           ):
