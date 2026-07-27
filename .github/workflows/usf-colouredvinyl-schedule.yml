@@ -2,25 +2,25 @@ name: USF - Coloured Vinyl Schedule
 
 on:
   schedule:
-    # Dagelijkse volledige listing- en prijsrefresh.
+    # Dagelijks listing en prijzen om 06:37 Nederlandse tijd.
     - cron: "37 6 * * *"
       timezone: "Europe/Amsterdam"
 
-    # Detailverrijking op dinsdag en vrijdag.
+    # Dinsdag en vrijdag details om 08:17 Nederlandse tijd.
     - cron: "17 8 * * 2,5"
       timezone: "Europe/Amsterdam"
 
-    # Stage/promote na de detailbatch.
+    # Dinsdag en vrijdag stage/promote om 09:47 Nederlandse tijd.
     - cron: "47 9 * * 2,5"
       timezone: "Europe/Amsterdam"
 
   workflow_dispatch:
     inputs:
-      run_type:
-        description: "Geplande Coloured Vinyl-stap"
+      scope:
+        description: "Welke Coloured Vinyl-run moet worden gestart?"
         required: true
-        type: choice
         default: listing
+        type: choice
         options:
           - listing
           - detail
@@ -31,7 +31,7 @@ permissions:
   actions: write
 
 concurrency:
-  group: usf-colouredvinyl-scheduler
+  group: usf-colouredvinyl-schedule
   cancel-in-progress: false
 
 jobs:
@@ -40,28 +40,28 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Resolve run type and dispatch production workflow
+      - name: Determine scope
+        id: scope
+        shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_SCHEDULE: ${{ github.event.schedule }}
-          MANUAL_RUN_TYPE: ${{ inputs.run_type }}
-        shell: bash
+          MANUAL_SCOPE: ${{ inputs.scope }}
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
 
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            RUN_TYPE="$MANUAL_RUN_TYPE"
+            scope="$MANUAL_SCOPE"
           else
             case "$EVENT_SCHEDULE" in
               "37 6 * * *")
-                RUN_TYPE="listing"
+                scope="listing"
                 ;;
               "17 8 * * 2,5")
-                RUN_TYPE="detail"
+                scope="detail"
                 ;;
               "47 9 * * 2,5")
-                RUN_TYPE="stage-promote"
+                scope="stage-promote"
                 ;;
               *)
                 echo "Onbekend schedule: $EVENT_SCHEDULE"
@@ -70,67 +70,34 @@ jobs:
             esac
           fi
 
-          TARGET_PATH="$(
-            gh workflow list --all --json name,path \
-              --jq '.[] | select(.name == "USF - Coloured Vinyl Pipeline") | .path' \
-              | head -n 1
-          )"
+          echo "scope=$scope" >> "$GITHUB_OUTPUT"
+          echo "Geselecteerde scope: $scope"
 
-          test -n "$TARGET_PATH" || {
-            echo "Workflow 'USF - Coloured Vinyl Pipeline' niet gevonden."
-            exit 1
-          }
+      - name: Dispatch USF Coloured Vinyl Pipeline
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SCOPE: ${{ steps.scope.outputs.scope }}
+        run: |
+          set -Eeuo pipefail
 
-          TARGET_FILE="${TARGET_PATH##*/}"
-          TARGET_YAML="$(gh workflow view "$TARGET_FILE" --ref main --yaml)"
+          jq -n \
+            --arg scope "$SCOPE" \
+            '{
+              ref: "main",
+              inputs: {
+                mode: "write",
+                scope: $scope,
+                write_confirmation: "WRITE_COLOUREDVINYL_PIPELINE"
+              }
+            }' > /tmp/dispatch.json
 
-          has_input() {
-            grep -Eq "^[[:space:]]+$1:" <<< "$TARGET_YAML"
-          }
+          echo "Dispatch scope: $SCOPE"
 
-          ARGS=(
-            --ref main
-            -f mode=write
-            -f scope="$RUN_TYPE"
-            -f write_confirmation=WRITE_COLOUREDVINYL_PIPELINE
-          )
+          gh api \
+            --method POST \
+            "/repos/${GH_REPO}/actions/workflows/usf-colouredvinyl.yml/dispatches" \
+            --input /tmp/dispatch.json
 
-          add_input_when_present() {
-            local name="$1"
-            local value="$2"
-
-            if has_input "$name"; then
-              ARGS+=(-f "${name}=${value}")
-            fi
-          }
-
-          case "$RUN_TYPE" in
-            listing)
-              add_input_when_present listing_start_page 1
-              add_input_when_present listing_max_pages 0
-              add_input_when_present page_size 50
-              add_input_when_present listing_sleep_seconds 0.25
-              ;;
-
-            detail)
-              add_input_when_present detail_limit 250
-              add_input_when_present detail_retry_days 30
-              add_input_when_present detail_sleep_seconds 3.0
-              ;;
-
-            stage-promote)
-              add_input_when_present stage_limit 500
-              add_input_when_present promote_limit 500
-              add_input_when_present quarantine_limit 500
-              ;;
-
-            *)
-              echo "Ongeldig run type: $RUN_TYPE"
-              exit 1
-              ;;
-          esac
-
-          echo "Dispatch: $TARGET_FILE"
-          echo "Scope:    $RUN_TYPE"
-
-          gh workflow run "$TARGET_FILE" "${ARGS[@]}"
+          echo "Coloured Vinyl-pipeline succesvol aangevraagd."
