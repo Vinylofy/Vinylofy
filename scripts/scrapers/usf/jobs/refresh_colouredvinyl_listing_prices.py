@@ -12,6 +12,8 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup, Tag
 from psycopg.rows import dict_row
 
@@ -25,6 +27,48 @@ from scripts.scrapers.usf.core.listing_price_sync import (
     sync_listing_offers,
 )
 from scripts.scrapers.usf.core.models import DiscoveredLink
+
+# De listingscan gebruikt twee veiligheidslagen:
+# urllib3-retries binnen één request en de bestaande
+# paginaretries van de scraper zelf.
+LISTING_REQUEST_TIMEOUT = (20, 60)
+
+
+def _build_resilient_listing_session() -> requests.Session:
+    session = requests.Session()
+
+    retry = Retry(
+        total=4,
+        connect=4,
+        read=2,
+        status=3,
+        backoff_factor=2.0,
+        status_forcelist=(
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504,
+        ),
+        allowed_methods=frozenset({"GET", "HEAD"}),
+        respect_retry_after_header=True,
+        raise_on_status=False,
+    )
+
+    adapter = HTTPAdapter(
+        max_retries=retry,
+        pool_connections=4,
+        pool_maxsize=4,
+    )
+
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+
+    return session
+
+
 
 
 SHOP_ID = "colouredvinyl"
@@ -1124,7 +1168,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-pages",
         type=int,
-        default=2,
+        default=0,
         help=(
             "Veilige standaard: 2 pagina's. "
             "Gebruik 0 voor een volledige scan. "
@@ -1185,7 +1229,7 @@ def main() -> int:
             "moet minimaal 1 zijn."
         )
 
-    session = requests.Session()
+    session = _build_resilient_listing_session()
     session.headers.update(HEADERS)
 
     run_started_at = datetime.now(
@@ -1238,7 +1282,7 @@ def main() -> int:
         try:
             response = session.get(
                 listing_url,
-                timeout=45,
+                timeout=LISTING_REQUEST_TIMEOUT,
                 allow_redirects=True,
             )
 
