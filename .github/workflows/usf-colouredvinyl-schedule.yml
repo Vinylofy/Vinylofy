@@ -89,7 +89,11 @@ jobs:
               inputs: {
                 mode: "write",
                 scope: $scope,
-                write_confirmation: "WRITE_COLOUREDVINYL_PIPELINE"
+                write_confirmation: "WRITE_COLOUREDVINYL_PIPELINE",
+                listing_start_page: "1",
+                listing_max_pages: "0",
+                page_size: "50",
+                listing_sleep_seconds: "0.25"
               }
             }' > /tmp/dispatch.json
 
