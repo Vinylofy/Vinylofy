@@ -40,7 +40,7 @@ export type SearchSort =
   (typeof SEARCH_SORT_OPTIONS)[number]["value"];
 
 export const DEFAULT_SEARCH_SORT: SearchSort =
-  "price_asc";
+  "relevance";
 
 const VALID_SEARCH_SORTS = new Set<string>(
   SEARCH_SORT_OPTIONS.map((option) => option.value),
