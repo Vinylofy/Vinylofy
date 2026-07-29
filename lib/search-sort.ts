@@ -3,6 +3,14 @@ import type { SearchResultItem } from "@/lib/vinylofy-data";
 
 export const SEARCH_SORT_OPTIONS = [
   {
+    value: "relevance",
+    label: "Relevantie",
+  },
+  {
+    value: "shops_desc",
+    label: "Aantal aanbieders: hoog naar laag",
+  },
+  {
     value: "price_asc",
     label: "Prijs: laag naar hoog",
   },
@@ -129,7 +137,26 @@ export function sortSearchResults(
   results: SearchResultItem[],
   sort: SearchSort,
 ): SearchResultItem[] {
+  if (sort === "relevance") {
+    // searchProducts levert resultaten al in relevantievolgorde.
+    return results.slice();
+  }
+
   return results.slice().sort((left, right) => {
+    if (sort === "shops_desc") {
+      const shopOrder =
+        right.shops.length - left.shops.length;
+
+      if (shopOrder !== 0) {
+        return shopOrder;
+      }
+
+      return (
+        comparePrices(left, right, "asc") ||
+        compareStableFallback(left, right)
+      );
+    }
+
     if (
       sort === "price_asc" ||
       sort === "price_desc"
