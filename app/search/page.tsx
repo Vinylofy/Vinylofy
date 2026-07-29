@@ -1,15 +1,22 @@
 import Link from "next/link";
 import { ProductResultCard } from "@/components/search/product-result-card";
 import { SearchControls } from "@/components/search/search-controls";
+import { SearchSortSelect } from "@/components/search/search-sort-select";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { CoverQueueBeacon } from "@/components/cover-queue-beacon";
 import { searchProducts, type SearchResultItem } from "@/lib/vinylofy-data";
+import {
+  parseSearchSort,
+  sortSearchResults,
+  type SearchSort,
+} from "@/lib/search-sort";
 
 type SearchPageProps = {
   searchParams: Promise<{
     q?: string;
     artist_filter?: string;
+    sort?: string;
   }>;
 };
 
@@ -81,21 +88,36 @@ function getArtistFilterOptions(
   });
 }
 
-function buildSearchHref(query: string, artistFilter?: string) {
+function buildSearchHref(
+  query: string,
+  sort: SearchSort,
+  artistFilter?: string,
+) {
   const params = new URLSearchParams();
-  if (query) params.set("q", query);
-  if (artistFilter) params.set("artist_filter", artistFilter);
-  return `/search${params.toString() ? `?${params.toString()}` : ""}`;
+
+  if (query) {
+    params.set("q", query);
+  }
+
+  if (artistFilter) {
+    params.set("artist_filter", artistFilter);
+  }
+
+  params.set("sort", sort);
+
+  return `/search?${params.toString()}`;
 }
 
 function ArtistSidebar({
   query,
   results,
   activeArtistFilter,
+  activeSort,
 }: {
   query: string;
   results: SearchResultItem[];
   activeArtistFilter: string;
+  activeSort: SearchSort;
 }) {
   const artistOptions = getArtistFilterOptions(results, query);
 
@@ -106,7 +128,7 @@ function ArtistSidebar({
 
         <div className="space-y-2 text-sm">
           <Link
-            href={buildSearchHref(query)}
+            href={buildSearchHref(query, activeSort)}
             className={`flex items-start justify-between gap-3 py-1 transition ${
               !activeArtistFilter
                 ? "font-semibold text-neutral-900"
@@ -127,7 +149,11 @@ function ArtistSidebar({
                   return (
                     <Link
                       key={option.key}
-                      href={buildSearchHref(query, option.artist)}
+                      href={buildSearchHref(
+                  query,
+                  activeSort,
+                  option.artist,
+                )}
                       className={`flex items-start justify-between gap-3 py-2 transition ${
                         active
                           ? "font-semibold text-neutral-900"
@@ -155,11 +181,25 @@ function ArtistSidebar({
 export default async function SearchPage({ searchParams }: SearchPageProps) {
   const params = await searchParams;
   const query = params.q?.trim() || "";
-  const activeArtistFilter = params.artist_filter?.trim() || "";
-  const results = query ? await searchProducts(query) : [];
+  const activeArtistFilter =
+    params.artist_filter?.trim() || "";
+
+  const activeSort = parseSearchSort(params.sort);
+  const results = query
+    ? await searchProducts(query, { limit: null })
+    : [];
   const filteredResults = activeArtistFilter
-    ? results.filter((item) => normalizeValue(item.artist) === normalizeValue(activeArtistFilter))
+    ? results.filter(
+        (item) =>
+          normalizeValue(item.artist) ===
+          normalizeValue(activeArtistFilter),
+      )
     : results;
+
+  const visibleResults = sortSearchResults(
+    filteredResults,
+    activeSort,
+  ).slice(0, 24);
 
   return (
     <div className="min-h-screen bg-[#f8f7f4] text-neutral-900">
@@ -184,6 +224,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
                 query={query}
                 results={results}
                 activeArtistFilter={activeArtistFilter}
+      activeSort={activeSort}
               />
 
               <div className="max-w-[920px] space-y-4">
@@ -194,10 +235,20 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
                   </div>
                 ) : (
                   <>
-                <p className="text-xs text-neutral-500">
-                  Gesorteerd op laagste actuele productprijs.
-                </p>
-                {filteredResults.map((item) => (
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-neutral-500">
+                {visibleResults.length === filteredResults.length
+                  ? `${filteredResults.length} resultaten`
+                  : `${visibleResults.length} van ${filteredResults.length} resultaten`}
+              </p>
+
+              <SearchSortSelect
+                value={activeSort}
+                query={query}
+                artistFilter={activeArtistFilter}
+              />
+            </div>
+                {visibleResults.map((item) => (
                   <ProductResultCard key={item.id} item={item} />
                 ))}
               </>
@@ -208,9 +259,9 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
         </section>
       </main>
 
-      {filteredResults.length > 0 ? (
+      {visibleResults.length > 0 ? (
         <CoverQueueBeacon
-          productIds={filteredResults.map((item) => item.id)}
+          productIds={visibleResults.map((item) => item.id)}
           source="search"
           priorityBump={400}
         />

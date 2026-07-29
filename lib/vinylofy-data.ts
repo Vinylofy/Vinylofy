@@ -525,7 +525,10 @@ export async function getProductDetail(id: unknown): Promise<ProductDetail | nul
   };
 }
 
-export async function searchProducts(query: string): Promise<SearchResultItem[]> {
+export async function searchProducts(
+  query: string,
+  options: { limit?: number | null } = {},
+): Promise<SearchResultItem[]> {
   const normalizedQuery = query.trim();
   if (!normalizedQuery) return [];
 
@@ -609,7 +612,18 @@ export async function searchProducts(query: string): Promise<SearchResultItem[]>
       return a.artist.localeCompare(b.artist);
     });
 
-  return ranked.slice(0, 24).map(({ _score, ...rest }) => rest);
+  const results = ranked.map((item) => {
+    const { _score, ...rest } = item;
+    void _score;
+    return rest;
+  });
+
+  if (options.limit === null) {
+    return results;
+  }
+
+  const limit = Math.max(0, options.limit ?? 24);
+  return results.slice(0, limit);
 }
 
 export async function getProductPriceHistory(
