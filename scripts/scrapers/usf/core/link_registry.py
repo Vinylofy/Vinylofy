@@ -16,13 +16,37 @@ class LinkRegistryResult:
     total: int = 0
 
 
-def upsert_discovered_links(links: list[DiscoveredLink]) -> LinkRegistryResult:
+def upsert_discovered_links(
+    links: list[DiscoveredLink],
+    *,
+    preserve_payload_keys: tuple[str, ...] = (),
+) -> LinkRegistryResult:
     inserted = 0
     updated = 0
 
     with db_connection() as conn:
         with conn.cursor() as cur:
             for link in links:
+                payload = dict(link.payload)
+                if preserve_payload_keys:
+                    cur.execute(
+                        """
+                        select payload
+                        from public.shop_product_links
+                        where shop_id = %s
+                          and source_url = %s
+                        """,
+                        (link.shop_id, link.source_url),
+                    )
+                    existing_row = cur.fetchone()
+                    existing_payload = (
+                        existing_row[0]
+                        if existing_row and isinstance(existing_row[0], dict)
+                        else {}
+                    )
+                    for key in preserve_payload_keys:
+                        if key in existing_payload:
+                            payload[key] = existing_payload[key]
                 cur.execute(
                     """
                     insert into public.shop_product_links (
@@ -47,7 +71,7 @@ def upsert_discovered_links(links: list[DiscoveredLink]) -> LinkRegistryResult:
                         link.shop_id,
                         link.source_url,
                         link.source_product_id,
-                        Jsonb(link.payload),
+                        Jsonb(payload),
                     ),
                 )
                 was_inserted = bool(cur.fetchone()[0])

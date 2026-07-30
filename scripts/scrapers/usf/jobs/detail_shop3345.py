@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
+import sys
 
 import argparse
 import re
@@ -362,6 +363,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    if "--write" in sys.argv[1:]:
+        raise SystemExit(
+            "[DISABLED] detail_shop3345.py mag geen 3345-voorraad meer schrijven. "
+            "Gebruik scripts.scrapers.usf.stock_shop3345."
+        )
     args = build_parser().parse_args()
 
     if args.limit < 1:

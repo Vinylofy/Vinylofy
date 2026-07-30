@@ -153,8 +153,11 @@ SHOP_DEFINITION = ShopImporterDefinition(
 )
 
 
-def main() -> None:
-    run_registered_importer(SHOP_DEFINITION)
+def main(*_args, **_kwargs) -> int:
+    raise SystemExit(
+        "[DISABLED] scripts.importers.import_shop3345 is een oud 3345-updatepad. "
+        "Gebruik uitsluitend de aparte 3345-prijs- en voorraadworkflows."
+    )
 
 
 if __name__ == "__main__":

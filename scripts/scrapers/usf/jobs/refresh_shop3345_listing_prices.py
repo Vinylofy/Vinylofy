@@ -2,20 +2,21 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import math
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
 import requests
+from bs4 import BeautifulSoup, Tag
 from psycopg.rows import dict_row
 
 from scripts.scrapers.usf.core.db import db_connection
-from scripts.scrapers.usf.core.delist_missing_links import (
-    mark_missing_links_out_of_stock,
-)
 from scripts.scrapers.usf.core.link_registry import (
     upsert_discovered_links,
 )
@@ -31,6 +32,14 @@ SHOP_NAME = "3345"
 SHOP_DOMAIN = "3345.nl"
 SHOP_COUNTRY = "NL"
 
+STOCK_PAYLOAD_KEYS = (
+    "availability",
+    "stock_previous_availability",
+    "stock_scraped_availability",
+    "stock_authority",
+    "stock_updated_at",
+)
+
 BASE_URL = "https://3345.nl"
 
 PRICE_AUTHORITY = "boost_filtered_listing_api"
@@ -45,6 +54,19 @@ BOOST_LIMIT = 70
 
 MIN_EXPECTED_PRODUCTS = 14_000
 MAX_EXPECTED_PRODUCTS = 18_000
+
+DEFAULT_CTA_WORKERS = 24
+DEFAULT_CTA_TIMEOUT_SECONDS = 30
+
+CTA_RETRY_WORKERS = 8
+CTA_RETRY_COOLDOWN_SECONDS = 5
+
+
+CTA_SECTION_QUERY = (
+    "sections=variant-buttons,variant-badge"
+)
+
+_CTA_THREAD_LOCAL = threading.local()
 
 HEADERS = {
     "User-Agent": (
@@ -406,6 +428,7 @@ def fetch_boost_page(
     )
 
 
+
 def product_to_records(
     product: dict[str, Any],
     *,
@@ -455,17 +478,11 @@ def product_to_records(
 
     secondhand = detect_secondhand(product)
 
-    source_availability = "in_stock"
 
-    public_availability = (
-        "out_of_stock"
-        if secondhand
-        else "in_stock"
-    )
 
     payload: dict[str, Any] = {
         "source": (
-            "shop3345_boost_filtered_lp_stock"
+            "shop3345_boost_filtered_lp_price"
         ),
         "price_authority": PRICE_AUTHORITY,
         "discovery_url": (
@@ -492,16 +509,7 @@ def product_to_records(
         "listing_price_transport": (
             "boost_bc_sf_filter"
         ),
-        "source_availability": (
-            source_availability
-        ),
-        "availability": public_availability,
-        "listing_cta_add_to_cart": True,
         "is_secondhand": secondhand,
-        "publish_eligible": (
-            not secondhand
-            and price is not None
-        ),
         "listing_seen_at": seen_at.isoformat(),
         "tags": tags_for(product),
     }
@@ -523,81 +531,13 @@ def product_to_records(
         shop_country=SHOP_COUNTRY,
         source_url=source_url,
         price=price,
-        availability=public_availability,
+        availability=None,
         currency="EUR",
         seen_at=seen_at,
         raw=payload,
     )
 
     return link, offer
-
-
-def load_registry_offers() -> list[ListingOffer]:
-    with db_connection() as conn:
-        with conn.cursor(
-            row_factory=dict_row,
-        ) as cur:
-            cur.execute(
-                """
-                select source_url, payload
-                from public.shop_product_links
-                where shop_id = %s
-                  and source_url is not null
-                  and payload->>'price' is not null
-                  and trim(payload->>'price') <> ''
-                order by source_url
-                """,
-                (SHOP_ID,),
-            )
-
-            rows = [
-                dict(row)
-                for row in cur.fetchall()
-            ]
-
-    offers: list[ListingOffer] = []
-
-    for row in rows:
-        payload = row.get("payload")
-
-        if not isinstance(payload, dict):
-            continue
-
-        source_url = normalize_product_url(
-            row.get("source_url")
-        )
-
-        price = normalize_price(
-            payload.get("price")
-        )
-
-        if not source_url or price is None:
-            continue
-
-        availability = clean(
-            payload.get("availability")
-        ).lower()
-
-        if availability != "in_stock":
-            availability = "out_of_stock"
-
-        if bool(payload.get("is_secondhand")):
-            availability = "out_of_stock"
-
-        offers.append(
-            ListingOffer(
-                shop_name=SHOP_NAME,
-                shop_domain=SHOP_DOMAIN,
-                shop_country=SHOP_COUNTRY,
-                source_url=source_url,
-                price=price,
-                availability=availability,
-                currency="EUR",
-                raw=payload,
-            )
-        )
-
-    return offers
 
 
 def sync_offers(
@@ -622,6 +562,7 @@ def sync_offers(
             conn,
             offers,
             write=write,
+                    preserve_availability=True,
         )
 
     print(
@@ -671,6 +612,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=3,
     )
 
+
+
     parser.add_argument(
         "--debug",
         action="store_true",
@@ -707,6 +650,8 @@ def main() -> int:
             "[ERROR] --max-page-failures moet "
             "minimaal 1 zijn."
         )
+
+
 
     session = requests.Session()
     session.headers.update(HEADERS)
@@ -945,11 +890,6 @@ def main() -> int:
                                 "is_secondhand"
                             )
                         ),
-                        "availability": (
-                            link.payload.get(
-                                "availability"
-                            )
-                        ),
                     },
                     flush=True,
                 )
@@ -982,40 +922,15 @@ def main() -> int:
         if args.sleep:
             time.sleep(args.sleep)
 
-    scan_completed_safely = (
-        args.start_page == 1
-        and args.max_pages == 0
-        and pages_fetched == expected_pages
-        and len(all_links) == total_product
-        and len(all_offers) == total_product
-        and len(product_ids) == total_product
-        and len(handles) == total_product
-        and len(page_signatures) == expected_pages
-    )
 
-    print(
-        "[3345-BOOST-SUMMARY]",
-        {
-            "price_authority": (
-                PRICE_AUTHORITY
-            ),
-            "total_product": total_product,
-            "expected_pages": expected_pages,
-            "pages_fetched": pages_fetched,
-            "links": len(all_links),
-            "price_offers": len(all_offers),
-            "secondhand": secondhand_count,
-            "public_candidates": (
-                len(all_links)
-                - secondhand_count
-            ),
-            "scan_completed_safely": (
-                scan_completed_safely
-            ),
-            "write": args.write,
-        },
-        flush=True,
-    )
+
+
+
+
+
+
+
+
 
     if not args.write:
         print(
@@ -1027,7 +942,8 @@ def main() -> int:
         return 0
 
     registry_result = upsert_discovered_links(
-        list(all_links.values())
+        list(all_links.values()),
+                          preserve_payload_keys=STOCK_PAYLOAD_KEYS,
     )
 
     print(
@@ -1050,40 +966,6 @@ def main() -> int:
         label="current_boost_listing",
     )
 
-    if scan_completed_safely:
-        delist_result = (
-            mark_missing_links_out_of_stock(
-                shop_id=SHOP_ID,
-                seen_source_urls=(
-                    all_links.keys()
-                ),
-                run_started_at=(
-                    run_started_at
-                ),
-                write=True,
-            )
-        )
-
-        print(
-            "[3345-LISTING-MISSING]",
-            delist_result,
-            flush=True,
-        )
-
-        sync_offers(
-            load_registry_offers(),
-            write=True,
-            label=(
-                "registry_after_"
-                "missing_delist"
-            ),
-        )
-    else:
-        print(
-            "[3345-BOOST] Missing-link-delisting "
-            "overgeslagen; run was begrensd.",
-            flush=True,
-        )
 
     return 0
 

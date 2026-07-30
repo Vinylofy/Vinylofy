@@ -330,46 +330,11 @@ def upsert_prices(cur, shop_id: uuid.UUID) -> int:
 
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Bulk publish 3345 CSV directly into Supabase")
-    parser.add_argument("--csv", required=True, help="Path to 3345 CSV file")
-    args = parser.parse_args()
-
-    csv_path = Path(args.csv)
-    rows, raw_rows, rejected = load_rows(csv_path)
-    print(f"[CSV] raw_rows={raw_rows} | accepted_unique={len(rows)} | rejected={rejected}")
-    if not rows:
-        raise SystemExit("No valid rows to publish")
-
-    db_url = os.getenv("DATABASE_URL")
-    if not db_url:
-        raise SystemExit("DATABASE_URL is not set")
-
-    print("[DB] connecting")
-    with psycopg.connect(
-        db_url,
-        options="-c statement_timeout=0 -c lock_timeout=0 -c idle_in_transaction_session_timeout=0",
-        autocommit=False,
-    ) as conn:
-        with conn.cursor() as cur:
-            shop_id = ensure_shop(cur)
-            print(f"[DB] shop_id={shop_id}")
-            conn.commit()
-
-            create_stage(cur)
-            loaded = load_stage(cur, rows)
-            print(f"[STAGE] loaded={loaded}")
-            conn.commit()
-
-            products = insert_missing_products(cur)
-            print(f"[PRODUCTS] affected={products}")
-            conn.commit()
-
-            prices = upsert_prices(cur, shop_id)
-            print(f"[PRICES] affected={prices}")
-            conn.commit()
-
-    print("[DONE] 3345 bulk publish complete")
+def main(*_args, **_kwargs) -> int:
+    raise SystemExit(
+        "[DISABLED] scripts.maintenance.publish_shop3345_bulk is een oud 3345-updatepad. "
+        "Gebruik uitsluitend de aparte 3345-prijs- en voorraadworkflows."
+    )
 
 
 if __name__ == "__main__":

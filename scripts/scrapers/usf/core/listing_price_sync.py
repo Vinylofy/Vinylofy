@@ -397,6 +397,7 @@ def upsert_listing_price(
     currency: str,
     availability: str,
     seen_at: datetime,
+    preserve_availability: bool = False,
 ) -> tuple[bool, bool]:
     existing = get_existing_price(cur, product_id=product_id, shop_id=shop_id)
     inserted = existing is None
@@ -408,9 +409,40 @@ def upsert_listing_price(
                 Decimal(str(existing["price"])).quantize(Decimal("0.01")) != price,
                 str(existing["currency"]) != currency,
                 normalize_url(str(existing["product_url"])) != normalize_url(source_url),
-                str(existing["availability"]) != availability,
+                False if preserve_availability else str(existing["availability"]) != availability,
             ]
         )
+
+    if preserve_availability:
+        # Bestaande voorraad blijft volledig ongemoeid. Nieuwe prijsregels
+        # starten fail-closed; alleen stock_shop3345 mag ze zichtbaar maken.
+        cur.execute(
+            """
+            insert into public.prices (
+              product_id, shop_id, price, currency, product_url, availability,
+              first_seen_at, last_seen_at, is_active, created_at, updated_at
+            )
+            values (%s, %s, %s, %s, %s, 'out_of_stock', %s, %s, true, now(), now())
+            on conflict (product_id, shop_id)
+            do update set
+              price = excluded.price,
+              currency = excluded.currency,
+              product_url = excluded.product_url,
+              last_seen_at = excluded.last_seen_at,
+              is_active = true,
+              updated_at = now()
+            """,
+            (
+                product_id,
+                shop_id,
+                price,
+                currency,
+                normalize_url(source_url),
+                seen_at,
+                seen_at,
+            ),
+        )
+        return inserted, changed
 
     cur.execute(
         """
@@ -458,6 +490,7 @@ def sync_listing_offers(
     offers: list[ListingOffer],
     *,
     write: bool,
+    preserve_availability: bool = False,
 ) -> ListingSyncStats:
     stats = ListingSyncStats(total=len(offers))
 
@@ -549,7 +582,21 @@ def sync_listing_offers(
                 currency=offer.currency,
                 availability=availability,
                 seen_at=seen_at,
+                preserve_availability=preserve_availability,
             )
+
+            history_availability = availability
+            if preserve_availability:
+                persisted = get_existing_price(
+                    cur,
+                    product_id=product_id,
+                    shop_id=shop_id,
+                )
+                if persisted is None:
+                    raise RuntimeError(
+                        "Prijsrecord ontbreekt na price-only upsert"
+                    )
+                history_availability = str(persisted["availability"])
 
             if changed:
                 if insert_history_if_needed(
@@ -558,7 +605,7 @@ def sync_listing_offers(
                     shop_id=shop_id,
                     price=price,
                     currency=offer.currency,
-                    availability=availability,
+                    availability=history_availability,
                     captured_at=seen_at,
                 ):
                     stats.history_rows += 1
