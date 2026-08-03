@@ -1,22 +1,37 @@
-name: USF - 3345
+name: USF - 3345 Batched
 
 on:
   schedule:
-    - cron: "37 1 * * *"
+    - cron: "37 1,9,17 * * *"
+
   workflow_dispatch:
     inputs:
-      listing_max_pages:
-        description: "0 = volledige collectie; gebruik 2 voor eerste test"
+      pages:
+        description: "Maximumaantal pagina's"
         required: true
-        default: "2"
+        default: "3"
         type: string
-      debug_listing:
-        description: "Uitgebreide listingdiagnose tonen"
+
+      write:
+        description: "Databasewrites uitvoeren"
+        required: true
+        default: false
+        type: boolean
+
+      debug:
+        description: "Uitgebreide logging"
         required: true
         default: true
         type: boolean
-      write:
-        description: "Werkelijke discovery- en prijswrites uitvoeren"
+
+      reset_cycle:
+        description: "Cursor terugzetten naar pagina 1"
+        required: true
+        default: false
+        type: boolean
+
+      run_detail:
+        description: "Na de batch 25 details verwerken"
         required: true
         default: false
         type: boolean
@@ -25,16 +40,18 @@ permissions:
   contents: read
 
 concurrency:
-  group: 3345-stock-update
+  group: usf-shop3345-production
   cancel-in-progress: false
 
 jobs:
-  price:
-    name: Run 3345 discovery and prices
+  batch:
+    name: Run resumable 3345 batch
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 180
+
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -48,77 +65,135 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           python -m pip install --upgrade pip
+
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           fi
+
           if [ -f requirements-scrapers.txt ]; then
             pip install -r requirements-scrapers.txt
           fi
-          pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
 
-      - name: Validate modules
+          pip install \
+            requests \
+            beautifulsoup4 \
+            "psycopg[binary]" \
+            python-dotenv
+
+      - name: Validate local scraper interface
         shell: bash
         run: |
           set -euo pipefail
-          python -m py_compile \
-            scripts/scrapers/usf/core/listing_price_sync.py \
-            scripts/scrapers/usf/jobs/refresh_shop3345_listing_prices.py \
-            scripts/scrapers/usf/jobs/run_shop3345_pipeline.py
-          python -m scripts.scrapers.usf.jobs.refresh_shop3345_listing_prices --help >/dev/null
-          python -m scripts.scrapers.usf.jobs.run_shop3345_pipeline --help >/dev/null
 
-      - name: Validate database secret
-        shell: bash
-        run: |
-          set -euo pipefail
           if [ -z "${DATABASE_URL:-}" ]; then
-            echo "[ERROR] DATABASE_URL secret ontbreekt."
+            echo "[ERROR] DATABASE_URL ontbreekt."
             exit 1
           fi
 
-      - name: Run 3345 price pipeline
+          python -m py_compile \
+            scripts/scrapers/usf/jobs/refresh_shop3345_listing_prices.py \
+            scripts/scrapers/usf/jobs/refresh_shop3345_batched.py \
+            scripts/scrapers/usf/jobs/run_shop3345_pipeline.py
+
+          HELP_OUTPUT="$(
+            python -m \
+              scripts.scrapers.usf.jobs.refresh_shop3345_listing_prices \
+              --help 2>&1
+          )"
+
+          for OPTION in \
+            "--start-page" \
+            "--max-pages" \
+            "--sleep" \
+            "--max-page-failures" \
+            "--write"
+          do
+            grep -q -- "$OPTION" <<<"$HELP_OUTPUT" || {
+              echo "[ERROR] Ontbrekende scraperoptie: $OPTION"
+              echo "$HELP_OUTPUT"
+              exit 1
+            }
+          done
+
+          python -m \
+            scripts.scrapers.usf.jobs.refresh_shop3345_batched \
+            --help >/dev/null
+
+      - name: Run batch
         shell: bash
         run: |
           set -euo pipefail
+
           mkdir -p output/usf-shop3345
 
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            LISTING_MAX_PAGES="0"
-            DEBUG_LISTING="false"
+            PAGES="50"
             WRITE="true"
+            DEBUG="false"
+            RESET="false"
+            RUN_DETAIL="false"
           else
-            LISTING_MAX_PAGES="${{ inputs.listing_max_pages }}"
-            DEBUG_LISTING="${{ inputs.debug_listing }}"
+            PAGES="${{ inputs.pages }}"
             WRITE="${{ inputs.write }}"
+            DEBUG="${{ inputs.debug }}"
+            RESET="${{ inputs.reset_cycle }}"
+            RUN_DETAIL="${{ inputs.run_detail }}"
           fi
 
           COMMAND=(
-            python -u -m
-            scripts.scrapers.usf.jobs.run_shop3345_pipeline
-            --listing-start-page 1
-            --listing-max-pages "$LISTING_MAX_PAGES"
-            --listing-sleep 0.35
-            --max-page-failures 3
+            python
+            -u
+            -m
+            scripts.scrapers.usf.jobs.refresh_shop3345_batched
+            --pages "$PAGES"
+            --page-sleep 5
+            --max-page-failures 6
           )
 
-          if [ "$DEBUG_LISTING" = "true" ]; then
-            COMMAND+=(--debug-listing)
-          fi
           if [ "$WRITE" = "true" ]; then
             COMMAND+=(--write)
+          fi
+
+          if [ "$DEBUG" = "true" ]; then
+            COMMAND+=(--debug)
+          fi
+
+          if [ "$RESET" = "true" ]; then
+            COMMAND+=(--reset-cycle)
           fi
 
           printf '[WORKFLOW] Command:'
           printf ' %q' "${COMMAND[@]}"
           printf '\n'
-          "${COMMAND[@]}" 2>&1 | tee output/usf-shop3345/price-pipeline.log
 
-      - name: Upload price log
+          "${COMMAND[@]}" 2>&1 |
+            tee output/usf-shop3345/batch.log
+
+          if \
+            [ "$RUN_DETAIL" = "true" ] &&
+            [ "$WRITE" = "true" ]
+          then
+            python -u -m \
+              scripts.scrapers.usf.jobs.run_shop3345_pipeline \
+              --skip-listing \
+              --run-detail \
+              --detail-limit 25 \
+              --detail-sleep 0.75 \
+              --detail-retry-days 30 \
+              --stage-limit 25 \
+              --promote-limit 25 \
+              --quarantine-limit 100 \
+              --write 2>&1 |
+              tee output/usf-shop3345/detail.log
+          fi
+
+      - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: usf-shop3345-price-${{ github.run_id }}
+          name: usf-shop3345-${{ github.run_id }}
           path: output/usf-shop3345/**
           if-no-files-found: warn
           retention-days: 14
