@@ -18,6 +18,11 @@ BASE_MODULE = (
 
 LOCK_NAME = "vinylofy:shop3345:listing-batch-v2"
 
+NO_PRICE_MATCH_MARKER = (
+    "geen enkele gescrapete target url "
+    "koppelde aan public.prices"
+)
+
 END_MARKERS = (
     "lege pagina",
     "geen productlinks",
@@ -310,6 +315,26 @@ def run_page(
         )
 
     lowered = output.lower()
+
+    # Bij een begrensde paginabatch kan een geldige pagina uitsluitend
+    # producten bevatten die nog niet aan public.prices gekoppeld zijn.
+    # Er hoeft dan niets te worden bijgewerkt. Dit is een succesvolle
+    # no-op en geen reden om de volledige batch te laten crashen.
+    if NO_PRICE_MATCH_MARKER in lowered:
+        print(
+            "[3345-BATCH][NO-PUBLIC-PRICE-MATCH]",
+            {
+                "page": page,
+                "result": "successful_noop",
+                "checkpoint": True,
+            },
+            flush=True,
+        )
+
+        return PageResult(
+            status="success",
+            output=output,
+        )
 
     if any(marker in lowered for marker in END_MARKERS):
         return PageResult(
