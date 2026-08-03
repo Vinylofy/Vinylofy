@@ -1,34 +1,25 @@
-name: 3345 - Stock Update
+name: USF - 3345 Stock Batched
 
 on:
-  workflow_run:
-    workflows: ["USF - 3345"]
-    types: [completed]
-    branches: [main]
+  schedule:
+    - cron: "17 2,10,18 * * *"
+
   workflow_dispatch:
     inputs:
-      start_page:
-        description: "Eerste 3345-pagina"
+      pages:
+        description: "Maximumaantal pagina's"
         required: true
-        default: "1"
+        default: "3"
         type: string
-      max_pages:
-        description: "0 = volledige scan; gebruik 2 voor eerste test"
-        required: true
-        default: "2"
-        type: string
-      concurrency:
-        description: "Parallelle browserpagina's"
-        required: true
-        default: "5"
-        type: string
-      wait_ms:
-        description: "Extra hydratatiewacht per pagina"
-        required: true
-        default: "1500"
-        type: string
+
       write:
-        description: "Voorraadstatus naar bestaande records schrijven"
+        description: "Databasewrites uitvoeren"
+        required: true
+        default: false
+        type: boolean
+
+      reset_cycle:
+        description: "Opnieuw beginnen op pagina 1"
         required: true
         default: false
         type: boolean
@@ -37,17 +28,18 @@ permissions:
   contents: read
 
 concurrency:
-  group: 3345-stock-update
+  group: usf-shop3345-production
   cancel-in-progress: false
 
 jobs:
   stock:
-    name: Scrape and update 3345 stock
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    name: Run resumable 3345 stock batch
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
+
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -61,77 +53,95 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           python -m pip install --upgrade pip
+
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           fi
+
           if [ -f requirements-scrapers.txt ]; then
             pip install -r requirements-scrapers.txt
           fi
-          pip install playwright "psycopg[binary]" python-dotenv
-          python -m playwright install --with-deps chromium
 
-      - name: Validate stock module
+          pip install \
+            requests \
+            beautifulsoup4 \
+            playwright \
+            "psycopg[binary]" \
+            python-dotenv
+
+          python -m playwright install \
+            --with-deps chromium
+
+      - name: Validate
         shell: bash
         run: |
           set -euo pipefail
-          python -m py_compile scripts/scrapers/usf/stock_shop3345.py
-          python -m scripts.scrapers.usf.stock_shop3345 --self-test
 
-      - name: Validate database secret
-        shell: bash
-        run: |
-          set -euo pipefail
           if [ -z "${DATABASE_URL:-}" ]; then
-            echo "[ERROR] DATABASE_URL secret ontbreekt."
+            echo "[ERROR] DATABASE_URL ontbreekt."
             exit 1
           fi
 
-      - name: Run 3345 stock update
+          python -m py_compile \
+            scripts/scrapers/usf/stock_shop3345.py \
+            scripts/scrapers/usf/jobs/run_shop3345_stock_batches.py
+
+          python -m \
+            scripts.scrapers.usf.stock_shop3345 \
+            --help >/dev/null
+
+          python -m \
+            scripts.scrapers.usf.jobs.run_shop3345_stock_batches \
+            --help >/dev/null
+
+      - name: Run stock batch
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p output/usf-shop3345
 
-          if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            START_PAGE="1"
-            MAX_PAGES="0"
-            CONCURRENCY="10"
-            WAIT_MS="1500"
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            PAGES="50"
             WRITE="true"
+            RESET="false"
           else
-            START_PAGE="${{ inputs.start_page }}"
-            MAX_PAGES="${{ inputs.max_pages }}"
-            CONCURRENCY="${{ inputs.concurrency }}"
-            WAIT_MS="${{ inputs.wait_ms }}"
+            PAGES="${{ inputs.pages }}"
             WRITE="${{ inputs.write }}"
+            RESET="${{ inputs.reset_cycle }}"
           fi
 
           COMMAND=(
-            python -u -m
-            scripts.scrapers.usf.stock_shop3345
-            --start-page "$START_PAGE"
-            --max-pages "$MAX_PAGES"
-            --concurrency "$CONCURRENCY"
-            --wait-ms "$WAIT_MS"
+            python
+            -u
+            -m
+            scripts.scrapers.usf.jobs.run_shop3345_stock_batches
+            --pages "$PAGES"
+            --page-sleep 10
+            --wait-ms 5000
             --retries 6
-            --output output/usf-shop3345/3345-stock.csv
-            --report output/usf-shop3345/3345-stock-report.csv
+            --output-dir output/usf-shop3345-stock
           )
+
           if [ "$WRITE" = "true" ]; then
             COMMAND+=(--write)
+          fi
+
+          if [ "$RESET" = "true" ]; then
+            COMMAND+=(--reset-cycle)
           fi
 
           printf '[WORKFLOW] Command:'
           printf ' %q' "${COMMAND[@]}"
           printf '\n'
-          "${COMMAND[@]}" 2>&1 | tee output/usf-shop3345/stock-update.log
 
-      - name: Upload stock artifacts
+          "${COMMAND[@]}"
+
+      - name: Upload logs and reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: shop3345-stock-${{ github.run_id }}
-          path: output/usf-shop3345/**
+          name: usf-shop3345-stock-${{ github.run_id }}
+          path: output/usf-shop3345-stock/**
           if-no-files-found: warn
           retention-days: 14
