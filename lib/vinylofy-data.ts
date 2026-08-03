@@ -847,6 +847,7 @@ type ReleaseCalendarRow = {
 
 export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalendarItem[]> {
   const supabase = createSupabaseServerClient();
+
   const minDateValue = new Date();
   minDateValue.setUTCDate(minDateValue.getUTCDate() - 14);
   const minDate = minDateValue.toISOString().slice(0, 10);
@@ -855,19 +856,35 @@ export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalen
   maxDateValue.setUTCDate(maxDateValue.getUTCDate() + 14);
   const maxDate = maxDateValue.toISOString().slice(0, 10);
 
-  const { data, error } = await supabase
-    .from("release_calendar")
-    .select("id, ean, artist, title, release_date, source_shop, source_url, image_url, format, label, product_id")
-    .eq("status", "active")
-    .gte("release_date", minDate)
-    .lte("release_date", maxDate)
-    .order("release_date", { ascending: true })
-    .order("artist", { ascending: true })
-    .limit(limit);
+  /*
+   * Haal eerst alle actieve releasevermeldingen binnen het datumvenster op.
+   * De gebruikerslimiet wordt pas toegepast nadat het aantal actuele shops
+   * is gecontroleerd.
+   */
+  const pageSize = 1000;
+  const rows: ReleaseCalendarRow[] = [];
 
-  if (error) throw error;
+  for (let offset = 0; ; offset += pageSize) {
+    const { data, error } = await supabase
+      .from("release_calendar")
+      .select(
+        "id, ean, artist, title, release_date, source_shop, source_url, image_url, format, label, product_id",
+      )
+      .eq("status", "active")
+      .gte("release_date", minDate)
+      .lte("release_date", maxDate)
+      .order("release_date", { ascending: true })
+      .order("artist", { ascending: true })
+      .range(offset, offset + pageSize - 1);
 
-  const rows = (data ?? []) as ReleaseCalendarRow[];
+    if (error) throw error;
+
+    const batch = (data ?? []) as ReleaseCalendarRow[];
+    rows.push(...batch);
+
+    if (batch.length < pageSize) break;
+  }
+
   const productIds = Array.from(
     new Set(
       rows
@@ -876,25 +893,58 @@ export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalen
     ),
   );
 
-  const bestPriceMap =
-    productIds.length > 0 ? await getBestPriceMap(productIds) : new Map<string, BestPriceRow>();
+  /*
+   * Product-ID’s worden in beperkte batches opgehaald om een te grote
+   * Supabase IN-query te voorkomen.
+   */
+  const bestPriceMap = new Map<string, BestPriceRow>();
+  const productBatchSize = 200;
 
-  return rows.map((row) => {
-    const bestPrice = row.product_id ? bestPriceMap.get(row.product_id) : undefined;
+  for (let offset = 0; offset < productIds.length; offset += productBatchSize) {
+    const batchMap = await getBestPriceMap(
+      productIds.slice(offset, offset + productBatchSize),
+    );
 
-    return {
-      id: row.id,
-      ean: row.ean,
-      artist: row.artist,
-      title: row.title,
-      releaseDate: row.release_date,
-      sourceShop: row.source_shop,
-      sourceUrl: row.source_url,
-      imageUrl: row.image_url,
-      format: row.format,
-      label: row.label,
-      productId: row.product_id,
-      lowestPrice: toNumber(bestPrice?.lowest_fresh_price),
-    };
-  });
+    for (const [productId, bestPrice] of batchMap) {
+      bestPriceMap.set(productId, bestPrice);
+    }
+  }
+
+  const seenProductIds = new Set<string>();
+  const safeLimit = Math.max(0, Math.floor(limit));
+
+  return rows
+    .filter((row) => {
+      if (!row.product_id) return false;
+      if (seenProductIds.has(row.product_id)) return false;
+
+      const bestPrice = bestPriceMap.get(row.product_id);
+      const freshShopCount = bestPrice?.fresh_instock_shop_count ?? 0;
+
+      if (freshShopCount < 2) return false;
+
+      seenProductIds.add(row.product_id);
+      return true;
+    })
+    .slice(0, safeLimit)
+    .map((row) => {
+      const bestPrice = row.product_id
+        ? bestPriceMap.get(row.product_id)
+        : undefined;
+
+      return {
+        id: row.id,
+        ean: row.ean,
+        artist: row.artist,
+        title: row.title,
+        releaseDate: row.release_date,
+        sourceShop: row.source_shop,
+        sourceUrl: row.source_url,
+        imageUrl: row.image_url,
+        format: row.format,
+        label: row.label,
+        productId: row.product_id,
+        lowestPrice: toNumber(bestPrice?.lowest_fresh_price),
+      };
+    });
 }
