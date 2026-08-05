@@ -50,6 +50,7 @@ export type HomeProduct = {
   title: string;
   formatLabel: string | null;
   coverUrl: string | null;
+  coverStoragePath: string | null;
   lowestPrice: number | null;
   freshShopCount: number;
   totalShopCount: number;
@@ -248,7 +249,7 @@ async function getProductsByIds(ids: string[]): Promise<ProductRow[]> {
   const supabase = createSupabaseServerClient();
   const { data, error } = await supabase
     .from("products")
-    .select("id, ean, gtin_normalized, artist, title, format_label, cover_url, created_at")
+    .select("id, ean, gtin_normalized, artist, title, format_label, cover_url, cover_storage_path, created_at")
     .in("id", ids);
 
   if (error) throw error;
@@ -421,6 +422,7 @@ export async function getHomePageData(): Promise<{
         title: product.title,
         formatLabel: product.format_label,
         coverUrl: product.cover_url,
+  coverStoragePath: product.cover_storage_path,
         lowestPrice: toNumber(row.lowest_fresh_price),
         freshShopCount: row.fresh_instock_shop_count ?? 0,
         totalShopCount: row.total_active_shop_count ?? 0,
@@ -432,7 +434,7 @@ export async function getHomePageData(): Promise<{
 
   const { data: latestProductsData, error: latestProductsError } = await supabase
     .from("products")
-    .select("id, ean, gtin_normalized, artist, title, format_label, cover_url, created_at")
+    .select("id, ean, gtin_normalized, artist, title, format_label, cover_url, cover_storage_path, created_at")
     .order("created_at", { ascending: false })
     .limit(50);
 
@@ -453,6 +455,7 @@ export async function getHomePageData(): Promise<{
         title: product.title,
         formatLabel: product.format_label,
         coverUrl: product.cover_url,
+  coverStoragePath: product.cover_storage_path,
         lowestPrice: toNumber(best?.lowest_fresh_price),
         freshShopCount: best?.fresh_instock_shop_count ?? 0,
         totalShopCount: best?.total_active_shop_count ?? 0,

@@ -25,6 +25,7 @@ COVER_IMAGE = ROOT / "components" / "cover-image.tsx"
 VINYLOFY_DATA = ROOT / "lib" / "vinylofy-data.ts"
 SEARCH_RESULT_CARD = ROOT / "components" / "search" / "product-result-card.tsx"
 PRODUCT_SUMMARY_CARD = ROOT / "components" / "product" / "product-summary-card.tsx"
+HOME_NEW_RELEASES_GRID = ROOT / "components" / "home" / "new-releases-grid.tsx"
 
 
 def source(path: Path) -> str:
@@ -82,6 +83,7 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
             VINYLOFY_DATA,
             SEARCH_RESULT_CARD,
             PRODUCT_SUMMARY_CARD,
+            HOME_NEW_RELEASES_GRID,
             MIGRATION,
             ROLLBACK,
         ):
@@ -204,6 +206,57 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
             "is_selected",
         ):
             self.assertIn(token, text)
+
+    def test_homepage_uses_central_storage_path(self) -> None:
+        data_text = source(VINYLOFY_DATA)
+        grid_text = source(HOME_NEW_RELEASES_GRID)
+
+        home_type_start = data_text.index("export type HomeProduct = {")
+        home_type_end = data_text.index("\n};", home_type_start)
+        home_type = data_text[home_type_start:home_type_end]
+
+        home_data_start = data_text.index(
+            "export async function getHomePageData("
+        )
+        home_data_end = data_text.index(
+            "\nasync function resolveProductRowByRouteKey(",
+            home_data_start,
+        )
+        home_data = data_text[home_data_start:home_data_end]
+
+        self.assertIn(
+            "coverStoragePath: string | null;",
+            home_type,
+        )
+        self.assertIn(
+            (
+                "format_label, cover_url, cover_storage_path, "
+                "created_at"
+            ),
+            data_text,
+        )
+        self.assertEqual(
+            home_data.count(
+                "coverStoragePath: product.cover_storage_path,"
+            ),
+            2,
+        )
+
+        for token in (
+            'import { CoverImage } from "@/components/cover-image";',
+            "<CoverImage",
+            "src={item.coverUrl}",
+            "storagePath={item.coverStoragePath}",
+            "data-[cover-fallback=true]:object-contain",
+        ):
+            self.assertIn(token, grid_text)
+
+        for forbidden in (
+            "<img",
+            "item.coverUrl ?",
+            '<div className="aspect-square rounded-xl bg-neutral-100" />',
+        ):
+            self.assertNotIn(forbidden, grid_text)
 
     def test_product_detail_uses_central_storage_path(self) -> None:
         data_text = source(VINYLOFY_DATA)
