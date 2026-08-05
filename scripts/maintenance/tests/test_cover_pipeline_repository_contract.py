@@ -27,6 +27,7 @@ SEARCH_RESULT_CARD = ROOT / "components" / "search" / "product-result-card.tsx"
 PRODUCT_SUMMARY_CARD = ROOT / "components" / "product" / "product-summary-card.tsx"
 HOME_NEW_RELEASES_GRID = ROOT / "components" / "home" / "new-releases-grid.tsx"
 TOP_DEAL_CARD = ROOT / "components" / "topdeals" / "top-deal-card.tsx"
+NEW_RELEASES_PAGE = ROOT / "app" / "nieuwe-releases" / "page.tsx"
 
 
 def source(path: Path) -> str:
@@ -86,6 +87,7 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
             PRODUCT_SUMMARY_CARD,
             HOME_NEW_RELEASES_GRID,
             TOP_DEAL_CARD,
+            NEW_RELEASES_PAGE,
             MIGRATION,
             ROLLBACK,
         ):
@@ -208,6 +210,77 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
             "is_selected",
         ):
             self.assertIn(token, text)
+
+    def test_new_releases_use_central_cover_contract(self) -> None:
+        data_text = source(VINYLOFY_DATA)
+        page_text = source(NEW_RELEASES_PAGE)
+
+        type_start = data_text.index(
+            "export type ReleaseCalendarItem = {"
+        )
+        type_end = data_text.index("\n};", type_start)
+        type_block = data_text[type_start:type_end]
+
+        row_start = data_text.index(
+            "type ReleaseCalendarRow = {",
+            type_end,
+        )
+        row_end = data_text.index("\n};", row_start)
+        row_block = data_text[row_start:row_end]
+
+        function_start = data_text.index(
+            "export async function getReleaseCalendarItems("
+        )
+        function_block = data_text[function_start:]
+
+        self.assertIn(
+            "imageStoragePath: string | null;",
+            type_block,
+        )
+        for token in (
+            "image_storage_path: string | null;",
+            "image_status: string;",
+        ):
+            self.assertIn(token, row_block)
+
+        for token in (
+            (
+                "image_url, image_storage_path, image_status, "
+                "format, label, product_id"
+            ),
+            "const productMap = new Map<string, ProductRow>();",
+            "const batchProducts = await getProductsByIds(batchProductIds);",
+            "productMap.set(product.id, product);",
+            "if (!row.product_id) return false;",
+            "if (freshShopCount < 2) return false;",
+            "product?.cover_url ?? null",
+            "product?.cover_storage_path ?? null",
+            'row.image_status === "ready"',
+            "imageStoragePath: row.product_id",
+        ):
+            self.assertIn(token, function_block)
+
+        for token in (
+            'import { CoverImage } from "@/components/cover-image";',
+            "<CoverImage",
+            "src={release.imageUrl}",
+            "storagePath={release.imageStoragePath}",
+            'alt={`${release.artist} - ${displayTitle}`}',
+            (
+                'className="h-full w-full object-cover '
+                'data-[cover-fallback=true]:object-contain"'
+            ),
+            'loading="lazy"',
+        ):
+            self.assertIn(token, page_text)
+
+        for forbidden in (
+            "<img",
+            "release.imageUrl ?",
+            "Geen afbeelding beschikbaar",
+            "image_source_url",
+        ):
+            self.assertNotIn(forbidden, page_text)
 
     def test_top_deals_use_central_storage_path(self) -> None:
         data_text = source(VINYLOFY_DATA)

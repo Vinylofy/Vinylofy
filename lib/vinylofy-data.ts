@@ -845,6 +845,7 @@ export type ReleaseCalendarItem = {
   sourceShop: string;
   sourceUrl: string;
   imageUrl: string | null;
+  imageStoragePath: string | null;
   format: string | null;
   label: string | null;
   productId: string | null;
@@ -860,6 +861,8 @@ type ReleaseCalendarRow = {
   source_shop: string;
   source_url: string;
   image_url: string | null;
+  image_storage_path: string | null;
+  image_status: string;
   format: string | null;
   label: string | null;
   product_id: string | null;
@@ -888,7 +891,7 @@ export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalen
     const { data, error } = await supabase
       .from("release_calendar")
       .select(
-        "id, ean, artist, title, release_date, source_shop, source_url, image_url, format, label, product_id",
+        "id, ean, artist, title, release_date, source_shop, source_url, image_url, image_storage_path, image_status, format, label, product_id",
       )
       .eq("status", "active")
       .gte("release_date", minDate)
@@ -918,15 +921,22 @@ export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalen
    * Supabase IN-query te voorkomen.
    */
   const bestPriceMap = new Map<string, BestPriceRow>();
+  const productMap = new Map<string, ProductRow>();
   const productBatchSize = 200;
 
   for (let offset = 0; offset < productIds.length; offset += productBatchSize) {
-    const batchMap = await getBestPriceMap(
-      productIds.slice(offset, offset + productBatchSize),
+    const batchProductIds = productIds.slice(
+      offset,
+      offset + productBatchSize,
     );
+    const batchMap = await getBestPriceMap(batchProductIds);
+    const batchProducts = await getProductsByIds(batchProductIds);
 
     for (const [productId, bestPrice] of batchMap) {
       bestPriceMap.set(productId, bestPrice);
+    }
+    for (const product of batchProducts) {
+      productMap.set(product.id, product);
     }
   }
 
@@ -951,6 +961,11 @@ export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalen
       const bestPrice = row.product_id
         ? bestPriceMap.get(row.product_id)
         : undefined;
+      const product = row.product_id
+        ? productMap.get(row.product_id)
+        : undefined;
+      const releaseImageReady =
+        !row.product_id && row.image_status === "ready";
 
       return {
         id: row.id,
@@ -960,7 +975,16 @@ export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalen
         releaseDate: row.release_date,
         sourceShop: row.source_shop,
         sourceUrl: row.source_url,
-        imageUrl: row.image_url,
+        imageUrl: row.product_id
+          ? product?.cover_url ?? null
+          : releaseImageReady
+            ? row.image_url
+            : null,
+        imageStoragePath: row.product_id
+          ? product?.cover_storage_path ?? null
+          : releaseImageReady
+            ? row.image_storage_path
+            : null,
         format: row.format,
         label: row.label,
         productId: row.product_id,
