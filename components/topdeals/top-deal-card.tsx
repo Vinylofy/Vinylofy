@@ -1,4 +1,6 @@
 import Link from "next/link";
+
+import { CoverImage } from "@/components/cover-image";
 import { formatEuro, type TopDealItem } from "@/lib/vinylofy-data";
 
 type TopDealCardProps = {
@@ -6,7 +8,6 @@ type TopDealCardProps = {
   rank: number;
 };
 
-const COVER_PLACEHOLDER = "/placeholders/vinylofy-cover-placeholder-white2.png";
 
 function formatOfferCount(count: number): string {
   return count === 1 ? "1 aanbieder" : `${count} aanbieders`;
@@ -14,7 +15,6 @@ function formatOfferCount(count: number): string {
 
 
 export function TopDealCard({ deal, rank }: TopDealCardProps) {
-  const coverSrc = deal.coverUrl ?? COVER_PLACEHOLDER;
 
   return (
     <Link
@@ -23,9 +23,10 @@ export function TopDealCard({ deal, rank }: TopDealCardProps) {
     >
       <div className="flex gap-4 p-4">
         <div className="relative flex h-28 w-28 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-neutral-100 bg-neutral-50">
-          <img
-            src={coverSrc}
-            alt=""
+          <CoverImage
+            src={deal.coverUrl}
+            storagePath={deal.coverStoragePath}
+            alt={`${deal.artist} - ${deal.title}`}
             className="h-full w-full object-contain"
             loading={rank <= 6 ? "eager" : "lazy"}
             decoding="async"

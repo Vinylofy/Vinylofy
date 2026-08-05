@@ -690,6 +690,7 @@ export type TopDealItem = {
   title: string;
   formatLabel: string | null;
   coverUrl: string | null;
+  coverStoragePath: string | null;
   lowestPrice: number;
   highestPrice: number;
   priceDifference: number;
@@ -778,6 +779,16 @@ export async function getTopDeals(limit = 45): Promise<TopDealItem[]> {
   if (error) throw error;
 
   const rows = (data ?? []) as TopDealsSnapshotRow[];
+  const productIds = Array.from(
+    new Set(rows.map((row) => row.product_id)),
+  );
+  const products = await getProductsByIds(productIds);
+  const coverStoragePathMap = new Map(
+    products.map((product) => [
+      product.id,
+      product.cover_storage_path,
+    ]),
+  );
 
   return rows.flatMap((row) => {
     const lowestPrice = toNumber(row.lowest_price);
@@ -811,6 +822,7 @@ export async function getTopDeals(limit = 45): Promise<TopDealItem[]> {
         title: row.title,
         formatLabel: row.format_label,
         coverUrl: row.cover_url,
+        coverStoragePath: coverStoragePathMap.get(row.product_id) ?? null,
         lowestPrice,
         highestPrice,
         priceDifference,

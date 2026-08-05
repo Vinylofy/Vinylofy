@@ -26,6 +26,7 @@ VINYLOFY_DATA = ROOT / "lib" / "vinylofy-data.ts"
 SEARCH_RESULT_CARD = ROOT / "components" / "search" / "product-result-card.tsx"
 PRODUCT_SUMMARY_CARD = ROOT / "components" / "product" / "product-summary-card.tsx"
 HOME_NEW_RELEASES_GRID = ROOT / "components" / "home" / "new-releases-grid.tsx"
+TOP_DEAL_CARD = ROOT / "components" / "topdeals" / "top-deal-card.tsx"
 
 
 def source(path: Path) -> str:
@@ -84,6 +85,7 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
             SEARCH_RESULT_CARD,
             PRODUCT_SUMMARY_CARD,
             HOME_NEW_RELEASES_GRID,
+            TOP_DEAL_CARD,
             MIGRATION,
             ROLLBACK,
         ):
@@ -206,6 +208,62 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
             "is_selected",
         ):
             self.assertIn(token, text)
+
+    def test_top_deals_use_central_storage_path(self) -> None:
+        data_text = source(VINYLOFY_DATA)
+        card_text = source(TOP_DEAL_CARD)
+
+        type_start = data_text.index("export type TopDealItem = {")
+        type_end = data_text.index("\n};", type_start)
+        type_block = data_text[type_start:type_end]
+
+        function_start = data_text.index(
+            "export async function getTopDeals("
+        )
+        function_end = data_text.index(
+            "\nexport type ReleaseCalendarItem = {",
+            function_start,
+        )
+        function_block = data_text[function_start:function_end]
+
+        self.assertIn(
+            "coverStoragePath: string | null;",
+            type_block,
+        )
+        for token in (
+            "const productIds = Array.from(",
+            "new Set(rows.map((row) => row.product_id)),",
+            "const products = await getProductsByIds(productIds);",
+            "const coverStoragePathMap = new Map(",
+            "product.cover_storage_path,",
+            (
+                "coverStoragePath: "
+                "coverStoragePathMap.get(row.product_id) ?? null,"
+            ),
+        ):
+            self.assertIn(token, function_block)
+
+        for token in (
+            'import { CoverImage } from "@/components/cover-image";',
+            "<CoverImage",
+            "src={deal.coverUrl}",
+            "storagePath={deal.coverStoragePath}",
+            'alt={`${deal.artist} - ${deal.title}`}',
+            'className="h-full w-full object-contain"',
+            'loading={rank <= 6 ? "eager" : "lazy"}',
+            'decoding="async"',
+            'fetchPriority={rank <= 6 ? "high" : "low"}',
+        ):
+            self.assertIn(token, card_text)
+
+        for forbidden in (
+            "<img",
+            'alt=""',
+            "COVER_PLACEHOLDER",
+            "coverSrc",
+            "/placeholders/vinylofy-cover-placeholder-white2.png",
+        ):
+            self.assertNotIn(forbidden, card_text)
 
     def test_homepage_uses_central_storage_path(self) -> None:
         data_text = source(VINYLOFY_DATA)
