@@ -2,628 +2,1864 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
+import os
 from pathlib import Path
+import socket
 from typing import Any
+from urllib.parse import urlsplit
 
 from cover_common import (
     CandidateRecord,
     CoverPipelineError,
-    build_cover_missing_condition,
-    build_storage_path,
+    build_product_storage_path,
+    build_public_storage_url,
+    compensate_storage_upload,
     connect_db,
+    download_binary,
     ensure_runtime_directories,
-    fetch_binary,
-    fetch_page_candidates,
-    get_supabase_credentials,
-    get_table_columns,
-    log,
+    get_storage_bucket_api,
+    inspect_storage_object,
     make_session,
     next_retry_timestamp,
     normalize_ean,
+    normalize_source_type,
     normalize_text,
     prepare_image_for_storage,
     rank_candidate,
     require_table_columns,
-    safe_parse_datetime,
     serialize_json,
-    upload_bytes_to_storage,
+    upsert_bytes_to_storage,
     utc_now,
 )
 
 
-def get_candidate_table_profile(conn) -> tuple[set[str], list[str], str]:
-    columns = get_table_columns(conn, "product_cover_candidates")
-    url_columns = [column for column in ("image_url", "source_url", "candidate_url") if column in columns]
-    if not url_columns:
-        raise CoverPipelineError("Tabel public.product_cover_candidates mist image_url/source_url/candidate_url.")
-    preferred_url_column = "image_url" if "image_url" in columns else url_columns[0]
-    return columns, url_columns, preferred_url_column
+QUEUEABLE_STATUSES = ("pending", "retry_later", "review")
+RETRYABLE_CANDIDATE_STATUSES = ("pending", "accepted", "published")
+MAX_STORAGE_OBJECT_BYTES = 5 * 1024 * 1024
+
+RETRY_FAILED_CANDIDATE_STATUSES = (
+    "pending",
+    "accepted",
+    "published",
+    "failed",
+)
 
 
-def candidate_url_expression(alias: str, url_columns: list[str]) -> str:
-    if len(url_columns) == 1:
-        return f"{alias}.{url_columns[0]}"
-    return "coalesce(" + ", ".join(f"{alias}.{column}" for column in url_columns) + ")"
+@dataclass(slots=True)
+class CoverJob:
+    queue_id: str
+    product_id: str
+    ean: str
+    artist: str
+    title: str
+    format_label: str
+    source_reason: str
+    priority: int
+    attempt_count: int
 
 
-def find_existing_candidate(cur, product_id: str, image_url: str, url_columns: list[str], columns: set[str]) -> dict[str, Any] | None:
-    select_columns = ["id"]
-    for column in ("source_rank", "is_primary", "mime_type", "width", "height", "candidate_status"):
-        if column in columns:
-            select_columns.append(column)
-    predicates = " or ".join(f"{column} = %s" for column in url_columns)
-    cur.execute(
-        f"select {', '.join(select_columns)} from public.product_cover_candidates where product_id = %s and ({predicates}) order by updated_at desc nulls last, created_at desc nulls last, id limit 1",
-        [product_id, *([image_url] * len(url_columns))],
+@dataclass(slots=True)
+class ProductState:
+    product_id: str
+    ean: str
+    artist: str
+    title: str
+    format_label: str
+    cover_status: str
+    cover_url: str
+    cover_storage_path: str
+    cover_source_url: str
+    cover_source_shop_id: str | None
+    cover_sha256: str
+    cover_mime_type: str
+    cover_byte_size: int | None
+    cover_width: int | None
+    cover_height: int | None
+    cover_needs_refresh: bool
+    cover_fail_count: int
+
+
+@dataclass(slots=True)
+class CandidateChoice:
+    candidate_id: str
+    candidate: CandidateRecord
+    candidate_status: str
+
+
+@dataclass(slots=True)
+class LocalObject:
+    remote_path: str
+    public_url: str
+    mime_type: str | None
+    byte_size: int | None
+
+
+def default_worker_id() -> str:
+    return (
+        f"cover-worker:{socket.gethostname()}:{os.getpid()}"
     )
-    row = cur.fetchone()
-    if row is None:
-        return None
-    return dict(zip(select_columns, row))
-
-
-def build_candidate_insert_payload(candidate: CandidateRecord, columns: set[str]) -> dict[str, Any]:
-    now = utc_now()
-    payload: dict[str, Any] = {}
-    values = {
-        "product_id": candidate.product_id,
-        "shop_id": candidate.shop_id,
-        "ean": candidate.ean,
-        "product_url": candidate.product_url,
-        "image_url": candidate.image_url,
-        "source_url": candidate.image_url,
-        "candidate_url": candidate.image_url,
-        "source_type": candidate.source_type,
-        "source_rank": candidate.source_rank,
-        "is_primary": candidate.is_primary,
-        "mime_type": candidate.mime_type,
-        "width": candidate.width,
-        "height": candidate.height,
-        "candidate_status": "pending",
-        "discovered_at": now,
-        "first_seen_at": now,
-        "last_seen_at": now,
-        "created_at": now,
-        "updated_at": now,
-    }
-    for column, value in values.items():
-        if column in columns:
-            payload[column] = value
-    return payload
-
-
-def insert_candidate_row(cur, payload: dict[str, Any]) -> None:
-    columns = list(payload.keys())
-    cur.execute(
-        f"insert into public.product_cover_candidates ({', '.join(columns)}) values ({', '.join(['%s'] * len(columns))})",
-        [payload[column] for column in columns],
-    )
-
-
-def update_candidate_row(cur, row_id: Any, candidate: CandidateRecord, existing: dict[str, Any], columns: set[str]) -> None:
-    now = utc_now()
-    payload: dict[str, Any] = {}
-    if "source_type" in columns and candidate.source_type:
-        payload["source_type"] = candidate.source_type
-    if "source_rank" in columns:
-        payload["source_rank"] = max(int(existing.get("source_rank") or 0), int(candidate.source_rank or 0))
-    if "is_primary" in columns:
-        payload["is_primary"] = bool(existing.get("is_primary")) or bool(candidate.is_primary)
-    if "width" in columns:
-        payload["width"] = existing.get("width") or candidate.width
-    if "height" in columns:
-        payload["height"] = existing.get("height") or candidate.height
-    if "mime_type" in columns and candidate.mime_type and not existing.get("mime_type"):
-        payload["mime_type"] = candidate.mime_type
-    if "last_seen_at" in columns:
-        payload["last_seen_at"] = now
-    if "updated_at" in columns:
-        payload["updated_at"] = now
-    assignments = ", ".join(f"{column} = %s" for column in payload)
-    cur.execute(f"update public.product_cover_candidates set {assignments} where id = %s", [*payload.values(), row_id])
-
-
-VALID_QUEUE_SELECTIONS = {
-    "publish": ("pending", "retry_later", "review"),
-    "retry-failed": ("failed", "retry_later", "review"),
-}
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Download, validate and publish covers from product_cover_queue.")
-    parser.add_argument("--mode", choices=sorted(VALID_QUEUE_SELECTIONS), default="publish")
-    parser.add_argument("--limit", type=int, default=25, help="Maximum aantal queue-jobs in deze run.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Claim, validate and publish central Vinylofy product covers."
+        )
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("publish", "retry-failed"),
+        default="publish",
+        help=(
+            "publish verwerkt normale queue-items; retry-failed zet eerst "
+            "een beperkte batch failed-items opnieuw klaar."
+        ),
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=25,
+        help="Maximum aantal claims; iedere iteratie claimt maximaal één item.",
+    )
     parser.add_argument(
         "--worker-id",
         type=str,
         default="",
-        help="Optionele worker identifier. Standaard hostname/pid-achtig gedrag is niet nodig; handmatige string is genoeg.",
+        help="Expliciete worker-ID. Standaard hostname en proces-ID.",
+    )
+    parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=5,
+        help="Na dit aantal mislukte claims wordt de queue-status failed.",
+    )
+    parser.add_argument(
+        "--stale-after-minutes",
+        type=int,
+        default=90,
+        help="Leeftijd waarna een processing-claim wordt vrijgegeven.",
+    )
+    parser.add_argument(
+        "--reconcile-limit",
+        type=int,
+        default=100,
+        help="Maximum bestaande lokale producten om zonder download te herstellen.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Toont selectie en acties zonder claims, databasewrites, "
+            "downloads of Storage-aanroepen."
+        ),
     )
     parser.add_argument(
         "--output-json",
         type=str,
         default="output/cover_pipeline/cover_publish_summary.json",
-        help="Pad voor de JSON-samenvatting.",
+        help="Pad voor het JSON-runrapport.",
     )
     return parser.parse_args()
 
 
-def claim_jobs(conn, mode: str, limit: int, worker_id: str) -> list[dict[str, Any]]:
-    require_table_columns(conn, "product_cover_queue", ["id", "product_id", "status", "attempt_count", "priority"])
-    products_columns = require_table_columns(conn, "products", ["id", "ean"])
-    cover_missing_condition = build_cover_missing_condition(products_columns, alias="p")
-    allowed_statuses = VALID_QUEUE_SELECTIONS[mode]
+def validate_args(args: argparse.Namespace) -> None:
+    for name in (
+        "limit",
+        "max_attempts",
+        "stale_after_minutes",
+        "reconcile_limit",
+    ):
+        if int(getattr(args, name)) <= 0:
+            raise CoverPipelineError(
+                f"--{name.replace('_', '-')} moet groter zijn dan nul."
+            )
 
+
+def require_schema(conn) -> None:
+    require_table_columns(
+        conn,
+        "products",
+        [
+            "id",
+            "ean",
+            "cover_url",
+            "cover_storage_path",
+            "cover_source_url",
+            "cover_source_shop_id",
+            "cover_status",
+            "cover_confidence",
+            "cover_sha256",
+            "cover_mime_type",
+            "cover_byte_size",
+            "cover_needs_refresh",
+            "cover_fail_count",
+            "cover_last_attempt_at",
+            "cover_last_success_at",
+            "cover_locked_at",
+            "cover_locked_by",
+            "cover_error_code",
+            "cover_error_message",
+            "cover_width",
+            "cover_height",
+        ],
+    )
+    require_table_columns(
+        conn,
+        "product_cover_candidates",
+        [
+            "id",
+            "product_id",
+            "image_url",
+            "source_type",
+            "source_rank",
+            "candidate_status",
+            "is_selected",
+            "mime_type",
+            "width",
+            "height",
+            "byte_size",
+            "sha256",
+            "last_checked_at",
+            "last_http_status",
+            "last_error_code",
+            "last_error_message",
+            "updated_at",
+        ],
+    )
+    require_table_columns(
+        conn,
+        "product_cover_queue",
+        [
+            "id",
+            "product_id",
+            "priority",
+            "candidate_count",
+            "source_reason",
+            "status",
+            "attempt_count",
+            "last_error_code",
+            "last_error_message",
+            "claimed_by",
+            "claimed_at",
+            "next_attempt_at",
+            "last_completed_at",
+            "updated_at",
+        ],
+    )
+
+
+def preview_jobs(
+    conn,
+    *,
+    mode: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    statuses = (
+        (*QUEUEABLE_STATUSES, "failed")
+        if mode == "retry-failed"
+        else QUEUEABLE_STATUSES
+    )
     with conn.cursor() as cur:
         cur.execute(
-            f"""
+            """
+            select
+                q.id,
+                q.product_id,
+                p.ean,
+                p.artist,
+                p.title,
+                p.format_label,
+                q.source_reason,
+                q.priority,
+                q.attempt_count,
+                q.status,
+                (
+                    select count(*)
+                    from public.product_cover_candidates c
+                    where c.product_id = p.id
+                      and c.candidate_status <> 'rejected'
+                      and nullif(btrim(c.image_url), '') is not null
+                ) as candidate_count
+            from public.product_cover_queue q
+            join public.products p
+              on p.id = q.product_id
+            where q.status = any(%s)
+              and (
+                    q.next_attempt_at is null
+                    or q.next_attempt_at <= now()
+              )
+              and p.cover_status <> 'blocked'
+              and nullif(btrim(p.cover_storage_path), '') is null
+              and public.normalize_cover_ean(p.ean) is not null
+            order by q.priority desc, q.updated_at asc, q.id
+            limit %s
+            """,
+            (list(statuses), limit),
+        )
+        rows = cur.fetchall()
+
+    return [
+        {
+            "queue_id": str(row[0]),
+            "product_id": str(row[1]),
+            "ean": normalize_text(row[2]),
+            "artist": normalize_text(row[3]),
+            "title": normalize_text(row[4]),
+            "format_label": normalize_text(row[5]),
+            "source_reason": normalize_text(row[6]),
+            "priority": int(row[7] or 0),
+            "attempt_count": int(row[8] or 0),
+            "queue_status": normalize_text(row[9]),
+            "candidate_count": int(row[10] or 0),
+            "planned_action": "claim_one_then_preflight",
+        }
+        for row in rows
+    ]
+
+
+
+def preview_local_actions(
+    conn,
+    *,
+    mode: str,
+    limit: int,
+    max_attempts: int,
+) -> list[dict[str, Any]]:
+    statuses = (
+        (*QUEUEABLE_STATUSES, "published", "failed")
+        if mode == "retry-failed"
+        else (*QUEUEABLE_STATUSES, "published")
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select
+                p.id,
+                p.ean,
+                p.cover_storage_path,
+                p.cover_url,
+                p.cover_status,
+                p.cover_needs_refresh,
+                p.cover_fail_count,
+                q.status,
+                q.attempt_count,
+                case
+                    when p.cover_needs_refresh is true
+                        then 'claim_local_repair_then_exact_path_preflight'
+                    else 'reconcile_existing_local_object'
+                end as planned_action
+            from public.products p
+            left join public.product_cover_queue q
+              on q.product_id = p.id
+            where p.cover_status <> 'blocked'
+              and nullif(btrim(p.cover_storage_path), '') is not null
+              and (
+                    (
+                        p.cover_needs_refresh is true
+                        and (
+                            %s
+                            or coalesce(p.cover_fail_count, 0) < %s
+                        )
+                        and (
+                            q.status is null
+                            or q.status = any(%s)
+                        )
+                        and (
+                            q.next_attempt_at is null
+                            or q.next_attempt_at <= now()
+                        )
+                    )
+                    or (
+                        p.cover_needs_refresh is false
+                        and (
+                            nullif(btrim(p.cover_url), '') is null
+                            or p.cover_status <> 'ready'
+                            or p.cover_url not like (
+                                '%/storage/v1/object/public/product-covers/'
+                                || p.cover_storage_path
+                            )
+                        )
+                    )
+              )
+            order by
+                p.cover_needs_refresh desc,
+                p.cover_priority desc,
+                p.updated_at asc,
+                p.id
+            limit %s
+            """,
+            (
+                mode == "retry-failed",
+                max_attempts,
+                list(statuses),
+                limit,
+            ),
+        )
+        rows = cur.fetchall()
+
+    return [
+        {
+            "product_id": str(row[0]),
+            "ean": normalize_text(row[1]),
+            "storage_path": normalize_text(row[2]),
+            "cover_url": normalize_text(row[3]),
+            "cover_status": normalize_text(row[4]),
+            "cover_needs_refresh": bool(row[5]),
+            "cover_fail_count": int(row[6] or 0),
+            "queue_status": normalize_text(row[7]),
+            "attempt_count": int(row[8] or 0),
+            "planned_action": normalize_text(row[9]),
+        }
+        for row in rows
+    ]
+
+def count_stale_claims(
+    conn,
+    *,
+    stale_after_minutes: int,
+) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select count(*)
+            from public.product_cover_queue
+            where status = 'processing'
+              and claimed_at is not null
+              and claimed_at < now() - make_interval(mins => %s)
+            """,
+            (stale_after_minutes,),
+        )
+        row = cur.fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def recover_stale_claims(
+    conn,
+    *,
+    stale_after_minutes: int,
+) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select public.recover_stale_cover_claims(
+                make_interval(mins => %s)
+            )
+            """,
+            (stale_after_minutes,),
+        )
+        row = cur.fetchone()
+    conn.commit()
+    return int(row[0] or 0) if row else 0
+
+
+def requeue_failed_jobs(
+    conn,
+    *,
+    limit: int,
+) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
             with selected as (
                 select q.id
                 from public.product_cover_queue q
                 join public.products p
                   on p.id = q.product_id
-                where q.status = any(%s)
-                  and (q.next_attempt_at is null or q.next_attempt_at <= now())
-                  and ({cover_missing_condition} or q.status <> 'published')
+                where q.status = 'failed'
+                  and p.cover_status <> 'blocked'
+                  and nullif(btrim(p.cover_storage_path), '') is null
+                  and public.normalize_cover_ean(p.ean) is not null
                 order by q.priority desc, q.updated_at asc, q.id
                 limit %s
-                for update skip locked
+                for update of q skip locked
+            ),
+            queue_update as (
+                update public.product_cover_queue q
+                set
+                    status = 'retry_later',
+                    claimed_by = null,
+                    claimed_at = null,
+                    next_attempt_at = now(),
+                    last_error_code = null,
+                    last_error_message = null,
+                    updated_at = now()
+                from selected s
+                where q.id = s.id
+                returning q.product_id
             )
-            update public.product_cover_queue q
-               set status = 'processing',
-                   claimed_by = %s,
-                   claimed_at = now(),
-                   updated_at = now()
-              from selected s
-             where q.id = s.id
-         returning q.id, q.product_id, q.priority, q.attempt_count, q.candidate_count, q.source_reason
+            update public.products p
+            set
+                cover_status = 'queued',
+                cover_locked_at = null,
+                cover_locked_by = null,
+                cover_error_code = null,
+                cover_error_message = null,
+                updated_at = now()
+            from queue_update q
+            where p.id = q.product_id
+            returning p.id
             """,
-            (list(allowed_statuses), limit, worker_id),
+            (limit,),
         )
         rows = cur.fetchall()
-
-    jobs = []
-    for row in rows:
-        jobs.append(
-            {
-                "queue_id": str(row[0]),
-                "product_id": str(row[1]),
-                "priority": int(row[2] or 0),
-                "attempt_count": int(row[3] or 0),
-                "candidate_count": int(row[4] or 0),
-                "source_reason": normalize_text(row[5]),
-            }
-        )
-    return jobs
+    conn.commit()
+    return len(rows)
 
 
-def load_product_context(conn, product_id: str) -> dict[str, Any]:
-    products_columns = require_table_columns(conn, "products", ["id", "ean"])
-    prices_columns = require_table_columns(conn, "prices", ["product_id", "shop_id", "product_url"])
-    require_table_columns(conn, "shops", ["id", "domain"])
 
-    title_column = "title" if "title" in products_columns else "null"
-    artist_column = "artist" if "artist" in products_columns else "null"
-    cover_priority_column = "coalesce(p.cover_priority, 0)" if "cover_priority" in products_columns else "0"
-    last_seen_expression = "pr.last_seen_at" if "last_seen_at" in prices_columns else "null"
-    is_active_condition = "coalesce(pr.is_active, true) = true" if "is_active" in prices_columns else "true"
-
+def claim_one_local_repair(
+    conn,
+    *,
+    worker_id: str,
+    stale_after_minutes: int,
+    max_attempts: int,
+    retry_failed: bool,
+) -> CoverJob | None:
+    statuses = (
+        (*QUEUEABLE_STATUSES, "published", "failed")
+        if retry_failed
+        else (*QUEUEABLE_STATUSES, "published")
+    )
     with conn.cursor() as cur:
         cur.execute(
-            f"""
+            """
+            with selected as (
+                select p.id
+                from public.products p
+                left join public.product_cover_queue existing_q
+                  on existing_q.product_id = p.id
+                where p.cover_status <> 'blocked'
+                  and nullif(btrim(p.cover_storage_path), '') is not null
+                  and p.cover_needs_refresh is true
+                  and (
+                        %s
+                        or coalesce(p.cover_fail_count, 0) < %s
+                  )
+                  and public.normalize_cover_ean(p.ean) is not null
+                  and (
+                        existing_q.status is null
+                        or existing_q.status = any(%s)
+                  )
+                  and (
+                        existing_q.next_attempt_at is null
+                        or existing_q.next_attempt_at <= now()
+                  )
+                  and (
+                        p.cover_locked_at is null
+                        or p.cover_locked_at
+                           < now() - make_interval(mins => %s)
+                  )
+                order by
+                    p.cover_priority desc,
+                    p.updated_at asc,
+                    p.id
+                limit 1
+                for update of p skip locked
+            ),
+            queue_claim as (
+                insert into public.product_cover_queue (
+                    product_id,
+                    priority,
+                    candidate_count,
+                    source_reason,
+                    status,
+                    attempt_count,
+                    claimed_by,
+                    claimed_at,
+                    next_attempt_at,
+                    updated_at
+                )
+                select
+                    p.id,
+                    greatest(0, coalesce(p.cover_priority, 0)),
+                    (
+                        select count(*)::integer
+                        from public.product_cover_candidates c
+                        where c.product_id = p.id
+                          and c.candidate_status <> 'rejected'
+                          and nullif(btrim(c.image_url), '') is not null
+                    ),
+                    'local_repair',
+                    'processing',
+                    1,
+                    %s,
+                    now(),
+                    null,
+                    now()
+                from selected s
+                join public.products p
+                  on p.id = s.id
+                on conflict (product_id) do update
+                set
+                    priority = greatest(
+                        public.product_cover_queue.priority,
+                        excluded.priority
+                    ),
+                    candidate_count = excluded.candidate_count,
+                    source_reason = 'local_repair',
+                    status = 'processing',
+                    attempt_count = (
+                        coalesce(
+                            public.product_cover_queue.attempt_count,
+                            0
+                        ) + 1
+                    ),
+                    claimed_by = excluded.claimed_by,
+                    claimed_at = excluded.claimed_at,
+                    next_attempt_at = null,
+                    last_error_code = null,
+                    last_error_message = null,
+                    updated_at = now()
+                where public.product_cover_queue.status <> 'processing'
+                returning
+                    id,
+                    product_id,
+                    priority,
+                    attempt_count
+            ),
+            product_claim as (
+                update public.products p
+                set
+                    cover_status = 'resolving',
+                    cover_last_attempt_at = now(),
+                    cover_locked_at = now(),
+                    cover_locked_by = %s,
+                    updated_at = now()
+                from queue_claim q
+                where p.id = q.product_id
+                returning
+                    p.id,
+                    p.ean,
+                    p.artist,
+                    p.title,
+                    p.format_label
+            )
             select
-                p.id,
+                q.id,
+                q.product_id,
                 p.ean,
-                {artist_column} as artist,
-                {title_column} as title,
-                {cover_priority_column} as cover_priority
-            from public.products p
-            where p.id = %s
+                p.artist,
+                p.title,
+                p.format_label,
+                'local_repair',
+                q.priority,
+                q.attempt_count
+            from queue_claim q
+            join product_claim p
+              on p.id = q.product_id
+            """,
+            (
+                retry_failed,
+                max_attempts,
+                list(statuses),
+                stale_after_minutes,
+                worker_id,
+                worker_id,
+            ),
+        )
+        row = cur.fetchone()
+    conn.commit()
+
+    if row is None:
+        return None
+    return CoverJob(
+        queue_id=str(row[0]),
+        product_id=str(row[1]),
+        ean=normalize_text(row[2]),
+        artist=normalize_text(row[3]),
+        title=normalize_text(row[4]),
+        format_label=normalize_text(row[5]),
+        source_reason="local_repair",
+        priority=int(row[7] or 0),
+        attempt_count=int(row[8] or 0),
+    )
+
+def claim_one_job(
+    conn,
+    *,
+    worker_id: str,
+) -> CoverJob | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select
+                queue_id,
+                product_id,
+                ean,
+                artist,
+                title,
+                format_label,
+                trigger_source,
+                requested_priority,
+                attempts
+            from public.claim_next_cover_job(%s)
+            """,
+            (worker_id,),
+        )
+        row = cur.fetchone()
+    conn.commit()
+
+    if row is None:
+        return None
+    return CoverJob(
+        queue_id=str(row[0]),
+        product_id=str(row[1]),
+        ean=normalize_text(row[2]),
+        artist=normalize_text(row[3]),
+        title=normalize_text(row[4]),
+        format_label=normalize_text(row[5]),
+        source_reason=normalize_text(row[6]),
+        priority=int(row[7] or 0),
+        attempt_count=int(row[8] or 0),
+    )
+
+
+def load_product_state(
+    conn,
+    product_id: str,
+) -> ProductState:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select
+                id,
+                ean,
+                artist,
+                title,
+                format_label,
+                cover_status,
+                cover_url,
+                cover_storage_path,
+                cover_source_url,
+                cover_source_shop_id,
+                cover_sha256,
+                cover_mime_type,
+                cover_byte_size,
+                cover_width,
+                cover_height,
+                cover_needs_refresh,
+                cover_fail_count
+            from public.products
+            where id = %s
             limit 1
             """,
             (product_id,),
         )
-        product_row = cur.fetchone()
-        if product_row is None:
-            raise CoverPipelineError(f"Product niet gevonden voor id {product_id}")
-
-        cur.execute(
-            f"""
-            select
-                pr.shop_id,
-                s.domain,
-                s.name,
-                pr.product_url,
-                {last_seen_expression} as last_seen_at
-            from public.prices pr
-            join public.shops s on s.id = pr.shop_id
-            where pr.product_id = %s
-              and {is_active_condition}
-              and coalesce(nullif(pr.product_url, ''), '') <> ''
-            order by {last_seen_expression} desc nulls last, s.domain
-            """,
-            (product_id,),
+        row = cur.fetchone()
+    if row is None:
+        raise CoverPipelineError(
+            f"Product ontbreekt na claim: {product_id}"
         )
-        offers = cur.fetchall()
 
-    return {
-        "product_id": str(product_row[0]),
-        "ean": normalize_text(product_row[1]),
-        "artist": normalize_text(product_row[2]),
-        "title": normalize_text(product_row[3]),
-        "cover_priority": int(product_row[4] or 0),
-        "offers": [
-            {
-                "shop_id": str(row[0]) if row[0] is not None else None,
-                "shop_domain": normalize_text(row[1]),
-                "shop_name": normalize_text(row[2]) or None,
-                "product_url": normalize_text(row[3]),
-                "last_seen_at": safe_parse_datetime(row[4]),
-            }
-            for row in offers
-        ],
-    }
-
-
-def load_candidates(conn, product_context: dict[str, Any]) -> list[CandidateRecord]:
-    columns, url_columns, _ = get_candidate_table_profile(conn)
-    require_table_columns(
-        conn,
-        "product_cover_candidates",
-        ["product_id", "shop_id", "ean", "product_url", "source_type", "source_rank", "is_primary"],
+    return ProductState(
+        product_id=str(row[0]),
+        ean=normalize_ean(row[1]) or "",
+        artist=normalize_text(row[2]),
+        title=normalize_text(row[3]),
+        format_label=normalize_text(row[4]),
+        cover_status=normalize_text(row[5]),
+        cover_url=normalize_text(row[6]),
+        cover_storage_path=normalize_text(row[7]),
+        cover_source_url=normalize_text(row[8]),
+        cover_source_shop_id=(
+            str(row[9]) if row[9] is not None else None
+        ),
+        cover_sha256=normalize_text(row[10]),
+        cover_mime_type=normalize_text(row[11]),
+        cover_byte_size=(
+            int(row[12]) if row[12] is not None else None
+        ),
+        cover_width=(
+            int(row[13]) if row[13] is not None else None
+        ),
+        cover_height=(
+            int(row[14]) if row[14] is not None else None
+        ),
+        cover_needs_refresh=bool(row[15]),
+        cover_fail_count=int(row[16] or 0),
     )
-    url_expr = candidate_url_expression("c", url_columns)
-    mime_expr = "c.mime_type" if "mime_type" in columns else "null"
-    width_expr = "c.width" if "width" in columns else "null"
-    height_expr = "c.height" if "height" in columns else "null"
-    last_seen_expr = "c.last_seen_at" if "last_seen_at" in columns else "null"
-    updated_expr = "c.updated_at" if "updated_at" in columns else "null"
+
+
+def load_candidates(
+    conn,
+    product: ProductState,
+    *,
+    retry_failed: bool,
+) -> list[CandidateChoice]:
+    statuses = (
+        RETRY_FAILED_CANDIDATE_STATUSES
+        if retry_failed
+        else RETRYABLE_CANDIDATE_STATUSES
+    )
     with conn.cursor() as cur:
         cur.execute(
-            f"""
+            """
             select
+                c.id,
                 c.product_id,
                 c.ean,
                 c.shop_id,
-                s.domain,
+                coalesce(s.domain, ''),
                 s.name,
                 c.product_url,
-                {url_expr} as image_url,
+                c.image_url,
                 c.source_type,
                 c.source_rank,
                 c.is_primary,
-                {mime_expr} as mime_type,
-                {width_expr} as width,
-                {height_expr} as height,
-                {last_seen_expr} as last_seen_at,
-                {updated_expr} as updated_at
+                c.mime_type,
+                c.width,
+                c.height,
+                c.candidate_status,
+                c.last_seen_at
             from public.product_cover_candidates c
             left join public.shops s
               on s.id = c.shop_id
             where c.product_id = %s
-            order by c.source_rank desc, {last_seen_expr} desc nulls last, {updated_expr} desc nulls last
+              and c.candidate_status = any(%s)
+            order by
+                c.is_selected desc,
+                c.source_rank desc,
+                c.is_primary desc,
+                c.last_seen_at desc nulls last,
+                c.updated_at desc,
+                c.id
             """,
-            (product_context["product_id"],),
+            (product.product_id, list(statuses)),
         )
         rows = cur.fetchall()
 
-    candidates: list[CandidateRecord] = []
+    choices: list[CandidateChoice] = []
+    seen_urls: set[str] = set()
     for row in rows:
+        image_url = normalize_text(row[7])
+        parts = urlsplit(image_url)
+        if (
+            parts.scheme.lower() not in {"http", "https"}
+            or not parts.netloc
+            or image_url in seen_urls
+        ):
+            continue
+        seen_urls.add(image_url)
+
         candidate = CandidateRecord(
-            product_id=str(row[0]),
-            ean=normalize_text(row[1]) or product_context["ean"],
-            shop_id=str(row[2]) if row[2] is not None else None,
-            shop_domain=normalize_text(row[3]),
-            shop_name=normalize_text(row[4]) or None,
-            product_url=normalize_text(row[5]),
-            image_url=normalize_text(row[6]),
-            source_type=normalize_text(row[7]) or "unknown",
-            source_rank=int(row[8] or 0),
-            is_primary=bool(row[9]),
-            mime_type=normalize_text(row[10]) or None,
-            width=int(row[11]) if row[11] is not None else None,
-            height=int(row[12]) if row[12] is not None else None,
+            product_id=str(row[1]),
+            ean=normalize_ean(row[2]) or product.ean,
+            shop_id=str(row[3]) if row[3] is not None else None,
+            shop_domain=normalize_text(row[4]),
+            shop_name=normalize_text(row[5]) or None,
+            product_url=normalize_text(row[6]) or image_url,
+            image_url=image_url,
+            source_type=normalize_source_type(
+                normalize_text(row[8])
+            ),
+            source_rank=int(row[9] or 0),
+            is_primary=bool(row[10]),
+            mime_type=normalize_text(row[11]) or None,
+            width=int(row[12]) if row[12] is not None else None,
+            height=int(row[13]) if row[13] is not None else None,
         )
         if candidate.source_rank <= 0:
-            candidate.source_rank = rank_candidate(candidate, recency_reference=safe_parse_datetime(row[13]))
-        candidates.append(candidate)
-    return candidates
-
-
-def discover_candidates_on_the_fly(conn, product_context: dict[str, Any], session) -> list[CandidateRecord]:
-    discovered: list[CandidateRecord] = []
-    for offer in product_context["offers"]:
-        try:
-            raw_candidates, _, _ = fetch_page_candidates(session, offer["product_url"])
-        except Exception:
-            continue
-        for item in raw_candidates:
-            candidate = CandidateRecord(
-                product_id=product_context["product_id"],
-                ean=product_context["ean"],
-                shop_id=offer["shop_id"],
-                shop_domain=offer["shop_domain"],
-                shop_name=offer["shop_name"],
-                product_url=offer["product_url"],
-                image_url=normalize_text(item.get("image_url")),
-                source_type=normalize_text(item.get("source_type")) or "unknown",
-                source_rank=0,
-                is_primary=bool(item.get("is_primary")),
-                mime_type=None,
-                width=item.get("width"),
-                height=item.get("height"),
+            candidate.source_rank = rank_candidate(
+                candidate,
+                recency_reference=row[15],
             )
-            candidate.source_rank = rank_candidate(candidate, recency_reference=offer["last_seen_at"])
-            discovered.append(candidate)
-
-    if not discovered:
-        return []
-
-    columns, url_columns, _ = get_candidate_table_profile(conn)
-    with conn.cursor() as cur:
-        for candidate in discovered:
-            existing = find_existing_candidate(cur, candidate.product_id, candidate.image_url, url_columns, columns)
-            if existing is None:
-                insert_candidate_row(cur, build_candidate_insert_payload(candidate, columns))
-            else:
-                update_candidate_row(cur, existing["id"], candidate, existing, columns)
-    return discovered
-
-
-def mark_candidate_result(conn, product_id: str, image_url: str, *, status: str, mime_type: str | None, width: int | None, height: int | None, error: str | None = None) -> None:
-    columns, url_columns, _ = get_candidate_table_profile(conn)
-    payload: dict[str, Any] = {}
-    if "candidate_status" in columns:
-        payload["candidate_status"] = status
-    if "mime_type" in columns and mime_type:
-        payload["mime_type"] = mime_type
-    if "width" in columns and width is not None:
-        payload["width"] = width
-    if "height" in columns and height is not None:
-        payload["height"] = height
-    if "last_checked_at" in columns:
-        payload["last_checked_at"] = utc_now()
-    if "last_error_message" in columns:
-        payload["last_error_message"] = error
-    if "updated_at" in columns:
-        payload["updated_at"] = utc_now()
-    if not payload:
-        return
-    predicates = " or ".join(f"{column} = %s" for column in url_columns)
-    with conn.cursor() as cur:
-        assignments = ", ".join(f"{column} = %s" for column in payload)
-        cur.execute(
-            f"update public.product_cover_candidates set {assignments} where product_id = %s and ({predicates})",
-            [*payload.values(), product_id, *([image_url] * len(url_columns))],
+        choices.append(
+            CandidateChoice(
+                candidate_id=str(row[0]),
+                candidate=candidate,
+                candidate_status=normalize_text(row[14]),
+            )
         )
+    return choices
 
 
-def build_product_update_statement(product_columns: set[str], payload: dict[str, Any]) -> tuple[str, list[Any]]:
-    assignments: list[str] = []
-    values: list[Any] = []
-    ordered = [
-        ("cover_storage_path", payload.get("cover_storage_path")),
-        ("cover_source", payload.get("cover_source")),
-        ("cover_source_url", payload.get("cover_source_url")),
-        ("cover_status", payload.get("cover_status")),
-        ("cover_confidence", payload.get("cover_confidence")),
-        ("cover_last_attempt_at", payload.get("cover_last_attempt_at")),
-        ("cover_source_shop_id", payload.get("cover_source_shop_id")),
-        ("cover_width", payload.get("cover_width")),
-        ("cover_height", payload.get("cover_height")),
-        ("cover_url", payload.get("cover_url")),
-    ]
-    for column, value in ordered:
-        if column in product_columns:
-            assignments.append(f"{column} = %s")
-            values.append(value)
-    if "updated_at" in product_columns:
-        assignments.append("updated_at = now()")
-    if not assignments:
-        raise CoverPipelineError("Tabel public.products bevat geen bruikbare cover-kolommen.")
-    return ", ".join(assignments), values
+def _metadata_mime_type(metadata: dict[str, Any]) -> str | None:
+    value = normalize_text(
+        metadata.get("mimetype")
+        or metadata.get("contentType")
+        or metadata.get("content_type")
+    ).lower()
+    return value or None
 
 
-def publish_cover(conn, product_context: dict[str, Any], candidate: CandidateRecord, session) -> dict[str, Any]:
-    _, _, bucket, prefix = get_supabase_credentials()
-    product_columns = get_table_columns(conn, "products")
+def _metadata_byte_size(metadata: dict[str, Any]) -> int | None:
+    value = metadata.get("size")
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
-    binary, original_mime_type = fetch_binary(session, candidate.image_url)
-    prepared = prepare_image_for_storage(binary, original_mime_type=original_mime_type)
-    remote_path = build_storage_path(prefix, product_context["ean"], prepared.sha256, prepared.extension)
-    public_url = upload_bytes_to_storage(remote_path, prepared)
 
-    update_payload = {
-        "cover_storage_path": remote_path,
-        "cover_source": f"shop:{candidate.shop_domain}:{candidate.source_type}",
-        "cover_source_url": candidate.image_url,
-        "cover_status": "published",
-        "cover_confidence": min(100, max(0, candidate.source_rank)),
-        "cover_last_attempt_at": utc_now(),
-        "cover_source_shop_id": candidate.shop_id,
-        "cover_width": prepared.width,
-        "cover_height": prepared.height,
-        "cover_url": public_url,
-    }
-    assignments_sql, values = build_product_update_statement(product_columns, update_payload)
+def preflight_local_object(
+    remote_path: str,
+) -> LocalObject | None:
+    normalized_path = normalize_text(remote_path).strip("/")
+    if not normalized_path:
+        return None
 
-    with conn.cursor() as cur:
-        cur.execute(
-            f"update public.products set {assignments_sql} where id = %s",
-            [*values, product_context["product_id"]],
-        )
-        cur.execute(
-            """
-            update public.product_cover_queue
-               set status = 'published',
-                   attempt_count = coalesce(attempt_count, 0) + 1,
-                   last_completed_at = now(),
-                   last_error_code = null,
-                   last_error_message = null,
-                   claimed_at = null,
-                   claimed_by = null,
-                   next_attempt_at = null,
-                   updated_at = now()
-             where product_id = %s
-            """,
-            (product_context["product_id"],),
-        )
-    mark_candidate_result(
-        conn,
-        product_context["product_id"],
-        candidate.image_url,
-        status="published",
-        mime_type=prepared.mime_type,
-        width=prepared.width,
-        height=prepared.height,
-        error=None,
+    supabase_url, bucket, bucket_api = get_storage_bucket_api()
+    state = inspect_storage_object(
+        normalized_path,
+        bucket_api=bucket_api,
     )
-    return {
-        "bucket": bucket,
-        "remote_path": remote_path,
-        "public_url": public_url,
-        "mime_type": prepared.mime_type,
-        "width": prepared.width,
-        "height": prepared.height,
-        "sha256": prepared.sha256,
-    }
+    if not state.exists:
+        return None
+
+    mime_type = _metadata_mime_type(state.metadata)
+    if mime_type and mime_type not in {
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+    }:
+        return None
+
+    return LocalObject(
+        remote_path=state.remote_path,
+        public_url=build_public_storage_url(
+            supabase_url,
+            bucket,
+            state.remote_path,
+        ),
+        mime_type=mime_type,
+        byte_size=_metadata_byte_size(state.metadata),
+    )
 
 
-def mark_job_failure(conn, product_id: str, *, error_code: str, error_message: str, permanent: bool) -> None:
-    status = "failed" if permanent else "retry_later"
+def candidate_for_reused_object(
+    choices: list[CandidateChoice],
+) -> CandidateChoice | None:
+    return choices[0] if choices else None
+
+
+def publish_database_state(
+    conn,
+    *,
+    job: CoverJob,
+    product: ProductState,
+    selected: CandidateChoice | None,
+    remote_path: str,
+    public_url: str,
+    source_url: str,
+    source_shop_id: str | None,
+    sha256: str | None,
+    mime_type: str | None,
+    byte_size: int | None,
+    width: int | None,
+    height: int | None,
+    worker_id: str,
+) -> None:
+    confidence = (
+        min(100, max(0, selected.candidate.source_rank))
+        if selected is not None
+        else None
+    )
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            update public.product_cover_candidates
+            set
+                is_selected = false,
+                candidate_status = case
+                    when candidate_status = 'published'
+                        then 'accepted'
+                    else candidate_status
+                end,
+                updated_at = now()
+            where product_id = %s
+              and is_selected is true
+            """,
+            (product.product_id,),
+        )
+
+        if selected is not None:
+            cur.execute(
+                """
+                update public.product_cover_candidates
+                set
+                    is_selected = true,
+                    candidate_status = 'published',
+                    source_type = %s,
+                    source_rank = %s,
+                    mime_type = coalesce(%s, mime_type),
+                    width = coalesce(%s, width),
+                    height = coalesce(%s, height),
+                    byte_size = coalesce(%s, byte_size),
+                    sha256 = coalesce(%s, sha256),
+                    last_checked_at = now(),
+                    last_http_status = 200,
+                    last_error_code = null,
+                    last_error_message = null,
+                    updated_at = now()
+                where id = %s
+                  and product_id = %s
+                """,
+                (
+                    selected.candidate.source_type,
+                    selected.candidate.source_rank,
+                    mime_type,
+                    width,
+                    height,
+                    byte_size,
+                    sha256,
+                    selected.candidate_id,
+                    product.product_id,
+                ),
+            )
+            if cur.rowcount != 1:
+                raise CoverPipelineError(
+                    "Geselecteerde kandidaat kon niet exact worden bijgewerkt."
+                )
+
+        cur.execute(
+            """
+            update public.products
+            set
+                cover_url = %s,
+                cover_storage_path = %s,
+                cover_source = 'central-cover-worker',
+                cover_source_url = nullif(%s, ''),
+                cover_source_shop_id = %s,
+                cover_status = 'ready',
+                cover_confidence = %s,
+                cover_sha256 = nullif(%s, ''),
+                cover_mime_type = nullif(%s, ''),
+                cover_byte_size = %s,
+                cover_width = %s,
+                cover_height = %s,
+                cover_needs_refresh = false,
+                cover_fail_count = 0,
+                cover_last_success_at = now(),
+                cover_last_attempt_at = now(),
+                cover_locked_at = null,
+                cover_locked_by = null,
+                cover_error_code = null,
+                cover_error_message = null,
+                updated_at = now()
+            where id = %s
+              and cover_status <> 'blocked'
+              and cover_locked_by = %s
+            """,
+            (
+                public_url,
+                remote_path,
+                source_url,
+                source_shop_id,
+                confidence,
+                sha256 or "",
+                mime_type or "",
+                byte_size,
+                width,
+                height,
+                product.product_id,
+                worker_id,
+            ),
+        )
+        if cur.rowcount != 1:
+            raise CoverPipelineError(
+                "Product werd tijdens publicatie geblokkeerd of ontbreekt."
+            )
+
+        if selected is not None:
+            cur.execute(
+                """
+                select count(*)
+                from public.product_cover_candidates
+                where product_id = %s
+                  and is_selected is true
+                  and candidate_status = 'published'
+                """,
+                (product.product_id,),
+            )
+            selected_count = int(cur.fetchone()[0] or 0)
+            if selected_count != 1:
+                raise CoverPipelineError(
+                    "Publicatie resulteerde niet in exact één "
+                    "geselecteerde kandidaat."
+                )
+
+        cur.execute(
+            """
+            update public.product_cover_queue
+            set
+                status = 'published',
+                claimed_by = null,
+                claimed_at = null,
+                next_attempt_at = null,
+                last_completed_at = now(),
+                last_error_code = null,
+                last_error_message = null,
+                updated_at = now()
+            where id = %s
+              and product_id = %s
+              and status = 'processing'
+              and claimed_by = %s
+            """,
+            (job.queue_id, product.product_id, worker_id),
+        )
+        if cur.rowcount != 1:
+            raise CoverPipelineError(
+                "Queueclaim is tijdens publicatie verloren gegaan."
+            )
+    conn.commit()
+
+
+def mark_candidate_failed(
+    conn,
+    *,
+    selected: CandidateChoice,
+    error_code: str,
+    error_message: str,
+    preserve_selected_publication: bool = False,
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            update public.product_cover_candidates
+            set
+                candidate_status = case
+                    when %s and is_selected is true
+                        then 'published'
+                    else 'failed'
+                end,
+                is_selected = case
+                    when %s and is_selected is true
+                        then true
+                    else false
+                end,
+                last_checked_at = now(),
+                last_error_code = %s,
+                last_error_message = %s,
+                updated_at = now()
+            where id = %s
+            """,
+            (
+                preserve_selected_publication,
+                preserve_selected_publication,
+                error_code,
+                error_message[:2000],
+                selected.candidate_id,
+            ),
+        )
+    conn.commit()
+
+
+def finish_job_without_publication(
+    conn,
+    *,
+    job: CoverJob,
+    product: ProductState | None,
+    worker_id: str,
+    status: str,
+    error_code: str,
+    error_message: str,
+    max_attempts: int,
+    preserve_local_cover: bool = False,
+) -> str:
+    if status not in {"retry_later", "review", "failed"}:
+        raise CoverPipelineError(
+            f"Ongeldige eindstatus zonder publicatie: {status}"
+        )
+
+    final_status = status
+    if (
+        status == "retry_later"
+        and job.attempt_count >= max_attempts
+    ):
+        final_status = "failed"
+
+    next_attempt_at = (
+        next_retry_timestamp()
+        if final_status == "retry_later"
+        else None
+    )
+    product_status = (
+        "ready"
+        if preserve_local_cover
+        else (
+            "queued"
+            if final_status == "retry_later"
+            else final_status
+        )
+    )
+
     with conn.cursor() as cur:
         cur.execute(
             """
             update public.product_cover_queue
-               set status = %s,
-                   attempt_count = coalesce(attempt_count, 0) + 1,
-                   last_error_code = %s,
-                   last_error_message = %s,
-                   claimed_at = null,
-                   claimed_by = null,
-                   next_attempt_at = %s,
-                   updated_at = now()
-             where product_id = %s
+            set
+                status = %s,
+                claimed_by = null,
+                claimed_at = null,
+                next_attempt_at = %s,
+                last_completed_at = case
+                    when %s in ('review', 'failed') then now()
+                    else last_completed_at
+                end,
+                last_error_code = %s,
+                last_error_message = %s,
+                updated_at = now()
+            where id = %s
+              and status = 'processing'
+              and claimed_by = %s
             """,
-            (status, error_code, error_message[:2000], None if permanent else next_retry_timestamp(), product_id),
+            (
+                final_status,
+                next_attempt_at,
+                final_status,
+                error_code,
+                error_message[:2000],
+                job.queue_id,
+                worker_id,
+            ),
         )
+        if cur.rowcount != 1:
+            raise CoverPipelineError(
+                "Queueclaim kon niet gecontroleerd worden afgerond."
+            )
+
+        if product is not None:
+            cur.execute(
+                """
+                update public.products
+                set
+                    cover_status = case
+                        when cover_status = 'blocked'
+                            then 'blocked'
+                        else %s
+                    end,
+                    cover_needs_refresh = case
+                        when %s then true
+                        else cover_needs_refresh
+                    end,
+                    cover_fail_count = coalesce(cover_fail_count, 0) + 1,
+                    cover_last_attempt_at = now(),
+                    cover_locked_at = null,
+                    cover_locked_by = null,
+                    cover_error_code = %s,
+                    cover_error_message = %s,
+                    updated_at = now()
+                where id = %s
+                """,
+                (
+                    product_status,
+                    preserve_local_cover,
+                    error_code,
+                    error_message[:2000],
+                    product.product_id,
+                ),
+            )
+    conn.commit()
+    return final_status
+
+
+def reconcile_local_products(
+    conn,
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select
+                id,
+                ean,
+                cover_storage_path,
+                cover_url,
+                cover_status,
+                cover_source_url
+            from public.products
+            where cover_status <> 'blocked'
+              and nullif(btrim(cover_storage_path), '') is not null
+              and cover_needs_refresh is false
+              and (
+                    nullif(btrim(cover_url), '') is null
+                    or cover_status <> 'ready'
+                    or cover_url not like (
+                        '%/storage/v1/object/public/product-covers/'
+                        || cover_storage_path
+                    )
+              )
+            order by id
+            limit %s
+            """,
+            (limit,),
+        )
+        rows = cur.fetchall()
+
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        product_id = str(row[0])
+        remote_path = normalize_text(row[2])
+        local = preflight_local_object(remote_path)
+        if local is None:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    update public.products
+                    set
+                        cover_status = 'review',
+                        cover_needs_refresh = true,
+                        cover_error_code = 'local_object_missing',
+                        cover_error_message = %s,
+                        updated_at = now()
+                    where id = %s
+                      and cover_status <> 'blocked'
+                    """,
+                    (
+                        f"Storage-object ontbreekt op exact pad {remote_path}.",
+                        product_id,
+                    ),
+                )
+            conn.commit()
+            results.append(
+                {
+                    "product_id": product_id,
+                    "status": "local_object_missing",
+                    "storage_path": remote_path,
+                }
+            )
+            continue
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                update public.products
+                set
+                    cover_url = %s,
+                    cover_status = 'ready',
+                    cover_mime_type = coalesce(
+                        nullif(cover_mime_type, ''),
+                        %s
+                    ),
+                    cover_byte_size = coalesce(
+                        cover_byte_size,
+                        %s
+                    ),
+                    cover_needs_refresh = false,
+                    cover_last_success_at = coalesce(
+                        cover_last_success_at,
+                        now()
+                    ),
+                    cover_locked_at = null,
+                    cover_locked_by = null,
+                    cover_error_code = null,
+                    cover_error_message = null,
+                    updated_at = now()
+                where id = %s
+                  and cover_status <> 'blocked'
+                """,
+                (
+                    local.public_url,
+                    local.mime_type,
+                    local.byte_size,
+                    product_id,
+                ),
+            )
+            cur.execute(
+                """
+                update public.product_cover_queue
+                set
+                    status = 'published',
+                    claimed_by = null,
+                    claimed_at = null,
+                    next_attempt_at = null,
+                    last_completed_at = coalesce(
+                        last_completed_at,
+                        now()
+                    ),
+                    last_error_code = null,
+                    last_error_message = null,
+                    updated_at = now()
+                where product_id = %s
+                  and status <> 'processing'
+                """,
+                (product_id,),
+            )
+        conn.commit()
+        results.append(
+            {
+                "product_id": product_id,
+                "status": "reused_local_cover",
+                "storage_path": local.remote_path,
+                "public_url": local.public_url,
+            }
+        )
+    return results
+
+
+
+def process_claimed_job(
+    conn,
+    *,
+    job: CoverJob,
+    worker_id: str,
+    session,
+    retry_failed: bool,
+    max_attempts: int,
+) -> dict[str, Any]:
+    product: ProductState | None = None
+    is_local_repair = job.source_reason == "local_repair"
+    existing: LocalObject | None = None
+
+    try:
+        product = load_product_state(conn, job.product_id)
+        if product.cover_status == "blocked":
+            final_status = finish_job_without_publication(
+                conn,
+                job=job,
+                product=product,
+                worker_id=worker_id,
+                status="review",
+                error_code="blocked_after_claim",
+                error_message=(
+                    "Product werd na claim geblokkeerd; "
+                    "geen download uitgevoerd."
+                ),
+                max_attempts=max_attempts,
+                preserve_local_cover=bool(
+                    product.cover_storage_path
+                ),
+            )
+            return {
+                "queue_id": job.queue_id,
+                "product_id": job.product_id,
+                "status": final_status,
+                "error_code": "blocked_after_claim",
+            }
+
+        if not product.ean:
+            final_status = finish_job_without_publication(
+                conn,
+                job=job,
+                product=product,
+                worker_id=worker_id,
+                status="review",
+                error_code="invalid_ean",
+                error_message="Product heeft geen geldige EAN.",
+                max_attempts=max_attempts,
+                preserve_local_cover=bool(
+                    product.cover_storage_path
+                ),
+            )
+            return {
+                "queue_id": job.queue_id,
+                "product_id": job.product_id,
+                "status": final_status,
+                "error_code": "invalid_ean",
+            }
+
+        choices = load_candidates(
+            conn,
+            product,
+            retry_failed=retry_failed,
+        )
+        target_path = (
+            product.cover_storage_path
+            or build_product_storage_path(product.ean)
+        )
+        existing = preflight_local_object(target_path)
+        active_local_cover = bool(
+            product.cover_storage_path and existing is not None
+        )
+
+        selected_for_reuse = candidate_for_reused_object(choices)
+        reusable_metadata_complete = bool(
+            product.cover_sha256
+            and (product.cover_mime_type or (
+                existing.mime_type if existing else None
+            ))
+            and (product.cover_byte_size or (
+                existing.byte_size if existing else None
+            ))
+        )
+        if (
+            existing is not None
+            and not is_local_repair
+            and selected_for_reuse is not None
+            and reusable_metadata_complete
+        ):
+            publish_database_state(
+                conn,
+                job=job,
+                product=product,
+                selected=selected_for_reuse,
+                remote_path=existing.remote_path,
+                public_url=existing.public_url,
+                source_url=selected_for_reuse.candidate.image_url,
+                source_shop_id=(
+                    selected_for_reuse.candidate.shop_id
+                ),
+                sha256=product.cover_sha256,
+                mime_type=(
+                    product.cover_mime_type
+                    or existing.mime_type
+                ),
+                byte_size=(
+                    product.cover_byte_size
+                    or existing.byte_size
+                ),
+                width=product.cover_width,
+                height=product.cover_height,
+                worker_id=worker_id,
+            )
+            return {
+                "queue_id": job.queue_id,
+                "product_id": job.product_id,
+                "status": "reused_local_cover",
+                "storage_path": existing.remote_path,
+                "selected_candidate_id": (
+                    selected_for_reuse.candidate_id
+                ),
+                "downloads": 0,
+                "uploads": 0,
+            }
+
+        if not choices:
+            final_status = finish_job_without_publication(
+                conn,
+                job=job,
+                product=product,
+                worker_id=worker_id,
+                status="review",
+                error_code=(
+                    "local_repair_without_candidates"
+                    if is_local_repair
+                    else "no_candidates"
+                ),
+                error_message=(
+                    "Geen bruikbare HTTP(S)-coverkandidaten beschikbaar."
+                ),
+                max_attempts=max_attempts,
+                preserve_local_cover=active_local_cover,
+            )
+            return {
+                "queue_id": job.queue_id,
+                "product_id": job.product_id,
+                "status": final_status,
+                "error_code": (
+                    "local_repair_without_candidates"
+                    if is_local_repair
+                    else "no_candidates"
+                ),
+                "preserved_existing_object": active_local_cover,
+            }
+
+        candidate_errors: list[dict[str, str]] = []
+        for selected in choices:
+            try:
+                downloaded = download_binary(
+                    session,
+                    selected.candidate.image_url,
+                )
+                prepared = prepare_image_for_storage(
+                    downloaded.content,
+                    original_mime_type=downloaded.mime_type,
+                )
+                if len(prepared.output_bytes) > MAX_STORAGE_OBJECT_BYTES:
+                    raise CoverPipelineError(
+                        "Voorbereide WebP overschrijdt de Storage-limiet "
+                        f"van {MAX_STORAGE_OBJECT_BYTES} bytes."
+                    )
+                receipt = upsert_bytes_to_storage(
+                    target_path,
+                    prepared,
+                )
+                try:
+                    publish_database_state(
+                        conn,
+                        job=job,
+                        product=product,
+                        selected=selected,
+                        remote_path=receipt.remote_path,
+                        public_url=receipt.public_url,
+                        source_url=selected.candidate.image_url,
+                        source_shop_id=selected.candidate.shop_id,
+                        sha256=prepared.sha256,
+                        mime_type=prepared.mime_type,
+                        byte_size=len(prepared.output_bytes),
+                        width=prepared.width,
+                        height=prepared.height,
+                        worker_id=worker_id,
+                    )
+                except Exception:
+                    conn.rollback()
+                    compensate_storage_upload(receipt)
+                    raise
+
+                return {
+                    "queue_id": job.queue_id,
+                    "product_id": job.product_id,
+                    "status": (
+                        "repaired_local_cover"
+                        if is_local_repair
+                        else "published"
+                    ),
+                    "selected_candidate_id": selected.candidate_id,
+                    "selected_candidate": asdict(
+                        selected.candidate
+                    ),
+                    "storage_path": receipt.remote_path,
+                    "public_url": receipt.public_url,
+                    "sha256": prepared.sha256,
+                    "mime_type": prepared.mime_type,
+                    "byte_size": len(prepared.output_bytes),
+                    "width": prepared.width,
+                    "height": prepared.height,
+                    "downloads": 0 if downloaded.reused else 1,
+                    "uploads": 1,
+                    "replaced_existing_object": (
+                        receipt.existed_before
+                    ),
+                }
+            except Exception as exc:
+                conn.rollback()
+                error_code = type(exc).__name__.lower()
+                error_message = (
+                    normalize_text(str(exc))
+                    or type(exc).__name__
+                )
+                try:
+                    mark_candidate_failed(
+                        conn,
+                        selected=selected,
+                        error_code=error_code,
+                        error_message=error_message,
+                        preserve_selected_publication=active_local_cover,
+                    )
+                except Exception:
+                    conn.rollback()
+                candidate_errors.append(
+                    {
+                        "candidate_id": selected.candidate_id,
+                        "image_url": selected.candidate.image_url,
+                        "error_code": error_code,
+                        "error_message": error_message,
+                    }
+                )
+
+        final_status = finish_job_without_publication(
+            conn,
+            job=job,
+            product=product,
+            worker_id=worker_id,
+            status="retry_later",
+            error_code="all_candidates_failed",
+            error_message=(
+                f"Alle {len(candidate_errors)} coverkandidaten faalden."
+            ),
+            max_attempts=max_attempts,
+            preserve_local_cover=active_local_cover,
+        )
+        return {
+            "queue_id": job.queue_id,
+            "product_id": job.product_id,
+            "status": final_status,
+            "error_code": "all_candidates_failed",
+            "candidate_errors": candidate_errors,
+            "preserved_existing_object": active_local_cover,
+        }
+
+    except Exception as exc:
+        conn.rollback()
+        error_code = type(exc).__name__.lower()
+        error_message = (
+            normalize_text(str(exc)) or type(exc).__name__
+        )
+        try:
+            final_status = finish_job_without_publication(
+                conn,
+                job=job,
+                product=product,
+                worker_id=worker_id,
+                status="retry_later",
+                error_code=error_code,
+                error_message=error_message,
+                max_attempts=max_attempts,
+                preserve_local_cover=active_local_cover,
+            )
+        except Exception:
+            conn.rollback()
+            raise
+
+        return {
+            "queue_id": job.queue_id,
+            "product_id": job.product_id,
+            "status": final_status,
+            "error_code": error_code,
+            "error_message": error_message,
+            "preserved_existing_object": active_local_cover,
+        }
+
+
+def write_summary(
+    path: Path,
+    summary: dict[str, Any],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        serialize_json(summary) + "\n",
+        encoding="utf-8",
+    )
 
 
 def main() -> None:
     args = parse_args()
-    worker_id = normalize_text(args.worker_id) or f"cover-worker-{utc_now().strftime('%Y%m%dT%H%M%SZ')}"
+    validate_args(args)
+    worker_id = normalize_text(args.worker_id) or default_worker_id()
     output_path = Path(args.output_json)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     ensure_runtime_directories()
 
     summary: dict[str, Any] = {
         "started_at": utc_now().isoformat(),
-        "mode": args.mode,
-        "limit": args.limit,
         "worker_id": worker_id,
-        "claimed": 0,
-        "published": 0,
-        "failed": 0,
-        "retried_later": 0,
+        "mode": args.mode,
+        "dry_run": bool(args.dry_run),
+        "limit": args.limit,
+        "max_attempts": args.max_attempts,
+        "stale_after_minutes": args.stale_after_minutes,
+        "reconcile_limit": args.reconcile_limit,
+        "metrics": {
+            "stale_claims_found": 0,
+            "stale_claims_recovered": 0,
+            "failed_jobs_requeued": 0,
+            "local_products_reconciled": 0,
+            "local_objects_missing": 0,
+            "claims": 0,
+            "local_repair_claims": 0,
+            "published": 0,
+            "repaired_local_cover": 0,
+            "reused_local_cover": 0,
+            "retry_later": 0,
+            "review": 0,
+            "failed": 0,
+            "downloads": 0,
+            "uploads": 0,
+        },
+        "preview": [],
+        "local_preview": [],
+        "reconciliation": [],
         "jobs": [],
     }
 
     conn = connect_db()
     conn.autocommit = False
-    session = make_session()
     try:
-        jobs = claim_jobs(conn, args.mode, args.limit, worker_id)
-        summary["claimed"] = len(jobs)
-        conn.commit()
+        require_schema(conn)
 
-        for job in jobs:
-            job_result: dict[str, Any] = {**job, "status": "processing", "attempts": []}
-            try:
-                product_context = load_product_context(conn, job["product_id"])
-                candidates = load_candidates(conn, product_context)
-                if not candidates:
-                    candidates = discover_candidates_on_the_fly(conn, product_context, session)
-                    conn.commit()
-                if not candidates:
-                    raise CoverPipelineError("Geen bruikbare cover candidates gevonden voor product.")
+        if args.dry_run:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "set transaction read only"
+                )
+            summary["metrics"]["stale_claims_found"] = count_stale_claims(
+                conn,
+                stale_after_minutes=args.stale_after_minutes,
+            )
+            summary["local_preview"] = preview_local_actions(
+                conn,
+                mode=args.mode,
+                limit=max(args.limit, args.reconcile_limit),
+                max_attempts=args.max_attempts,
+            )
+            summary["preview"] = preview_jobs(
+                conn,
+                mode=args.mode,
+                limit=args.limit,
+            )
+            conn.rollback()
+        else:
+            summary["metrics"]["stale_claims_recovered"] = (
+                recover_stale_claims(
+                    conn,
+                    stale_after_minutes=args.stale_after_minutes,
+                )
+            )
+            if args.mode == "retry-failed":
+                summary["metrics"]["failed_jobs_requeued"] = (
+                    requeue_failed_jobs(
+                        conn,
+                        limit=args.limit,
+                    )
+                )
 
-                ranked_candidates = sorted(candidates, key=lambda item: item.source_rank, reverse=True)
-                published_payload = None
-                last_error = None
-                for candidate in ranked_candidates:
-                    try:
-                        published_payload = publish_cover(conn, product_context, candidate, session)
-                        conn.commit()
-                        job_result["status"] = "published"
-                        job_result["published_candidate"] = asdict(candidate)
-                        job_result["asset"] = published_payload
-                        summary["published"] += 1
-                        break
-                    except Exception as exc:
-                        conn.rollback()
-                        last_error = str(exc)
-                        try:
-                            mark_candidate_result(
-                                conn,
-                                product_context["product_id"],
-                                candidate.image_url,
-                                status="failed",
-                                mime_type=None,
-                                width=None,
-                                height=None,
-                                error=last_error,
-                            )
-                            conn.commit()
-                        except Exception:
-                            conn.rollback()
-                        job_result["attempts"].append(
-                            {
-                                "candidate": asdict(candidate),
-                                "error": last_error,
-                            }
-                        )
-                if published_payload is None:
-                    mark_job_failure(
+            reconciliation = reconcile_local_products(
+                conn,
+                limit=args.reconcile_limit,
+            )
+            summary["reconciliation"] = reconciliation
+            summary["metrics"]["local_products_reconciled"] = sum(
+                item["status"] == "reused_local_cover"
+                for item in reconciliation
+            )
+            summary["metrics"]["local_objects_missing"] = sum(
+                item["status"] == "local_object_missing"
+                for item in reconciliation
+            )
+
+            session = make_session()
+            for _ in range(args.limit):
+                job = claim_one_local_repair(
+                    conn,
+                    worker_id=worker_id,
+                    stale_after_minutes=args.stale_after_minutes,
+                    max_attempts=args.max_attempts,
+                    retry_failed=(args.mode == "retry-failed"),
+                )
+                if job is not None:
+                    summary["metrics"]["local_repair_claims"] += 1
+                else:
+                    job = claim_one_job(
                         conn,
-                        product_context["product_id"],
-                        error_code="no_candidate_succeeded",
-                        error_message=last_error or "Geen candidate kon gepubliceerd worden.",
-                        permanent=False,
+                        worker_id=worker_id,
                     )
-                    conn.commit()
-                    job_result["status"] = "retry_later"
-                    summary["retried_later"] += 1
-            except Exception as exc:
-                conn.rollback()
-                error_message = str(exc)
-                try:
-                    mark_job_failure(
-                        conn,
-                        job["product_id"],
-                        error_code="job_failure",
-                        error_message=error_message,
-                        permanent=False,
-                    )
-                    conn.commit()
-                except Exception:
-                    conn.rollback()
-                job_result["status"] = "retry_later"
-                job_result["fatal_error"] = error_message
-                summary["retried_later"] += 1
-            summary["jobs"].append(job_result)
+                if job is None:
+                    break
+
+                summary["metrics"]["claims"] += 1
+                result = process_claimed_job(
+                    conn,
+                    job=job,
+                    worker_id=worker_id,
+                    session=session,
+                    retry_failed=(args.mode == "retry-failed"),
+                    max_attempts=args.max_attempts,
+                )
+                summary["jobs"].append(result)
+
+                status = normalize_text(result.get("status"))
+                if status in summary["metrics"]:
+                    summary["metrics"][status] += 1
+                summary["metrics"]["downloads"] += int(
+                    result.get("downloads") or 0
+                )
+                summary["metrics"]["uploads"] += int(
+                    result.get("uploads") or 0
+                )
+
     except Exception as exc:
         conn.rollback()
-        summary["fatal_error"] = str(exc)
-        output_path.write_text(serialize_json(summary), encoding="utf-8")
+        summary["failed_at"] = utc_now().isoformat()
+        summary["fatal_error"] = normalize_text(str(exc))
+        write_summary(output_path, summary)
         raise
     finally:
         conn.close()
 
     summary["finished_at"] = utc_now().isoformat()
-    output_path.write_text(serialize_json(summary), encoding="utf-8")
+    write_summary(output_path, summary)
     log(
-        f"[DONE] cover worker klaar | claimed={summary['claimed']} | published={summary['published']} | retry_later={summary['retried_later']}"
+        "[DONE] cover worker | "
+        f"dry_run={args.dry_run} | "
+        f"claims={summary['metrics']['claims']} | "
+        f"published={summary['metrics']['published']} | "
+        f"reused={summary['metrics']['reused_local_cover']} | "
+        f"downloads={summary['metrics']['downloads']} | "
+        f"uploads={summary['metrics']['uploads']}"
     )
 
 
