@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import { CoverImage } from "@/components/cover-image";
+
 import {
   getOfferDisplayPrice,
   getVisibleOfferSummary,
@@ -24,23 +26,17 @@ export function ProductResultCard({ item }: ProductResultCardProps) {
   const visibleShopCount = item.shops.length;
   const effectiveOfferCount = Math.max(item.foundIn ?? 0, visibleShopCount);
   const ctaLabel = formatCtaLabel(effectiveOfferCount);
-  const coverSrc =
-    item.coverUrl ?? "/placeholders/vinylofy-cover-placeholder-white2.png";
-  const hasRealCover = Boolean(item.coverUrl);
 
   return (
     <article className="rounded-3xl border border-neutral-200 bg-white p-4 shadow-sm md:p-5">
       <div className="grid gap-3 md:grid-cols-[96px_minmax(0,1fr)] md:gap-4">
         <div className="flex items-start">
           <div className="flex h-[96px] w-[96px] items-center justify-center overflow-hidden rounded-2xl bg-neutral-50">
-            <img
-              src={coverSrc}
+            <CoverImage
+              src={item.coverUrl}
+              storagePath={item.coverStoragePath}
               alt={`${item.artist} - ${item.title}`}
-              className={
-                hasRealCover
-                  ? "h-[96px] w-[96px] object-cover"
-                  : "h-[82px] w-[82px] object-contain"
-              }
+              className="h-[96px] w-[96px] object-cover data-[cover-fallback=true]:h-[82px] data-[cover-fallback=true]:w-[82px] data-[cover-fallback=true]:object-contain"
             />
           </div>
         </div>

@@ -10,6 +10,7 @@ type ProductRow = {
   title: string;
   format_label: string | null;
   cover_url: string | null;
+  cover_storage_path: string | null;
   created_at: string;
 };
 
@@ -79,6 +80,7 @@ export type SearchResultItem = {
   title: string;
   formatLabel: string | null;
   coverUrl: string | null;
+  coverStoragePath: string | null;
   lowestPrice: number | null;
   foundIn: number;
   totalShops: number;
@@ -536,7 +538,7 @@ export async function searchProducts(
   const normalizedDigits = normalizeGtinLookup(normalizedQuery);
   const candidates = new Map<string, ProductRow>();
 
-  const baseSelect = "id, ean, gtin_normalized, artist, title, format_label, cover_url, created_at";
+  const baseSelect = "id, ean, gtin_normalized, artist, title, format_label, cover_url, cover_storage_path, created_at";
 
   async function collect(promise: PromiseLike<{ data: unknown; error: unknown }>) {
     const result = (await promise) as { data: unknown; error: unknown };
@@ -589,6 +591,7 @@ export async function searchProducts(
         title: product.title,
         formatLabel: product.format_label,
         coverUrl: product.cover_url,
+  coverStoragePath: product.cover_storage_path,
         lowestPrice,
         foundIn: freshShopCount,
         totalShops: totalShopCount,

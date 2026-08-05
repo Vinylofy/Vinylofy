@@ -22,6 +22,8 @@ WORKER = MAINTENANCE / "cover_worker.py"
 MB_WORKER = MAINTENANCE / "cover_mb_worker.py"
 COVER_URL = ROOT / "lib" / "cover-url.ts"
 COVER_IMAGE = ROOT / "components" / "cover-image.tsx"
+VINYLOFY_DATA = ROOT / "lib" / "vinylofy-data.ts"
+SEARCH_RESULT_CARD = ROOT / "components" / "search" / "product-result-card.tsx"
 
 
 def source(path: Path) -> str:
@@ -76,6 +78,8 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
             MB_WORKER,
             COVER_URL,
             COVER_IMAGE,
+            VINYLOFY_DATA,
+            SEARCH_RESULT_CARD,
             MIGRATION,
             ROLLBACK,
         ):
@@ -198,6 +202,38 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
             "is_selected",
         ):
             self.assertIn(token, text)
+
+    def test_search_results_use_central_storage_path(self) -> None:
+        data_text = source(VINYLOFY_DATA)
+        card_text = source(SEARCH_RESULT_CARD)
+
+        for token in (
+            "cover_storage_path: string | null;",
+            "coverStoragePath: string | null;",
+            (
+                "format_label, cover_url, cover_storage_path, "
+                "created_at"
+            ),
+            "coverStoragePath: product.cover_storage_path,",
+        ):
+            self.assertIn(token, data_text)
+
+        for token in (
+            'import { CoverImage } from "@/components/cover-image";',
+            "<CoverImage",
+            "src={item.coverUrl}",
+            "storagePath={item.coverStoragePath}",
+            "data-[cover-fallback=true]:object-contain",
+        ):
+            self.assertIn(token, card_text)
+
+        for forbidden in (
+            "<img",
+            "coverSrc",
+            "hasRealCover",
+            "/placeholders/vinylofy-cover-placeholder-white2.png",
+        ):
+            self.assertNotIn(forbidden, card_text)
 
     def test_frontend_cover_url_helper_is_strict(self) -> None:
         text = source(COVER_URL)
