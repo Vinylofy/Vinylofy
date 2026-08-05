@@ -96,6 +96,7 @@ export type ProductDetail = {
   title: string;
   formatLabel: string | null;
   coverUrl: string | null;
+  coverStoragePath: string | null;
   lowestPrice: number | null;
   freshShopCount: number;
   totalShopCount: number;
@@ -475,7 +476,7 @@ async function resolveProductRowByRouteKey(routeKey: unknown): Promise<ProductRo
   if (isUuidLike(key)) {
     const { data, error } = await supabase
       .from("products")
-      .select("id, ean, gtin_normalized, artist, title, format_label, cover_url, created_at")
+      .select("id, ean, gtin_normalized, artist, title, format_label, cover_url, cover_storage_path, created_at")
       .eq("id", key)
       .maybeSingle();
 
@@ -486,7 +487,7 @@ async function resolveProductRowByRouteKey(routeKey: unknown): Promise<ProductRo
   if (normalizedGtin) {
     const { data, error } = await supabase
       .from("products")
-      .select("id, ean, gtin_normalized, artist, title, format_label, cover_url, created_at")
+      .select("id, ean, gtin_normalized, artist, title, format_label, cover_url, cover_storage_path, created_at")
       .eq("gtin_normalized", normalizedGtin)
       .maybeSingle();
 
@@ -518,6 +519,7 @@ export async function getProductDetail(id: unknown): Promise<ProductDetail | nul
     title: product.title,
     formatLabel: product.format_label,
     coverUrl: product.cover_url,
+    coverStoragePath: product.cover_storage_path,
     lowestPrice,
     freshShopCount,
     totalShopCount,

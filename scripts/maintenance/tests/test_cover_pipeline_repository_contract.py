@@ -24,6 +24,7 @@ COVER_URL = ROOT / "lib" / "cover-url.ts"
 COVER_IMAGE = ROOT / "components" / "cover-image.tsx"
 VINYLOFY_DATA = ROOT / "lib" / "vinylofy-data.ts"
 SEARCH_RESULT_CARD = ROOT / "components" / "search" / "product-result-card.tsx"
+PRODUCT_SUMMARY_CARD = ROOT / "components" / "product" / "product-summary-card.tsx"
 
 
 def source(path: Path) -> str:
@@ -80,6 +81,7 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
             COVER_IMAGE,
             VINYLOFY_DATA,
             SEARCH_RESULT_CARD,
+            PRODUCT_SUMMARY_CARD,
             MIGRATION,
             ROLLBACK,
         ):
@@ -202,6 +204,38 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
             "is_selected",
         ):
             self.assertIn(token, text)
+
+    def test_product_detail_uses_central_storage_path(self) -> None:
+        data_text = source(VINYLOFY_DATA)
+        card_text = source(PRODUCT_SUMMARY_CARD)
+
+        for token in (
+            "coverStoragePath: string | null;",
+            (
+                "format_label, cover_url, cover_storage_path, "
+                "created_at"
+            ),
+            "coverStoragePath: product.cover_storage_path,",
+        ):
+            self.assertIn(token, data_text)
+
+        for token in (
+            'import { CoverImage } from "@/components/cover-image";',
+            "<CoverImage",
+            "src={product.coverUrl}",
+            "storagePath={product.coverStoragePath}",
+            "data-[cover-fallback=true]:h-[104px]",
+            "data-[cover-fallback=true]:object-contain",
+        ):
+            self.assertIn(token, card_text)
+
+        for forbidden in (
+            "<img",
+            "coverSrc",
+            "hasRealCover",
+            "/placeholders/vinylofy-cover-placeholder-white2.png",
+        ):
+            self.assertNotIn(forbidden, card_text)
 
     def test_search_results_use_central_storage_path(self) -> None:
         data_text = source(VINYLOFY_DATA)

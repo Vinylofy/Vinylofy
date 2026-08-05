@@ -1,3 +1,4 @@
+import { CoverImage } from "@/components/cover-image";
 import { formatEuro, type ProductDetail } from "@/lib/vinylofy-data";
 
 type ProductSummaryCardProps = {
@@ -5,22 +6,17 @@ type ProductSummaryCardProps = {
 };
 
 export function ProductSummaryCard({ product }: ProductSummaryCardProps) {
-  const coverSrc = product.coverUrl ?? "/placeholders/vinylofy-cover-placeholder-white2.png";
-  const hasRealCover = Boolean(product.coverUrl);
 
   return (
     <section className="rounded-xl border border-[rgba(230,126,34,0.16)] bg-white p-4 shadow-sm md:p-5">
       <div className="grid gap-4 md:grid-cols-[132px_minmax(0,1fr)] md:items-start">
         <div className="flex items-start justify-center md:justify-start">
           <div className="flex h-[132px] w-[132px] items-center justify-center overflow-hidden rounded-xl border border-[rgba(230,126,34,0.10)] bg-[#fffaf6] shadow-inner">
-            <img
-              src={coverSrc}
+            <CoverImage
+              src={product.coverUrl}
+              storagePath={product.coverStoragePath}
               alt={`${product.artist} - ${product.title}`}
-              className={
-                hasRealCover
-                  ? "h-[132px] w-[132px] object-cover"
-                  : "h-[104px] w-[104px] object-contain opacity-90"
-              }
+              className="h-[132px] w-[132px] object-cover data-[cover-fallback=true]:h-[104px] data-[cover-fallback=true]:w-[104px] data-[cover-fallback=true]:object-contain data-[cover-fallback=true]:opacity-90"
             />
           </div>
         </div>
