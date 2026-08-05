@@ -17,6 +17,10 @@ on:
         default: false
         type: boolean
 
+concurrency:
+  group: vinylofy-cover-pipeline
+  cancel-in-progress: false
+
 jobs:
   backfill:
     runs-on: ubuntu-latest
@@ -69,6 +73,19 @@ jobs:
             --mode publish \
             --limit "${{ github.event.inputs.publish_limit }}" \
             --output-json output/cover_pipeline/backfill_publish_summary.json
+
+      - name: Write run summary
+        if: always()
+        shell: bash
+        run: |
+          python scripts/maintenance/cover_workflow_summary.py \
+            --title "Cover Backfill" \
+            --status "${{ job.status }}" \
+            --summary-json \
+              "Candidate refresh=output/cover_pipeline/backfill_candidate_refresh_summary.json" \
+            --summary-json \
+              "Cover worker=output/cover_pipeline/backfill_publish_summary.json" \
+            >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload artifacts
         if: always()

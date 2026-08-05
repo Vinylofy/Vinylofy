@@ -19,6 +19,10 @@ on:
   schedule:
     - cron: "15 */6 * * *"
 
+concurrency:
+  group: vinylofy-cover-pipeline
+  cancel-in-progress: false
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
@@ -61,6 +65,17 @@ jobs:
             --max-offers-per-product "$OFFERS_INPUT" \
             $INCLUDE_COVERED \
             --output-json output/cover_pipeline/candidate_refresh_summary.json
+
+      - name: Write run summary
+        if: always()
+        shell: bash
+        run: |
+          python scripts/maintenance/cover_workflow_summary.py \
+            --title "Cover Candidate Refresh" \
+            --status "${{ job.status }}" \
+            --summary-json \
+              "Candidate refresh=output/cover_pipeline/candidate_refresh_summary.json" \
+            >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload artifacts
         if: always()
