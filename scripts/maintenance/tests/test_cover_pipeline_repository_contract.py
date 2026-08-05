@@ -20,6 +20,8 @@ COMMON = MAINTENANCE / "cover_common.py"
 REFRESH = MAINTENANCE / "cover_candidate_refresh.py"
 WORKER = MAINTENANCE / "cover_worker.py"
 MB_WORKER = MAINTENANCE / "cover_mb_worker.py"
+COVER_URL = ROOT / "lib" / "cover-url.ts"
+COVER_IMAGE = ROOT / "components" / "cover-image.tsx"
 
 
 def source(path: Path) -> str:
@@ -72,6 +74,8 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
             REFRESH,
             WORKER,
             MB_WORKER,
+            COVER_URL,
+            COVER_IMAGE,
             MIGRATION,
             ROLLBACK,
         ):
@@ -194,6 +198,43 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
             "is_selected",
         ):
             self.assertIn(token, text)
+
+    def test_frontend_cover_url_helper_is_strict(self) -> None:
+        text = source(COVER_URL)
+        for token in (
+            'PRODUCT_COVERS_BUCKET = "product-covers"',
+            "NEXT_PUBLIC_SUPABASE_URL",
+            "normalizeCoverStoragePath",
+            "buildProductCoverUrl",
+            "isSafeCoverUrl",
+            "resolveCoverUrl",
+            "parsed.origin !== origin",
+            "parsed.pathname === expectedPathname",
+            "COVER_PLACEHOLDER_SRC",
+        ):
+            self.assertIn(token, text)
+        for forbidden in (
+            "data:",
+            "blob:",
+            "images.unsplash.com",
+            "coverSourceUrl",
+        ):
+            self.assertNotIn(forbidden, text)
+
+    def test_cover_image_has_single_local_fallback(self) -> None:
+        text = source(COVER_IMAGE)
+        for token in (
+            '"use client"',
+            "resolveCoverUrl",
+            "COVER_PLACEHOLDER_SRC",
+            "failedSrc === resolvedSrc",
+            "setFailedSrc(resolvedSrc)",
+            'data-cover-fallback={showPlaceholder ? "true" : "false"}',
+        ):
+            self.assertIn(token, text)
+        self.assertNotIn("useEffect", text)
+        self.assertNotIn("fallbackSrc", text)
+        self.assertNotIn("coverSourceUrl", text)
 
     def test_rollback_does_not_delete_storage_by_inference(self) -> None:
         text = source(ROLLBACK).lower()
