@@ -127,11 +127,12 @@ export function isSafeCoverUrl(
   storagePath?: string | null,
   supabaseUrl: string | null | undefined = DEFAULT_SUPABASE_URL,
 ): boolean {
+  const raw = value?.trim();
+
   if (isLocalCoverAsset(value)) {
     return true;
   }
 
-  const raw = value?.trim();
   const normalizedPath = normalizeCoverStoragePath(storagePath);
   const origin = parseSupabaseOrigin(supabaseUrl);
   if (!raw || !normalizedPath || !origin) {

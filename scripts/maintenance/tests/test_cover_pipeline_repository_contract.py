@@ -215,6 +215,11 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
         data_text = source(VINYLOFY_DATA)
         page_text = source(NEW_RELEASES_PAGE)
 
+        self.assertIn(
+            'export const dynamic = "force-dynamic";',
+            page_text,
+        )
+
         type_start = data_text.index(
             "export type ReleaseCalendarItem = {"
         )

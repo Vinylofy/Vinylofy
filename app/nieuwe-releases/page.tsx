@@ -7,6 +7,8 @@ import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { formatEuro, getReleaseCalendarItems, type ReleaseCalendarItem } from "@/lib/vinylofy-data";
 
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "Nieuwe releases",
 };
