@@ -442,28 +442,36 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
             "imageStoragePath: string | null;",
             type_block,
         )
-        for token in (
-            "image_storage_path: string | null;",
-            "image_status: string;",
+
+        for forbidden in (
+            "image_url:",
+            "image_storage_path:",
+            "image_status:",
         ):
-            self.assertIn(token, row_block)
+            self.assertNotIn(forbidden, row_block)
 
         for token in (
             (
-                "image_url, image_storage_path, image_status, "
-                "format, label, product_id"
+                "id, ean, artist, title, release_date, "
+                "source_shop, source_url, format, label, product_id"
             ),
             "const productMap = new Map<string, ProductRow>();",
             "const batchProducts = await getProductsByIds(batchProductIds);",
             "productMap.set(product.id, product);",
             "if (!row.product_id) return false;",
             "if (freshShopCount < 2) return false;",
-            "product?.cover_url ?? null",
-            "product?.cover_storage_path ?? null",
-            'row.image_status === "ready"',
-            "imageStoragePath: row.product_id",
+            "imageUrl: product?.cover_url ?? null",
+            "imageStoragePath: product?.cover_storage_path ?? null",
         ):
             self.assertIn(token, function_block)
+
+        for forbidden in (
+            "releaseImageReady",
+            "row.image_url",
+            "row.image_storage_path",
+            "row.image_status",
+        ):
+            self.assertNotIn(forbidden, function_block)
 
         for token in (
             'import { CoverImage } from "@/components/cover-image";',
@@ -486,6 +494,94 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
             "image_source_url",
         ):
             self.assertNotIn(forbidden, page_text)
+
+    def test_release_discovery_keeps_images_as_source_metadata(self) -> None:
+        root = Path(__file__).resolve().parents[3]
+
+        files = (
+            (
+                root
+                / "scripts"
+                / "release_discovery"
+                / "discover_bobsvinyl_releases.py"
+            ),
+            (
+                root
+                / "scripts"
+                / "release_discovery"
+                / "jobs"
+                / "discover_bobsvinyl.py"
+            ),
+        )
+
+        for discovery_file in files:
+            discovery_text = discovery_file.read_text(
+                encoding="utf-8"
+            )
+
+            self.assertIn(
+                "image_source_url",
+                discovery_text,
+            )
+            self.assertIn(
+                "public.release_calendar.image_source_url",
+                discovery_text,
+            )
+            self.assertNotIn(
+                "image_url",
+                discovery_text,
+            )
+
+    def test_release_discovery_handles_both_unique_identities(self) -> None:
+        root = Path(__file__).resolve().parents[3]
+
+        files = (
+            (
+                root
+                / "scripts"
+                / "release_discovery"
+                / "discover_bobsvinyl_releases.py"
+            ),
+            (
+                root
+                / "scripts"
+                / "release_discovery"
+                / "jobs"
+                / "discover_bobsvinyl.py"
+            ),
+        )
+
+        for discovery_file in files:
+            discovery_text = discovery_file.read_text(
+                encoding="utf-8"
+            )
+
+            for token in (
+                "with source_match as (",
+                "select id, ean",
+                "where source_url = %(source_url)s",
+                "effective_identity as (",
+                "(select ean from source_match)",
+                "%(ean)s",
+                "(select ean from effective_identity) is not null",
+                "and ean = (select ean from effective_identity)",
+                "and source_shop = %(source_shop)s",
+                "and release_date = %(release_date)s::date",
+                "existing_rows = cur.fetchall()",
+                "if len(existing_rows) > 1:",
+                "Release-identiteitsconflict:",
+                'update_params["existing_id"]',
+            ):
+                self.assertIn(token, discovery_text)
+
+            self.assertNotIn(
+                "on conflict (ean, source_shop, release_date)",
+                discovery_text,
+            )
+            self.assertNotIn(
+                "on conflict (source_url)",
+                discovery_text,
+            )
 
     def test_top_deals_use_central_storage_path(self) -> None:
         data_text = source(VINYLOFY_DATA)
