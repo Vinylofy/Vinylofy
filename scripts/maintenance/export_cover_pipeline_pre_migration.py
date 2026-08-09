@@ -215,7 +215,6 @@ def validate_pre_migration_schema(conn: psycopg.Connection[Any]) -> dict[str, li
 
     forbidden_post_migration = {
         "products.cover_sha256": "cover_sha256" in product_columns,
-        "product_cover_candidates.is_selected": "is_selected" in candidate_columns,
         "release_calendar.image_source_url": "image_source_url" in release_columns,
     }
     present_forbidden = [
