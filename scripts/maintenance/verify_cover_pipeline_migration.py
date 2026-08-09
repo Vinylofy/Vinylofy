@@ -167,7 +167,6 @@ EXPECTED_FUNCTION_TOKENS = {
     "recover_stale_cover_claims": (
         "retry_later",
         "stale_claim_recovered",
-        "90 minutes",
     ),
     "claim_next_cover_job": (
         "for update of q skip locked",
@@ -519,6 +518,55 @@ def check_functions(
             },
             expected={"minimum_overloads": 1, "tokens": list(tokens)},
         )
+
+    stale_defaults = fetch_all(
+        conn,
+        """
+        select
+          pg_get_function_arguments(p.oid) as full_arguments,
+          pg_get_expr(p.proargdefaults, 0) as default_expression,
+          (
+            extract(
+              epoch from (
+                (
+                  regexp_match(
+                    pg_get_expr(p.proargdefaults, 0),
+                    $re$^'([^']+)'::interval$re$
+                  )
+                )[1]::interval
+              )
+            )
+          )::bigint as default_seconds
+        from pg_proc p
+        join pg_namespace n
+          on n.oid = p.pronamespace
+        where n.nspname = 'public'
+          and p.proname = 'recover_stale_cover_claims'
+        """,
+    )
+
+    stale_default = stale_defaults[0] if len(stale_defaults) == 1 else {}
+    stale_default_seconds = stale_default.get("default_seconds")
+
+    results.add(
+        "function:recover_stale_cover_claims_default",
+        len(stale_defaults) == 1 and stale_default_seconds == 5400,
+        actual={
+            "overloads": len(stale_defaults),
+            "full_arguments": stale_default.get("full_arguments"),
+            "default_expression": stale_default.get("default_expression"),
+            "default_seconds": stale_default_seconds,
+        },
+        expected={
+            "overloads": 1,
+            "default_seconds": 5400,
+            "equivalent_interval": "90 minutes",
+        },
+        detail=(
+            "Controleert de semantische intervalwaarde in plaats van de "
+            "tekstuele PostgreSQL-weergave."
+        ),
+    )
 
 
 def check_views(
