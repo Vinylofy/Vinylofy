@@ -1,4 +1,6 @@
 import Link from "next/link";
+
+import { CoverImage } from "@/components/cover-image";
 import { formatEuro, type HomeProduct } from "@/lib/vinylofy-data";
 
 type NewReleasesGridProps = {
@@ -26,15 +28,12 @@ export function NewReleasesGrid({ items }: NewReleasesGridProps) {
               href={`/search?q=${encodeURIComponent(`${item.artist} ${item.title}`)}`}
               className="rounded-2xl border border-neutral-200 bg-white p-4 transition hover:border-orange-300"
             >
-              {item.coverUrl ? (
-                <img
-                  src={item.coverUrl}
-                  alt={`${item.artist} - ${item.title}`}
-                  className="aspect-square w-full rounded-xl bg-neutral-100 object-cover"
-                />
-              ) : (
-                <div className="aspect-square rounded-xl bg-neutral-100" />
-              )}
+              <CoverImage
+                src={item.coverUrl}
+                storagePath={item.coverStoragePath}
+                alt={`${item.artist} - ${item.title}`}
+                className="aspect-square w-full rounded-xl bg-neutral-100 object-cover data-[cover-fallback=true]:object-contain"
+              />
 
               <div className="mt-3">
                 <p className="truncate font-medium">{item.artist}</p>

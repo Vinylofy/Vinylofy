@@ -28,36 +28,95 @@ class ReleaseItem:
     title: str
     release_date: date
     source_url: str
-    image_url: str | None = None
+    image_source_url: str | None = None
     format: str | None = None
     label: str | None = None
     source_payload: dict | None = None
 
 
 def fetch(url: str, sleep: float) -> str | None:
+    max_attempts = 3
+    retryable_statuses = {429, 502, 503, 504}
+
     print("[RELEASE-BOB] fetch", {"url": url}, flush=True)
-    try:
-        r = requests.get(
-            url,
-            timeout=30,
-            headers={
-                "User-Agent": "VinylofyReleaseDiscovery/0.1",
-                "Accept": "text/html,application/xhtml+xml",
-            },
-        )
-        if r.status_code >= 400:
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = requests.get(
+                url,
+                timeout=30,
+                headers={
+                    "User-Agent": "VinylofyReleaseDiscovery/0.1",
+                    "Accept": "text/html,application/xhtml+xml",
+                },
+            )
+        except requests.RequestException as exc:
+            if attempt >= max_attempts:
+                print("[RELEASE-BOB] fetch_error", {
+                    "url": url,
+                    "attempt": attempt,
+                    "error": str(exc),
+                }, flush=True)
+                return None
+
+            delay = min(
+                max(sleep, 1.0) * (2 ** (attempt - 1)),
+                30.0,
+            )
+
+            print("[RELEASE-BOB] fetch_retry", {
+                "url": url,
+                "attempt": attempt,
+                "reason": "request_exception",
+                "delay_seconds": delay,
+            }, flush=True)
+
+            time.sleep(delay)
+            continue
+
+        if response.status_code < 400:
+            if sleep:
+                time.sleep(sleep)
+            return response.text
+
+        if (
+            response.status_code not in retryable_statuses
+            or attempt >= max_attempts
+        ):
             print("[RELEASE-BOB] fetch_skip", {
                 "url": url,
-                "status_code": r.status_code,
-                "reason": r.reason,
+                "status_code": response.status_code,
+                "reason": response.reason,
+                "attempt": attempt,
             }, flush=True)
             return None
-        if sleep:
-            time.sleep(sleep)
-        return r.text
-    except requests.RequestException as exc:
-        print("[RELEASE-BOB] fetch_error", {"url": url, "error": str(exc)}, flush=True)
-        return None
+
+        retry_after = response.headers.get("Retry-After")
+        delay = None
+
+        if retry_after:
+            try:
+                delay = float(retry_after)
+            except ValueError:
+                delay = None
+
+        if delay is None or delay < 0:
+            delay = max(sleep, 1.0) * (2 ** (attempt - 1))
+
+        delay = min(delay, 30.0)
+
+        print("[RELEASE-BOB] fetch_retry", {
+            "url": url,
+            "status_code": response.status_code,
+            "reason": response.reason,
+            "attempt": attempt,
+            "delay_seconds": delay,
+        }, flush=True)
+
+        time.sleep(delay)
+
+    return None
+
 
 
 def extract_links(search_html: str) -> list[str]:
@@ -124,9 +183,9 @@ def parse_detail(html: str, source_url: str, release_date: date) -> ReleaseItem 
     body_text = clean_text(soup.get_text(" "))
     ean = find_ean(body_text)
 
-    image_url = meta_content(soup, 'meta[property="og:image"]')
-    if image_url:
-        image_url = urljoin(BASE_URL, image_url)
+    image_source_url = meta_content(soup, 'meta[property="og:image"]')
+    if image_source_url:
+        image_source_url = urljoin(BASE_URL, image_source_url)
 
     if not title:
         print("[RELEASE-BOB] skip_no_title", {"url": source_url}, flush=True)
@@ -138,7 +197,7 @@ def parse_detail(html: str, source_url: str, release_date: date) -> ReleaseItem 
         title=title,
         release_date=release_date,
         source_url=source_url,
-        image_url=image_url,
+        image_source_url=image_source_url,
         source_payload={
             "raw_title": raw_title,
             "parsed_artist": artist,
@@ -149,33 +208,6 @@ def parse_detail(html: str, source_url: str, release_date: date) -> ReleaseItem 
 
 
 def upsert_release(item: ReleaseItem) -> None:
-    sql = """
-        insert into public.release_calendar (
-            ean, artist, title, release_date, source_shop, source_url,
-            image_url, format, label, status, confidence, source_payload,
-            first_seen_at, last_seen_at, created_at, updated_at
-        )
-        values (
-            %(ean)s, %(artist)s, %(title)s, %(release_date)s, %(source_shop)s, %(source_url)s,
-            %(image_url)s, %(format)s, %(label)s, 'active', 100, %(source_payload)s::jsonb,
-            now(), now(), now(), now()
-        )
-        on conflict (ean, source_shop, release_date)
-        where ean is not null
-        do update set
-            ean = coalesce(public.release_calendar.ean, excluded.ean),
-            artist = case when public.release_calendar.artist = '' then excluded.artist else public.release_calendar.artist end,
-            title = case when public.release_calendar.title = '' then excluded.title else public.release_calendar.title end,
-            release_date = excluded.release_date,
-            image_url = coalesce(public.release_calendar.image_url, excluded.image_url),
-            format = coalesce(public.release_calendar.format, excluded.format),
-            label = coalesce(public.release_calendar.label, excluded.label),
-            status = 'active',
-            confidence = greatest(public.release_calendar.confidence, excluded.confidence),
-            source_payload = public.release_calendar.source_payload || excluded.source_payload,
-            last_seen_at = now(),
-            updated_at = now()
-    """
     params = {
         "ean": item.ean,
         "artist": item.artist,
@@ -183,16 +215,138 @@ def upsert_release(item: ReleaseItem) -> None:
         "release_date": item.release_date.isoformat(),
         "source_shop": SOURCE_SHOP,
         "source_url": item.source_url,
-        "image_url": item.image_url,
+        "image_source_url": item.image_source_url,
         "format": item.format,
         "label": item.label,
         "source_payload": json.dumps(item.source_payload or {}),
     }
 
+    select_sql = """
+        with source_match as (
+            select id, ean
+            from public.release_calendar
+            where source_url = %(source_url)s
+        ),
+        effective_identity as (
+            select coalesce(
+                (select ean from source_match),
+                %(ean)s
+            ) as ean
+        )
+        select id
+        from public.release_calendar
+        where source_url = %(source_url)s
+           or (
+                (select ean from effective_identity) is not null
+                and ean = (select ean from effective_identity)
+                and source_shop = %(source_shop)s
+                and release_date = %(release_date)s::date
+           )
+        order by id
+        for update
+    """
+
+    update_sql = """
+        update public.release_calendar
+        set
+            ean = coalesce(public.release_calendar.ean, %(ean)s),
+            artist = case
+                when public.release_calendar.artist = ''
+                    then %(artist)s
+                else public.release_calendar.artist
+            end,
+            title = case
+                when public.release_calendar.title = ''
+                    then %(title)s
+                else public.release_calendar.title
+            end,
+            release_date = %(release_date)s::date,
+            image_source_url = coalesce(
+                public.release_calendar.image_source_url,
+                %(image_source_url)s
+            ),
+            format = coalesce(
+                public.release_calendar.format,
+                %(format)s
+            ),
+            label = coalesce(
+                public.release_calendar.label,
+                %(label)s
+            ),
+            status = 'active',
+            confidence = greatest(
+                public.release_calendar.confidence,
+                100
+            ),
+            source_payload = (
+                public.release_calendar.source_payload
+                || %(source_payload)s::jsonb
+            ),
+            last_seen_at = now(),
+            updated_at = now()
+        where id = %(existing_id)s
+    """
+
+    insert_sql = """
+        insert into public.release_calendar (
+            ean,
+            artist,
+            title,
+            release_date,
+            source_shop,
+            source_url,
+            image_source_url,
+            format,
+            label,
+            status,
+            confidence,
+            source_payload,
+            first_seen_at,
+            last_seen_at,
+            created_at,
+            updated_at
+        )
+        values (
+            %(ean)s,
+            %(artist)s,
+            %(title)s,
+            %(release_date)s::date,
+            %(source_shop)s,
+            %(source_url)s,
+            %(image_source_url)s,
+            %(format)s,
+            %(label)s,
+            'active',
+            100,
+            %(source_payload)s::jsonb,
+            now(),
+            now(),
+            now(),
+            now()
+        )
+    """
+
     with db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, params)
+            cur.execute(select_sql, params)
+            existing_rows = cur.fetchall()
+
+            if len(existing_rows) > 1:
+                raise RuntimeError(
+                    "Release-identiteitsconflict: source_url en "
+                    "(ean, source_shop, release_date) verwijzen naar "
+                    "verschillende release_calendar-rijen."
+                )
+
+            if existing_rows:
+                update_params = dict(params)
+                update_params["existing_id"] = existing_rows[0][0]
+                cur.execute(update_sql, update_params)
+            else:
+                cur.execute(insert_sql, params)
+
         conn.commit()
+
 
 
 def run(args: argparse.Namespace) -> int:

@@ -7,6 +7,8 @@ import json
 import mimetypes
 import os
 import re
+import threading
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -26,11 +28,12 @@ except ImportError as exc:  # pragma: no cover
 
 def require_pillow():
     try:
-        from PIL import Image, UnidentifiedImageError  # type: ignore
+        from PIL import Image, ImageOps, UnidentifiedImageError
     except ImportError as exc:  # pragma: no cover
-        raise RuntimeError("Package 'Pillow' is required for image preparation in the cover pipeline.") from exc
-    return Image, UnidentifiedImageError
-
+        raise CoverPipelineError(
+            "Package 'Pillow' ontbreekt."
+        ) from exc
+    return Image, ImageOps, UnidentifiedImageError
 
 SHOP_PRIORITY_DEFAULTS: dict[str, int] = {
     "platomania.nl": 100,
@@ -45,6 +48,22 @@ SHOP_PRIORITY_DEFAULTS: dict[str, int] = {
     "3345.nl": 70,
 }
 
+SOURCE_TYPE_ALIASES: dict[str, str] = {
+    "shop_listing_image": "listing",
+    "listing_image": "listing",
+    "listing_img_src": "listing",
+    "shop_detail_image": "detail",
+    "detail_image": "detail",
+    "json_ld": "jsonld",
+    "json-ld": "jsonld",
+    "open_graph": "og",
+    "og:image": "og",
+    "twitter:image": "twitter",
+    "image-src": "image_src",
+    "image": "img_tag",
+    "img": "img_tag",
+}
+
 SOURCE_TYPE_SCORES: dict[str, int] = {
     "listing": 45,
     "detail": 35,
@@ -57,11 +76,16 @@ SOURCE_TYPE_SCORES: dict[str, int] = {
     "unknown": 0,
 }
 
+
 CANDIDATE_STATUSES = {"pending", "accepted", "rejected", "failed", "published"}
 QUEUE_STATUSES = {"pending", "processing", "published", "failed", "review", "retry_later"}
 
 DEFAULT_CONNECT_TIMEOUT = 15
 DEFAULT_READ_TIMEOUT = 30
+DEFAULT_MAX_IMAGE_BYTES = 20 * 1024 * 1024
+DEFAULT_DOWNLOAD_CHUNK_SIZE = 64 * 1024
+DEFAULT_DOMAIN_PAUSE_SECONDS = 1.0
+DEFAULT_MAX_ASPECT_RATIO = 1.8
 DEFAULT_MAX_IMAGE_DIMENSION = 1200
 DEFAULT_MIN_IMAGE_DIMENSION = 250
 DEFAULT_IMAGE_QUALITY = 88
@@ -111,6 +135,36 @@ class PreparedImage:
     public_url: str | None = None
 
 
+@dataclass(slots=True)
+class DownloadedBinary:
+    content: bytes
+    mime_type: str
+    final_url: str
+    byte_size: int
+    sha256: str
+    reused: bool = False
+
+
+@dataclass(slots=True)
+class StorageObjectState:
+    remote_path: str
+    exists: bool
+    metadata: dict[str, Any]
+
+
+@dataclass(slots=True)
+class StorageWriteReceipt:
+    remote_path: str
+    public_url: str
+    existed_before: bool
+
+
+_DOMAIN_THROTTLE_LOCK = threading.Lock()
+_DOMAIN_NEXT_REQUEST_AT: dict[str, float] = {}
+_DOWNLOAD_CACHE_LOCK = threading.Lock()
+_DOWNLOAD_CACHE: dict[str, DownloadedBinary] = {}
+
+
 class CoverPipelineError(RuntimeError):
     pass
 
@@ -139,7 +193,7 @@ def get_database_url() -> str:
 def get_supabase_credentials() -> tuple[str, str, str, str]:
     load_env()
     url = os.getenv("SUPABASE_URL", "").strip()
-    key = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SECRET_KEY") or "").strip()
+    key = (os.getenv("SUPABASE_SECRET_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     bucket = os.getenv("VINYLOFY_COVER_STORAGE_BUCKET", "").strip()
     prefix = os.getenv("VINYLOFY_COVER_STORAGE_PREFIX", "covers/products").strip().strip("/")
     if not url or not key or not bucket:
@@ -168,18 +222,20 @@ def make_session() -> requests.Session:
         status_forcelist=(408, 429, 500, 502, 503, 504),
         allowed_methods=("GET", "HEAD"),
         raise_on_status=False,
+        respect_retry_after_header=True,
     )
-    adapter = HTTPAdapter(max_retries=retry, pool_connections=20, pool_maxsize=20)
+    adapter = HTTPAdapter(
+        max_retries=retry,
+        pool_connections=20,
+        pool_maxsize=20,
+    )
     session = requests.Session()
     session.mount("https://", adapter)
     session.mount("http://", adapter)
     session.headers.update(
         {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/145.0.0.0 Safari/537.36"
-            ),
+            "User-Agent": "VinylofyCoverPipeline/1.0",
+            "Accept": "text/html,application/xhtml+xml,image/avif,image/webp,image/*,*/*;q=0.8",
             "Accept-Language": "nl-NL,nl;q=0.9,en;q=0.8",
             "Cache-Control": "no-cache",
             "Pragma": "no-cache",
@@ -188,11 +244,56 @@ def make_session() -> requests.Session:
     return session
 
 
+def require_http_url(url: str, *, label: str = "URL") -> str:
+    normalized = normalize_text(url)
+    parts = urlsplit(normalized)
+    if parts.scheme.lower() not in {"http", "https"} or not parts.netloc:
+        raise CoverPipelineError(
+            f"{label} moet een absolute HTTP(S)-URL zijn: {url!r}"
+        )
+    return urlunsplit(
+        (
+            parts.scheme.lower(),
+            parts.netloc,
+            parts.path,
+            parts.query,
+            "",
+        )
+    )
+
+
+def throttle_domain(
+    url: str,
+    minimum_pause_seconds: float = DEFAULT_DOMAIN_PAUSE_SECONDS,
+) -> None:
+    hostname = (urlsplit(require_http_url(url)).hostname or "").lower()
+    if not hostname:
+        raise CoverPipelineError(f"Kan domein niet bepalen voor URL: {url!r}")
+
+    pause = max(0.0, float(minimum_pause_seconds))
+    with _DOMAIN_THROTTLE_LOCK:
+        now = time.monotonic()
+        scheduled_at = max(
+            now,
+            _DOMAIN_NEXT_REQUEST_AT.get(hostname, now),
+        )
+        _DOMAIN_NEXT_REQUEST_AT[hostname] = scheduled_at + pause
+
+    delay = scheduled_at - now
+    if delay > 0:
+        time.sleep(delay)
+
+
 def normalize_text(value: Any) -> str:
     if value is None:
         return ""
     value = str(value).replace("\xa0", " ")
     return re.sub(r"\s+", " ", value).strip()
+
+
+def normalize_source_type(value: str | None) -> str:
+    normalized = normalize_text(value).lower()
+    return SOURCE_TYPE_ALIASES.get(normalized, normalized or "unknown")
 
 
 def normalize_ean(value: str | None) -> str | None:
@@ -280,6 +381,7 @@ def shop_priority_for_domain(domain: str) -> int:
 
 def rank_candidate(candidate: CandidateRecord, recency_reference: datetime | None = None) -> int:
     score = 0
+    candidate.source_type = normalize_source_type(candidate.source_type)
     score += SOURCE_TYPE_SCORES.get(candidate.source_type, 0)
     score += shop_priority_for_domain(candidate.shop_domain)
     if candidate.is_primary:
@@ -447,49 +549,202 @@ def extract_image_candidates_from_html(html: str, page_url: str) -> list[dict[st
     return results
 
 
-def fetch_page_candidates(session: requests.Session, page_url: str) -> tuple[list[dict[str, Any]], int, str | None]:
-    response = session.get(page_url, timeout=(DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT))
+def fetch_page_candidates(
+    session: requests.Session,
+    page_url: str,
+) -> tuple[list[dict[str, Any]], int, str | None]:
+    requested_url = require_http_url(page_url, label="Productpagina")
+    throttle_domain(requested_url)
+    response = session.get(
+        requested_url,
+        timeout=(DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT),
+        allow_redirects=True,
+    )
+    final_url = require_http_url(
+        str(response.url),
+        label="Redirectdoel productpagina",
+    )
     http_status = response.status_code
     response.raise_for_status()
     content_type = normalize_text(response.headers.get("content-type"))
     if "html" not in content_type and response.text.lstrip()[:1] != "<":
-        raise CoverPipelineError(f"Onverwacht content-type voor productpagina: {content_type or 'onbekend'}")
-    return extract_image_candidates_from_html(response.text, page_url), http_status, response.text
+        raise CoverPipelineError(
+            "Onverwacht content-type voor productpagina: "
+            f"{content_type or 'onbekend'}"
+        )
+    return (
+        extract_image_candidates_from_html(response.text, final_url),
+        http_status,
+        response.text,
+    )
 
 
-def fetch_binary(session: requests.Session, url: str) -> tuple[bytes, str | None]:
-    response = session.get(url, timeout=(DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT), stream=True)
+def _read_streamed_image_response(
+    response: requests.Response,
+    *,
+    source_url: str,
+) -> DownloadedBinary:
+    final_url = require_http_url(
+        str(response.url),
+        label="Redirectdoel afbeelding",
+    )
     response.raise_for_status()
-    content = response.content
-    content_type = normalize_text(response.headers.get("content-type")) or None
-    if not content:
+
+    raw_content_type = normalize_text(
+        response.headers.get("content-type")
+    )
+    mime_type = raw_content_type.split(";", 1)[0].strip().lower()
+    if not mime_type.startswith("image/"):
+        raise CoverPipelineError(
+            "Afbeeldings-MIME-type ontbreekt of is ongeldig voor "
+            f"{source_url}: {raw_content_type or 'onbekend'}"
+        )
+
+    content_length = normalize_text(
+        response.headers.get("content-length")
+    )
+    if content_length:
+        try:
+            announced_size = int(content_length)
+        except ValueError as exc:
+            raise CoverPipelineError(
+                f"Ongeldige Content-Length voor {source_url}: {content_length!r}"
+            ) from exc
+        if announced_size > DEFAULT_MAX_IMAGE_BYTES:
+            raise CoverPipelineError(
+                f"Afbeelding is groter dan {DEFAULT_MAX_IMAGE_BYTES} bytes."
+            )
+
+    digest = hashlib.sha256()
+    chunks: list[bytes] = []
+    byte_size = 0
+
+    for chunk in response.iter_content(
+        chunk_size=DEFAULT_DOWNLOAD_CHUNK_SIZE
+    ):
+        if not chunk:
+            continue
+        byte_size += len(chunk)
+        if byte_size > DEFAULT_MAX_IMAGE_BYTES:
+            raise CoverPipelineError(
+                f"Afbeelding overschrijdt {DEFAULT_MAX_IMAGE_BYTES} bytes."
+            )
+        digest.update(chunk)
+        chunks.append(chunk)
+
+    if byte_size == 0:
         raise CoverPipelineError("Lege image response ontvangen.")
-    return content, content_type
+
+    return DownloadedBinary(
+        content=b"".join(chunks),
+        mime_type=mime_type,
+        final_url=final_url,
+        byte_size=byte_size,
+        sha256=digest.hexdigest(),
+        reused=False,
+    )
 
 
-def prepare_image_for_storage(content: bytes, original_mime_type: str | None = None) -> PreparedImage:
-    Image, UnidentifiedImageError = require_pillow()
+def download_binary(
+    session: requests.Session,
+    url: str,
+) -> DownloadedBinary:
+    requested_url = require_http_url(url, label="Afbeeldings-URL")
+
+    with _DOWNLOAD_CACHE_LOCK:
+        cached = _DOWNLOAD_CACHE.get(requested_url)
+    if cached is not None:
+        return DownloadedBinary(
+            content=cached.content,
+            mime_type=cached.mime_type,
+            final_url=cached.final_url,
+            byte_size=cached.byte_size,
+            sha256=cached.sha256,
+            reused=True,
+        )
+
+    throttle_domain(requested_url)
+    with session.get(
+        requested_url,
+        timeout=(DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT),
+        stream=True,
+        allow_redirects=True,
+    ) as response:
+        downloaded = _read_streamed_image_response(
+            response,
+            source_url=requested_url,
+        )
+
+    with _DOWNLOAD_CACHE_LOCK:
+        existing = _DOWNLOAD_CACHE.setdefault(
+            requested_url,
+            downloaded,
+        )
+        _DOWNLOAD_CACHE.setdefault(downloaded.final_url, existing)
+
+    if existing is not downloaded:
+        return DownloadedBinary(
+            content=existing.content,
+            mime_type=existing.mime_type,
+            final_url=existing.final_url,
+            byte_size=existing.byte_size,
+            sha256=existing.sha256,
+            reused=True,
+        )
+    return downloaded
+
+
+def clear_download_cache() -> None:
+    with _DOWNLOAD_CACHE_LOCK:
+        _DOWNLOAD_CACHE.clear()
+
+
+def fetch_binary(
+    session: requests.Session,
+    url: str,
+) -> tuple[bytes, str | None]:
+    downloaded = download_binary(session, url)
+    return downloaded.content, downloaded.mime_type
+
+
+def prepare_image_for_storage(
+    content: bytes,
+    original_mime_type: str | None = None,
+) -> PreparedImage:
+    Image, ImageOps, UnidentifiedImageError = require_pillow()
     try:
         image = Image.open(io.BytesIO(content))
     except UnidentifiedImageError as exc:
-        raise CoverPipelineError("Gedownloade binary is geen geldige afbeelding.") from exc
+        raise CoverPipelineError(
+            "Gedownloade binary is geen geldige afbeelding."
+        ) from exc
 
+    image = ImageOps.exif_transpose(image)
     image.load()
     width, height = image.size
     shortest = min(width, height)
     aspect = max(width, height) / max(1, shortest)
+
     if shortest < DEFAULT_MIN_IMAGE_DIMENSION:
         raise CoverPipelineError(
-            f"Afbeelding te klein ({width}x{height}); minimum is {DEFAULT_MIN_IMAGE_DIMENSION}px aan de kortste zijde."
+            f"Afbeelding te klein ({width}x{height}); minimum is "
+            f"{DEFAULT_MIN_IMAGE_DIMENSION}px aan de kortste zijde."
         )
-    if aspect > 1.8:
-        raise CoverPipelineError(f"Afbeelding heeft onwaarschijnlijke aspect ratio voor cover-art ({width}x{height}).")
+    if aspect > DEFAULT_MAX_ASPECT_RATIO:
+        raise CoverPipelineError(
+            "Afbeelding heeft onwaarschijnlijke aspect ratio voor "
+            f"cover-art ({width}x{height})."
+        )
 
     if image.mode not in ("RGB", "RGBA"):
-        image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+        image = image.convert(
+            "RGBA" if "A" in image.getbands() else "RGB"
+        )
 
     if max(width, height) > DEFAULT_MAX_IMAGE_DIMENSION:
-        image.thumbnail((DEFAULT_MAX_IMAGE_DIMENSION, DEFAULT_MAX_IMAGE_DIMENSION))
+        image.thumbnail(
+            (DEFAULT_MAX_IMAGE_DIMENSION, DEFAULT_MAX_IMAGE_DIMENSION)
+        )
         width, height = image.size
 
     if image.mode == "RGBA":
@@ -500,7 +755,12 @@ def prepare_image_for_storage(content: bytes, original_mime_type: str | None = N
         image = image.convert("RGB")
 
     buffer = io.BytesIO()
-    image.save(buffer, format="WEBP", quality=DEFAULT_IMAGE_QUALITY, method=6)
+    image.save(
+        buffer,
+        format="WEBP",
+        quality=DEFAULT_IMAGE_QUALITY,
+        method=6,
+    )
     output_bytes = buffer.getvalue()
     sha256 = hashlib.sha256(output_bytes).hexdigest()
 
@@ -515,14 +775,76 @@ def prepare_image_for_storage(content: bytes, original_mime_type: str | None = N
     )
 
 
-def build_storage_path(prefix: str, ean: str, sha256_hash: str, extension: str) -> str:
+def build_product_storage_path(ean: str) -> str:
     ean_clean = normalize_ean(ean)
     if not ean_clean:
-        raise CoverPipelineError(f"Kan geen storage pad bouwen zonder geldige EAN: {ean!r}")
-    return f"{prefix}/ean/{ean_clean[:3]}/{ean_clean}/{sha256_hash[:16]}.{extension}"
+        raise CoverPipelineError(
+            f"Kan geen productpad bouwen zonder geldige EAN: {ean!r}"
+        )
+    return f"ean/{ean_clean[:3]}/{ean_clean}.webp"
 
 
-def upload_bytes_to_storage(remote_path: str, prepared_image: PreparedImage) -> str:
+def build_release_storage_path(release_id: str) -> str:
+    release_clean = normalize_text(release_id)
+    if not re.fullmatch(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
+        r"[1-5][0-9a-fA-F]{3}-"
+        r"[89abAB][0-9a-fA-F]{3}-"
+        r"[0-9a-fA-F]{12}",
+        release_clean,
+    ):
+        raise CoverPipelineError(
+            f"Kan geen releasepad bouwen zonder geldige UUID: {release_id!r}"
+        )
+    return f"covers/releases/{release_clean.lower()}.webp"
+
+
+def build_storage_path(
+    prefix: str,
+    ean: str,
+    sha256_hash: str,
+    extension: str,
+) -> str:
+    # Compatibiliteitswrapper voor de bestaande worker. Prefix en hash mogen
+    # het canonieke één-pad-per-product-contract niet meer beïnvloeden.
+    del prefix, sha256_hash
+    if normalize_text(extension).lower() != "webp":
+        raise CoverPipelineError(
+            f"Canonieke productcovers moeten WebP zijn: {extension!r}"
+        )
+    return build_product_storage_path(ean)
+
+
+def _storage_item_to_mapping(item: Any) -> dict[str, Any]:
+    if isinstance(item, dict):
+        return dict(item)
+
+    model_dump = getattr(item, "model_dump", None)
+    if callable(model_dump):
+        value = model_dump()
+        if isinstance(value, dict):
+            return dict(value)
+
+    as_dict = getattr(item, "dict", None)
+    if callable(as_dict):
+        value = as_dict()
+        if isinstance(value, dict):
+            return dict(value)
+
+    attributes = getattr(item, "__dict__", None)
+    if isinstance(attributes, dict):
+        return {
+            key: value
+            for key, value in attributes.items()
+            if not key.startswith("_")
+        }
+
+    raise CoverPipelineError(
+        f"Onverwacht Storage-itemtype: {type(item).__name__}"
+    )
+
+
+def get_storage_bucket_api() -> tuple[str, str, Any]:
     supabase_url, key, bucket, _ = get_supabase_credentials()
     try:
         from supabase import create_client
@@ -530,20 +852,181 @@ def upload_bytes_to_storage(remote_path: str, prepared_image: PreparedImage) -> 
         raise CoverPipelineError("Package 'supabase' ontbreekt.") from exc
 
     client = create_client(supabase_url, key)
-    payload = io.BytesIO(prepared_image.output_bytes)
-    payload.seek(0)
-    client.storage.from_(bucket).upload(
-        path=remote_path,
-        file=payload,
+    return supabase_url, bucket, client.storage.from_(bucket)
+
+
+def inspect_storage_object(
+    remote_path: str,
+    *,
+    bucket_api: Any | None = None,
+) -> StorageObjectState:
+    normalized_path = normalize_text(remote_path).strip("/")
+    if not normalized_path or normalized_path.endswith("/"):
+        raise CoverPipelineError(
+            f"Ongeldig exact Storage-objectpad: {remote_path!r}"
+        )
+
+    directory, _, filename = normalized_path.rpartition("/")
+    if bucket_api is None:
+        _, _, bucket_api = get_storage_bucket_api()
+
+    response = bucket_api.list(
+        directory,
+        {
+            "limit": 100,
+            "offset": 0,
+            "sortBy": {"column": "name", "order": "asc"},
+            "search": filename,
+        },
+    )
+    raw_items = response if isinstance(response, list) else getattr(
+        response,
+        "data",
+        [],
+    )
+    if not isinstance(raw_items, list):
+        raise CoverPipelineError(
+            "Onverwachte response bij Storage-objectinspectie."
+        )
+
+    matches = []
+    for raw_item in raw_items:
+        item = _storage_item_to_mapping(raw_item)
+        if normalize_text(item.get("name")) == filename:
+            matches.append(item)
+
+    if len(matches) > 1:
+        raise CoverPipelineError(
+            f"Meerdere objecten voor exact Storage-pad: {normalized_path}"
+        )
+    if not matches:
+        return StorageObjectState(
+            remote_path=normalized_path,
+            exists=False,
+            metadata={},
+        )
+
+    item = matches[0]
+    metadata = item.get("metadata")
+    return StorageObjectState(
+        remote_path=normalized_path,
+        exists=True,
+        metadata=dict(metadata) if isinstance(metadata, dict) else {},
+    )
+
+
+def validate_storage_object(
+    remote_path: str,
+    *,
+    expected_mime_type: str | None = None,
+    expected_byte_size: int | None = None,
+    bucket_api: Any | None = None,
+) -> StorageObjectState:
+    state = inspect_storage_object(
+        remote_path,
+        bucket_api=bucket_api,
+    )
+    if not state.exists:
+        raise CoverPipelineError(
+            f"Storage-object ontbreekt: {state.remote_path}"
+        )
+
+    actual_mime = normalize_text(
+        state.metadata.get("mimetype")
+        or state.metadata.get("contentType")
+    ).lower()
+    if expected_mime_type and actual_mime:
+        if actual_mime != expected_mime_type.lower():
+            raise CoverPipelineError(
+                "Storage-MIME-type wijkt af voor "
+                f"{state.remote_path}: {actual_mime}"
+            )
+
+    raw_size = state.metadata.get("size")
+    if expected_byte_size is not None and raw_size is not None:
+        try:
+            actual_size = int(raw_size)
+        except (TypeError, ValueError) as exc:
+            raise CoverPipelineError(
+                f"Ongeldige Storage-bytegrootte: {raw_size!r}"
+            ) from exc
+        if actual_size != int(expected_byte_size):
+            raise CoverPipelineError(
+                "Storage-bytegrootte wijkt af voor "
+                f"{state.remote_path}: {actual_size}"
+            )
+    return state
+
+
+def upsert_bytes_to_storage(
+    remote_path: str,
+    prepared_image: PreparedImage,
+) -> StorageWriteReceipt:
+    supabase_url, bucket, bucket_api = get_storage_bucket_api()
+    before = inspect_storage_object(
+        remote_path,
+        bucket_api=bucket_api,
+    )
+
+    bucket_api.upload(
+        path=before.remote_path,
+        file=prepared_image.output_bytes,
         file_options={
             "content-type": prepared_image.mime_type,
+            "cache-control": "3600",
             "upsert": "true",
         },
     )
-    return build_public_storage_url(supabase_url, bucket, remote_path)
+
+    after = validate_storage_object(
+        before.remote_path,
+        expected_mime_type=prepared_image.mime_type,
+        expected_byte_size=len(prepared_image.output_bytes),
+        bucket_api=bucket_api,
+    )
+    return StorageWriteReceipt(
+        remote_path=after.remote_path,
+        public_url=build_public_storage_url(
+            supabase_url,
+            bucket,
+            after.remote_path,
+        ),
+        existed_before=before.exists,
+    )
 
 
-def build_cover_missing_condition(products_columns: set[str], alias: str = "p") -> str:
+def compensate_storage_upload(
+    receipt: StorageWriteReceipt,
+) -> bool:
+    if receipt.existed_before:
+        return False
+
+    _, _, bucket_api = get_storage_bucket_api()
+    current = inspect_storage_object(
+        receipt.remote_path,
+        bucket_api=bucket_api,
+    )
+    if not current.exists:
+        return False
+
+    # Nooit prefix/glob/EAN/extensie verwijderen: uitsluitend exact het
+    # zojuist nieuw aangemaakte objectpad.
+    bucket_api.remove([receipt.remote_path])
+    return True
+
+
+def upload_bytes_to_storage(
+    remote_path: str,
+    prepared_image: PreparedImage,
+) -> str:
+    return upsert_bytes_to_storage(
+        remote_path,
+        prepared_image,
+    ).public_url
+
+
+def build_cover_missing_condition(
+products_columns: set[str], alias: str = "p") -> str:
     clauses: list[str] = []
     for column in ("cover_storage_path", "cover_url"):
         if column in products_columns:

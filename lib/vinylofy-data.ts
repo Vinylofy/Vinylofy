@@ -10,6 +10,7 @@ type ProductRow = {
   title: string;
   format_label: string | null;
   cover_url: string | null;
+  cover_storage_path: string | null;
   created_at: string;
 };
 
@@ -49,6 +50,7 @@ export type HomeProduct = {
   title: string;
   formatLabel: string | null;
   coverUrl: string | null;
+  coverStoragePath: string | null;
   lowestPrice: number | null;
   freshShopCount: number;
   totalShopCount: number;
@@ -79,6 +81,7 @@ export type SearchResultItem = {
   title: string;
   formatLabel: string | null;
   coverUrl: string | null;
+  coverStoragePath: string | null;
   lowestPrice: number | null;
   foundIn: number;
   totalShops: number;
@@ -94,6 +97,7 @@ export type ProductDetail = {
   title: string;
   formatLabel: string | null;
   coverUrl: string | null;
+  coverStoragePath: string | null;
   lowestPrice: number | null;
   freshShopCount: number;
   totalShopCount: number;
@@ -245,7 +249,7 @@ async function getProductsByIds(ids: string[]): Promise<ProductRow[]> {
   const supabase = createSupabaseServerClient();
   const { data, error } = await supabase
     .from("products")
-    .select("id, ean, gtin_normalized, artist, title, format_label, cover_url, created_at")
+    .select("id, ean, gtin_normalized, artist, title, format_label, cover_url, cover_storage_path, created_at")
     .in("id", ids);
 
   if (error) throw error;
@@ -418,6 +422,7 @@ export async function getHomePageData(): Promise<{
         title: product.title,
         formatLabel: product.format_label,
         coverUrl: product.cover_url,
+  coverStoragePath: product.cover_storage_path,
         lowestPrice: toNumber(row.lowest_fresh_price),
         freshShopCount: row.fresh_instock_shop_count ?? 0,
         totalShopCount: row.total_active_shop_count ?? 0,
@@ -429,7 +434,7 @@ export async function getHomePageData(): Promise<{
 
   const { data: latestProductsData, error: latestProductsError } = await supabase
     .from("products")
-    .select("id, ean, gtin_normalized, artist, title, format_label, cover_url, created_at")
+    .select("id, ean, gtin_normalized, artist, title, format_label, cover_url, cover_storage_path, created_at")
     .order("created_at", { ascending: false })
     .limit(50);
 
@@ -450,6 +455,7 @@ export async function getHomePageData(): Promise<{
         title: product.title,
         formatLabel: product.format_label,
         coverUrl: product.cover_url,
+  coverStoragePath: product.cover_storage_path,
         lowestPrice: toNumber(best?.lowest_fresh_price),
         freshShopCount: best?.fresh_instock_shop_count ?? 0,
         totalShopCount: best?.total_active_shop_count ?? 0,
@@ -473,7 +479,7 @@ async function resolveProductRowByRouteKey(routeKey: unknown): Promise<ProductRo
   if (isUuidLike(key)) {
     const { data, error } = await supabase
       .from("products")
-      .select("id, ean, gtin_normalized, artist, title, format_label, cover_url, created_at")
+      .select("id, ean, gtin_normalized, artist, title, format_label, cover_url, cover_storage_path, created_at")
       .eq("id", key)
       .maybeSingle();
 
@@ -484,7 +490,7 @@ async function resolveProductRowByRouteKey(routeKey: unknown): Promise<ProductRo
   if (normalizedGtin) {
     const { data, error } = await supabase
       .from("products")
-      .select("id, ean, gtin_normalized, artist, title, format_label, cover_url, created_at")
+      .select("id, ean, gtin_normalized, artist, title, format_label, cover_url, cover_storage_path, created_at")
       .eq("gtin_normalized", normalizedGtin)
       .maybeSingle();
 
@@ -516,6 +522,7 @@ export async function getProductDetail(id: unknown): Promise<ProductDetail | nul
     title: product.title,
     formatLabel: product.format_label,
     coverUrl: product.cover_url,
+    coverStoragePath: product.cover_storage_path,
     lowestPrice,
     freshShopCount,
     totalShopCount,
@@ -536,7 +543,7 @@ export async function searchProducts(
   const normalizedDigits = normalizeGtinLookup(normalizedQuery);
   const candidates = new Map<string, ProductRow>();
 
-  const baseSelect = "id, ean, gtin_normalized, artist, title, format_label, cover_url, created_at";
+  const baseSelect = "id, ean, gtin_normalized, artist, title, format_label, cover_url, cover_storage_path, created_at";
 
   async function collect(promise: PromiseLike<{ data: unknown; error: unknown }>) {
     const result = (await promise) as { data: unknown; error: unknown };
@@ -589,6 +596,7 @@ export async function searchProducts(
         title: product.title,
         formatLabel: product.format_label,
         coverUrl: product.cover_url,
+  coverStoragePath: product.cover_storage_path,
         lowestPrice,
         foundIn: freshShopCount,
         totalShops: totalShopCount,
@@ -682,6 +690,7 @@ export type TopDealItem = {
   title: string;
   formatLabel: string | null;
   coverUrl: string | null;
+  coverStoragePath: string | null;
   lowestPrice: number;
   highestPrice: number;
   priceDifference: number;
@@ -770,6 +779,16 @@ export async function getTopDeals(limit = 45): Promise<TopDealItem[]> {
   if (error) throw error;
 
   const rows = (data ?? []) as TopDealsSnapshotRow[];
+  const productIds = Array.from(
+    new Set(rows.map((row) => row.product_id)),
+  );
+  const products = await getProductsByIds(productIds);
+  const coverStoragePathMap = new Map(
+    products.map((product) => [
+      product.id,
+      product.cover_storage_path,
+    ]),
+  );
 
   return rows.flatMap((row) => {
     const lowestPrice = toNumber(row.lowest_price);
@@ -803,6 +822,7 @@ export async function getTopDeals(limit = 45): Promise<TopDealItem[]> {
         title: row.title,
         formatLabel: row.format_label,
         coverUrl: row.cover_url,
+        coverStoragePath: coverStoragePathMap.get(row.product_id) ?? null,
         lowestPrice,
         highestPrice,
         priceDifference,
@@ -825,6 +845,7 @@ export type ReleaseCalendarItem = {
   sourceShop: string;
   sourceUrl: string;
   imageUrl: string | null;
+  imageStoragePath: string | null;
   format: string | null;
   label: string | null;
   productId: string | null;
@@ -839,7 +860,6 @@ type ReleaseCalendarRow = {
   release_date: string;
   source_shop: string;
   source_url: string;
-  image_url: string | null;
   format: string | null;
   label: string | null;
   product_id: string | null;
@@ -868,7 +888,7 @@ export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalen
     const { data, error } = await supabase
       .from("release_calendar")
       .select(
-        "id, ean, artist, title, release_date, source_shop, source_url, image_url, format, label, product_id",
+        "id, ean, artist, title, release_date, source_shop, source_url, format, label, product_id",
       )
       .eq("status", "active")
       .gte("release_date", minDate)
@@ -898,15 +918,22 @@ export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalen
    * Supabase IN-query te voorkomen.
    */
   const bestPriceMap = new Map<string, BestPriceRow>();
+  const productMap = new Map<string, ProductRow>();
   const productBatchSize = 200;
 
   for (let offset = 0; offset < productIds.length; offset += productBatchSize) {
-    const batchMap = await getBestPriceMap(
-      productIds.slice(offset, offset + productBatchSize),
+    const batchProductIds = productIds.slice(
+      offset,
+      offset + productBatchSize,
     );
+    const batchMap = await getBestPriceMap(batchProductIds);
+    const batchProducts = await getProductsByIds(batchProductIds);
 
     for (const [productId, bestPrice] of batchMap) {
       bestPriceMap.set(productId, bestPrice);
+    }
+    for (const product of batchProducts) {
+      productMap.set(product.id, product);
     }
   }
 
@@ -931,6 +958,9 @@ export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalen
       const bestPrice = row.product_id
         ? bestPriceMap.get(row.product_id)
         : undefined;
+      const product = row.product_id
+        ? productMap.get(row.product_id)
+        : undefined;
 
       return {
         id: row.id,
@@ -940,7 +970,8 @@ export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalen
         releaseDate: row.release_date,
         sourceShop: row.source_shop,
         sourceUrl: row.source_url,
-        imageUrl: row.image_url,
+        imageUrl: product?.cover_url ?? null,
+        imageStoragePath: product?.cover_storage_path ?? null,
         format: row.format,
         label: row.label,
         productId: row.product_id,

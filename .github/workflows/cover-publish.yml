@@ -18,6 +18,10 @@ on:
   schedule:
     - cron: "45 */6 * * *"
 
+concurrency:
+  group: vinylofy-cover-pipeline
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -43,7 +47,7 @@ jobs:
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          pip install beautifulsoup4 requests pillow "psycopg[binary]" python-dotenv supabase
+          pip install --requirement requirements-cover.txt
 
       - name: Prepare folders
         shell: bash
@@ -61,6 +65,17 @@ jobs:
             --mode "$MODE_INPUT" \
             --limit "$LIMIT_INPUT" \
             --output-json output/cover_pipeline/cover_publish_summary.json
+
+      - name: Write run summary
+        if: always()
+        shell: bash
+        run: |
+          python scripts/maintenance/cover_workflow_summary.py \
+            --title "Cover Publish" \
+            --status "${{ job.status }}" \
+            --summary-json \
+              "Cover worker=output/cover_pipeline/cover_publish_summary.json" \
+            >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload artifacts
         if: always()

@@ -1,9 +1,13 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
+import { CoverImage } from "@/components/cover-image";
+
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { formatEuro, getReleaseCalendarItems, type ReleaseCalendarItem } from "@/lib/vinylofy-data";
+
+export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Nieuwe releases",
@@ -54,18 +58,13 @@ function ReleaseCard({ release }: { release: ReleaseCalendarItem }) {
   const card = (
     <article className="h-full overflow-hidden rounded-3xl border border-neutral-200 bg-white shadow-sm">
       <div className="aspect-square bg-neutral-100">
-        {release.imageUrl ? (
-          <img
-            src={release.imageUrl}
-            alt={`${release.artist} - ${displayTitle}`}
-            className="h-full w-full object-cover"
-            loading="lazy"
-          />
-        ) : (
-          <div className="flex h-full items-center justify-center px-6 text-center text-sm text-neutral-400">
-            Geen afbeelding beschikbaar
-          </div>
-        )}
+        <CoverImage
+          src={release.imageUrl}
+          storagePath={release.imageStoragePath}
+          alt={`${release.artist} - ${displayTitle}`}
+          className="h-full w-full object-cover data-[cover-fallback=true]:object-contain"
+          loading="lazy"
+        />
       </div>
 
       <div className="p-4">
