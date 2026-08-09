@@ -197,6 +197,14 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
         ):
             self.assertIn(token, text)
 
+    def test_storage_credentials_prefer_secret_key(self) -> None:
+        text = source(COMMON)
+        self.assertIn(
+            'os.getenv("SUPABASE_SECRET_KEY") '
+            'or os.getenv("SUPABASE_SERVICE_ROLE_KEY")',
+            text,
+        )
+
     def test_migration_enforces_single_selection_and_claim_rpcs(self) -> None:
         text = source(MIGRATION).lower()
         for token in (

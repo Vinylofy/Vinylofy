@@ -193,7 +193,7 @@ def get_database_url() -> str:
 def get_supabase_credentials() -> tuple[str, str, str, str]:
     load_env()
     url = os.getenv("SUPABASE_URL", "").strip()
-    key = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SECRET_KEY") or "").strip()
+    key = (os.getenv("SUPABASE_SECRET_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     bucket = os.getenv("VINYLOFY_COVER_STORAGE_BUCKET", "").strip()
     prefix = os.getenv("VINYLOFY_COVER_STORAGE_PREFIX", "covers/products").strip().strip("/")
     if not url or not key or not bucket:
