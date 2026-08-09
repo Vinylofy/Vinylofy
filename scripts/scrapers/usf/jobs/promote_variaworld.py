@@ -26,7 +26,7 @@ from scripts.importers.common import (
 
 
 SHOP_ID = "variaworld"
-SHOP_NAME = "Variaworld Delft"
+SHOP_NAME = "Variaworld"
 SHOP_DOMAIN = "variaworld.nl"
 SHOP_COUNTRY = "NL"
 
