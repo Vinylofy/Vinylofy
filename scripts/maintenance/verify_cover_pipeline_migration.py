@@ -631,6 +631,10 @@ def check_data_invariants(
             select count(*)
             from public.products
             where nullif(btrim(cover_url), '') ~* '^https?://'
+              and (
+                    nullif(btrim(cover_storage_path), '') is null
+                    or cover_status is distinct from 'ready'
+                  )
             """,
             0,
             "error",

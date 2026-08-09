@@ -413,7 +413,7 @@ def preview_local_actions(
                             nullif(btrim(p.cover_url), '') is null
                             or p.cover_status <> 'ready'
                             or p.cover_url not like (
-                                '%/storage/v1/object/public/product-covers/'
+                                '%%/storage/v1/object/public/product-covers/'
                                 || p.cover_storage_path
                             )
                         )
@@ -1428,7 +1428,7 @@ def reconcile_local_products(
                     nullif(btrim(cover_url), '') is null
                     or cover_status <> 'ready'
                     or cover_url not like (
-                        '%/storage/v1/object/public/product-covers/'
+                        '%%/storage/v1/object/public/product-covers/'
                         || cover_storage_path
                     )
               )
