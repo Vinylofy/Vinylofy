@@ -373,6 +373,28 @@ def check_columns(
         expected="integer",
     )
 
+    shop_id_nullable = fetch_scalar(
+        conn,
+        """
+        select is_nullable
+        from information_schema.columns
+        where table_schema = 'public'
+          and table_name = 'product_cover_candidates'
+          and column_name = 'shop_id'
+        """,
+    )
+    results.add(
+        "column:product_cover_candidates.shop_id_nullable",
+        str(shop_id_nullable).upper() == "YES",
+        actual=shop_id_nullable,
+        expected="YES",
+        detail=(
+            "Externe covermetadata mag zonder shop_id worden opgeslagen; "
+            "shopgebonden candidates behouden de bestaande foreign key."
+        ),
+    )
+
+
 
 def check_constraints(
     conn: psycopg.Connection[Any],

@@ -15,6 +15,14 @@ ROLLBACK = ROOT / (
     "supabase/rollbacks/"
     "20260805123000_finalize_central_cover_pipeline.rollback.sql"
 )
+CORRECTIVE_MIGRATION = ROOT / (
+    "supabase/migrations/"
+    "20260809082100_allow_external_cover_candidates.sql"
+)
+CORRECTIVE_ROLLBACK = ROOT / (
+    "supabase/rollbacks/"
+    "20260809082100_allow_external_cover_candidates.rollback.sql"
+)
 
 COMMON = MAINTENANCE / "cover_common.py"
 REFRESH = MAINTENANCE / "cover_candidate_refresh.py"
@@ -90,6 +98,8 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
             NEW_RELEASES_PAGE,
             MIGRATION,
             ROLLBACK,
+            CORRECTIVE_MIGRATION,
+            CORRECTIVE_ROLLBACK,
         ):
             self.assertTrue(path.is_file(), str(path))
         for path in (COMMON, REFRESH, WORKER, MB_WORKER):
@@ -210,6 +220,35 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
             "is_selected",
         ):
             self.assertIn(token, text)
+
+    def test_external_cover_candidates_allow_null_shop_id(self) -> None:
+        refresh_text = source(REFRESH)
+        migration_text = source(CORRECTIVE_MIGRATION).lower()
+        rollback_text = source(CORRECTIVE_ROLLBACK).lower()
+        verifier_text = source(
+            MAINTENANCE / "verify_cover_pipeline_migration.py"
+        )
+
+        self.assertIn(
+            "shop_id=None",
+            refresh_text,
+        )
+        self.assertIn(
+            "alter column shop_id drop not null",
+            migration_text,
+        )
+        self.assertIn(
+            "alter column shop_id set not null",
+            rollback_text,
+        )
+        self.assertIn(
+            "where shop_id is null",
+            rollback_text,
+        )
+        self.assertIn(
+            "column:product_cover_candidates.shop_id_nullable",
+            verifier_text,
+        )
 
     def test_new_releases_use_central_cover_contract(self) -> None:
         data_text = source(VINYLOFY_DATA)
