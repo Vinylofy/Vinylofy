@@ -161,7 +161,7 @@ def staged_row_to_record(row: dict[str, Any], line_number: int) -> CanonicalReco
         artist=artist,
         title=title,
         format_label=infer_format_label(title_raw),
-        cover_url=image_url,
+        cover_url=None,
         product_url=normalize_text(row.get("source_url")),
         price=float(price),
         currency=normalize_text(row.get("currency")) or "EUR",

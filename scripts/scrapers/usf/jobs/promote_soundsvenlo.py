@@ -195,7 +195,7 @@ def staged_row_to_record(row: dict[str, Any], line_number: int) -> CanonicalReco
             listing_payload.get("format"),
             row.get("title_raw"),
         ),
-        cover_url=image_url,
+        cover_url=None,
         product_url=product_url,
         price=float(price),
         currency=normalize_text(row.get("currency")) or "EUR",

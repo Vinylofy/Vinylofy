@@ -292,7 +292,7 @@ def ensure_product_from_raw_ean(
         artist=artist,
         title=title,
         format_label=None,
-        cover_url=image_url,
+        cover_url=None,
         product_url=normalize_url(offer.source_url),
         price=0.0,
         currency=offer.currency,
