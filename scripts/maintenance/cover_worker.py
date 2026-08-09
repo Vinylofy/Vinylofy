@@ -32,6 +32,7 @@ from cover_common import (
     serialize_json,
     upsert_bytes_to_storage,
     utc_now,
+    log,
 )
 
 

@@ -205,6 +205,46 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
             text,
         )
 
+    def test_storage_upload_uses_supported_bytes_and_worker_imports_log(self) -> None:
+        common_text = source(COMMON)
+
+        self.assertIn(
+            "file=prepared_image.output_bytes",
+            common_text,
+        )
+        self.assertNotIn(
+            "payload = io.BytesIO(prepared_image.output_bytes)",
+            common_text,
+        )
+        self.assertNotIn(
+            "file=payload",
+            common_text,
+        )
+
+        worker_tree = parsed(WORKER)
+
+        cover_common_imports = [
+            node
+            for node in worker_tree.body
+            if isinstance(node, ast.ImportFrom)
+            and node.module == "cover_common"
+        ]
+
+        self.assertEqual(
+            len(cover_common_imports),
+            1,
+        )
+
+        imported_names = {
+            alias.name
+            for alias in cover_common_imports[0].names
+        }
+
+        self.assertIn(
+            "log",
+            imported_names,
+        )
+
     def test_targeted_worker_isolated_from_global_queue(self) -> None:
         text = source(WORKER)
         tree = parsed(WORKER)

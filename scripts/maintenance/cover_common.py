@@ -968,11 +968,9 @@ def upsert_bytes_to_storage(
         bucket_api=bucket_api,
     )
 
-    payload = io.BytesIO(prepared_image.output_bytes)
-    payload.seek(0)
     bucket_api.upload(
         path=before.remote_path,
-        file=payload,
+        file=prepared_image.output_bytes,
         file_options={
             "content-type": prepared_image.mime_type,
             "cache-control": "3600",
