@@ -245,6 +245,65 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
             imported_names,
         )
 
+    def test_published_cover_candidate_status_corrective_migration(self) -> None:
+        root = Path(__file__).resolve().parents[3]
+
+        migration = (
+            root / 'supabase/migrations/20260809163500_allow_published_cover_candidates.sql'
+        ).read_text(encoding="utf-8")
+
+        rollback = (
+            root / 'supabase/rollbacks/20260809163500_allow_published_cover_candidates.rollback.sql'
+        ).read_text(encoding="utf-8")
+
+        verifier = (
+            root / 'scripts/maintenance/verify_cover_candidate_status_constraint.py'
+        ).read_text(encoding="utf-8")
+
+        for status in (
+            "failed",
+            "new",
+            "pending",
+            "published",
+        ):
+            self.assertIn(
+                f"'{status}'::text",
+                migration,
+            )
+
+        self.assertIn(
+            "candidate_status is null",
+            migration,
+        )
+        self.assertIn(
+            "drop constraint "
+            "product_cover_candidates_status_chk",
+            migration,
+        )
+        self.assertIn(
+            "add constraint "
+            "product_cover_candidates_status_chk",
+            migration,
+        )
+
+        self.assertIn(
+            "where candidate_status = 'published'",
+            rollback,
+        )
+        self.assertIn(
+            "Refusing rollback",
+            rollback,
+        )
+
+        self.assertIn(
+            '"published"',
+            verifier,
+        )
+        self.assertIn(
+            "selected_status_mismatches",
+            verifier,
+        )
+
     def test_targeted_worker_isolated_from_global_queue(self) -> None:
         text = source(WORKER)
         tree = parsed(WORKER)
