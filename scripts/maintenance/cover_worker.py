@@ -5,6 +5,7 @@ import argparse
 from dataclasses import asdict, dataclass
 import os
 from pathlib import Path
+from uuid import UUID
 import socket
 from typing import Any
 from urllib.parse import urlsplit
@@ -160,6 +161,16 @@ def parse_args() -> argparse.Namespace:
         default="output/cover_pipeline/cover_publish_summary.json",
         help="Pad voor het JSON-runrapport.",
     )
+    parser.add_argument(
+        "--product-id",
+        type=str,
+        default="",
+        help=(
+            "Maintenance/testmodus: claim uitsluitend exact dit "
+            "products.id. Vereist --mode publish en --limit 1. "
+            "Globale recovery/reconciliation wordt overgeslagen."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -173,6 +184,31 @@ def validate_args(args: argparse.Namespace) -> None:
         if int(getattr(args, name)) <= 0:
             raise CoverPipelineError(
                 f"--{name.replace('_', '-')} moet groter zijn dan nul."
+            )
+
+    if args.product_id:
+        try:
+            UUID(args.product_id)
+        except ValueError as exc:
+            raise CoverPipelineError(
+                "--product-id moet een geldige UUID zijn."
+            ) from exc
+
+        if args.mode != "publish":
+            raise CoverPipelineError(
+                "--product-id is uitsluitend toegestaan "
+                "met --mode publish."
+            )
+
+        if args.limit != 1:
+            raise CoverPipelineError(
+                "--product-id vereist exact --limit 1."
+            )
+
+        if args.dry_run:
+            raise CoverPipelineError(
+                "--product-id wordt in deze onderhoudsroute "
+                "niet gecombineerd met --dry-run."
             )
 
 
@@ -702,6 +738,117 @@ def claim_one_job(
 
     if row is None:
         return None
+    return CoverJob(
+        queue_id=str(row[0]),
+        product_id=str(row[1]),
+        ean=normalize_text(row[2]),
+        artist=normalize_text(row[3]),
+        title=normalize_text(row[4]),
+        format_label=normalize_text(row[5]),
+        source_reason=normalize_text(row[6]),
+        priority=int(row[7] or 0),
+        attempt_count=int(row[8] or 0),
+    )
+
+
+def claim_one_job_for_product(
+    conn,
+    *,
+    worker_id: str,
+    product_id: str,
+) -> CoverJob | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            with target_job as (
+                select q.id
+                from public.product_cover_queue q
+                join public.products p
+                  on p.id = q.product_id
+                where q.product_id = %s
+                  and q.status in (
+                        'pending',
+                        'retry_later',
+                        'review'
+                  )
+                  and (
+                        q.next_attempt_at is null
+                        or q.next_attempt_at <= now()
+                  )
+                  and p.cover_status <> 'blocked'
+                  and nullif(
+                        btrim(p.cover_storage_path),
+                        ''
+                      ) is null
+                  and public.normalize_cover_ean(p.ean)
+                      is not null
+                limit 1
+                for update of q skip locked
+            ),
+            queue_update as (
+                update public.product_cover_queue q
+                set
+                    status = 'processing',
+                    claimed_by = %s,
+                    claimed_at = now(),
+                    attempt_count = coalesce(
+                        q.attempt_count,
+                        0
+                    ) + 1,
+                    updated_at = now()
+                from target_job t
+                where q.id = t.id
+                returning
+                    q.id,
+                    q.product_id,
+                    q.source_reason,
+                    q.priority,
+                    q.attempt_count
+            ),
+            product_update as (
+                update public.products p
+                set
+                    cover_status = 'resolving',
+                    cover_last_attempt_at = now(),
+                    cover_locked_at = now(),
+                    cover_locked_by = %s,
+                    updated_at = now()
+                from queue_update q
+                where p.id = q.product_id
+                returning
+                    p.id,
+                    p.ean,
+                    p.artist,
+                    p.title,
+                    p.format_label
+            )
+            select
+                q.id,
+                q.product_id,
+                p.ean,
+                p.artist,
+                p.title,
+                p.format_label,
+                q.source_reason,
+                q.priority,
+                q.attempt_count
+            from queue_update q
+            join product_update p
+              on p.id = q.product_id
+            """,
+            (
+                product_id,
+                worker_id,
+                worker_id,
+            ),
+        )
+        row = cur.fetchone()
+
+    conn.commit()
+
+    if row is None:
+        return None
+
     return CoverJob(
         queue_id=str(row[0]),
         product_id=str(row[1]),
@@ -1718,6 +1865,7 @@ def main() -> None:
         "started_at": utc_now().isoformat(),
         "worker_id": worker_id,
         "mode": args.mode,
+        "target_product_id": args.product_id or None,
         "dry_run": bool(args.dry_run),
         "limit": args.limit,
         "max_attempts": args.max_attempts,
@@ -1751,7 +1899,42 @@ def main() -> None:
     try:
         require_schema(conn)
 
-        if args.dry_run:
+        if args.product_id:
+            job = claim_one_job_for_product(
+                conn,
+                worker_id=worker_id,
+                product_id=args.product_id,
+            )
+
+            if job is not None:
+                summary["metrics"]["claims"] += 1
+
+                session = make_session()
+
+                result = process_claimed_job(
+                    conn,
+                    job=job,
+                    worker_id=worker_id,
+                    session=session,
+                    retry_failed=False,
+                    max_attempts=args.max_attempts,
+                )
+                summary["jobs"].append(result)
+
+                status = normalize_text(
+                    result.get("status")
+                )
+                if status in summary["metrics"]:
+                    summary["metrics"][status] += 1
+
+                summary["metrics"]["downloads"] += int(
+                    result.get("downloads") or 0
+                )
+                summary["metrics"]["uploads"] += int(
+                    result.get("uploads") or 0
+                )
+
+        elif args.dry_run:
             with conn.cursor() as cur:
                 cur.execute(
                     "set transaction read only"

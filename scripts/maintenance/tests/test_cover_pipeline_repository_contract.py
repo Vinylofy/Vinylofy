@@ -205,6 +205,60 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
             text,
         )
 
+    def test_targeted_worker_isolated_from_global_queue(self) -> None:
+        text = source(WORKER)
+        tree = parsed(WORKER)
+
+        functions = {
+            node.name: node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+        }
+
+        self.assertIn(
+            "claim_one_job_for_product",
+            functions,
+        )
+
+        target_text = ast.get_source_segment(
+            text,
+            functions["claim_one_job_for_product"],
+        ) or ""
+
+        for token in (
+            "q.product_id = %s",
+            "for update of q skip locked",
+            "status = 'processing'",
+            "cover_status = 'resolving'",
+        ):
+            self.assertIn(token, target_text)
+
+        for forbidden in (
+            "recover_stale_claims",
+            "reconcile_local_products",
+            "claim_next_cover_job",
+        ):
+            self.assertNotIn(
+                forbidden,
+                target_text,
+            )
+
+        main_text = ast.get_source_segment(
+            text,
+            functions["main"],
+        ) or ""
+
+        for token in (
+            "--product-id",
+            "if args.product_id:",
+            "claim_one_job_for_product(",
+            "elif args.dry_run:",
+            "recover_stale_claims(",
+            "reconcile_local_products(",
+            "claim_one_job(",
+        ):
+            self.assertIn(token, text if token == "--product-id" else main_text)
+
     def test_migration_enforces_single_selection_and_claim_rpcs(self) -> None:
         text = source(MIGRATION).lower()
         for token in (
