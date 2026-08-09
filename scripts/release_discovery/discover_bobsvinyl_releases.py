@@ -48,32 +48,88 @@ def bob_date_query(d: date) -> str:
 
 
 def fetch(url: str, sleep: float) -> str | None:
+    max_attempts = 3
+    retryable_statuses = {429, 502, 503, 504}
+
     print("[RELEASE-BOB] fetch", {"url": url}, flush=True)
-    try:
-        r = requests.get(
-            url,
-            timeout=30,
-            headers={
-                "User-Agent": "VinylofyReleaseDiscovery/0.1",
-                "Accept": "text/html,application/xhtml+xml",
-            },
-        )
-        if r.status_code >= 400:
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = requests.get(
+                url,
+                timeout=30,
+                headers={
+                    "User-Agent": "VinylofyReleaseDiscovery/0.1",
+                    "Accept": "text/html,application/xhtml+xml",
+                },
+            )
+        except requests.RequestException as exc:
+            if attempt >= max_attempts:
+                print("[RELEASE-BOB] fetch_error", {
+                    "url": url,
+                    "attempt": attempt,
+                    "error": str(exc),
+                }, flush=True)
+                return None
+
+            delay = min(
+                max(sleep, 1.0) * (2 ** (attempt - 1)),
+                30.0,
+            )
+
+            print("[RELEASE-BOB] fetch_retry", {
+                "url": url,
+                "attempt": attempt,
+                "reason": "request_exception",
+                "delay_seconds": delay,
+            }, flush=True)
+
+            time.sleep(delay)
+            continue
+
+        if response.status_code < 400:
+            if sleep:
+                time.sleep(sleep)
+            return response.text
+
+        if (
+            response.status_code not in retryable_statuses
+            or attempt >= max_attempts
+        ):
             print("[RELEASE-BOB] fetch_skip", {
                 "url": url,
-                "status_code": r.status_code,
-                "reason": r.reason,
+                "status_code": response.status_code,
+                "reason": response.reason,
+                "attempt": attempt,
             }, flush=True)
             return None
-        if sleep:
-            time.sleep(sleep)
-        return r.text
-    except requests.RequestException as exc:
-        print("[RELEASE-BOB] fetch_error", {
+
+        retry_after = response.headers.get("Retry-After")
+        delay = None
+
+        if retry_after:
+            try:
+                delay = float(retry_after)
+            except ValueError:
+                delay = None
+
+        if delay is None or delay < 0:
+            delay = max(sleep, 1.0) * (2 ** (attempt - 1))
+
+        delay = min(delay, 30.0)
+
+        print("[RELEASE-BOB] fetch_retry", {
             "url": url,
-            "error": str(exc),
+            "status_code": response.status_code,
+            "reason": response.reason,
+            "attempt": attempt,
+            "delay_seconds": delay,
         }, flush=True)
-        return None
+
+        time.sleep(delay)
+
+    return None
+
 
 
 def extract_links(search_html: str) -> list[str]:
