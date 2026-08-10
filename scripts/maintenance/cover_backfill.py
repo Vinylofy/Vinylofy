@@ -195,6 +195,7 @@ def build_worker_command(
         "publish",
         "--limit",
         str(args.publish_limit),
+        "--missing-only",
         "--output-json",
         str(output_path.relative_to(ROOT)),
     ]
