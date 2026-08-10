@@ -36,7 +36,7 @@ from cover_common import (
 )
 
 
-QUEUEABLE_STATUSES = ("pending", "retry_later", "review")
+QUEUEABLE_STATUSES = ("pending", "retry_later")
 RETRYABLE_CANDIDATE_STATUSES = ("pending", "accepted", "published")
 MAX_STORAGE_OBJECT_BYTES = 5 * 1024 * 1024
 
