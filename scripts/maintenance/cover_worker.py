@@ -149,6 +149,14 @@ def parse_args() -> argparse.Namespace:
         help="Maximum bestaande lokale producten om zonder download te herstellen.",
     )
     parser.add_argument(
+        "--missing-only",
+        action="store_true",
+        help=(
+            "Verwerk uitsluitend producten zonder lokale cover. "
+            "Sla lokale reconciliation en local-repair claims over."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help=(
@@ -1872,6 +1880,7 @@ def main() -> None:
         "max_attempts": args.max_attempts,
         "stale_after_minutes": args.stale_after_minutes,
         "reconcile_limit": args.reconcile_limit,
+        "missing_only": bool(args.missing_only),
         "metrics": {
             "stale_claims_found": 0,
             "stale_claims_recovered": 0,
@@ -1944,12 +1953,15 @@ def main() -> None:
                 conn,
                 stale_after_minutes=args.stale_after_minutes,
             )
-            summary["local_preview"] = preview_local_actions(
-                conn,
-                mode=args.mode,
-                limit=max(args.limit, args.reconcile_limit),
-                max_attempts=args.max_attempts,
-            )
+            if args.missing_only:
+                summary["local_preview"] = []
+            else:
+                summary["local_preview"] = preview_local_actions(
+                    conn,
+                    mode=args.mode,
+                    limit=max(args.limit, args.reconcile_limit),
+                    max_attempts=args.max_attempts,
+                )
             summary["preview"] = preview_jobs(
                 conn,
                 mode=args.mode,
@@ -1971,10 +1983,12 @@ def main() -> None:
                     )
                 )
 
-            reconciliation = reconcile_local_products(
-                conn,
-                limit=args.reconcile_limit,
-            )
+            reconciliation = []
+            if not args.missing_only:
+                reconciliation = reconcile_local_products(
+                    conn,
+                    limit=args.reconcile_limit,
+                )
             summary["reconciliation"] = reconciliation
             summary["metrics"]["local_products_reconciled"] = sum(
                 item["status"] == "reused_local_cover"
@@ -1987,16 +2001,20 @@ def main() -> None:
 
             session = make_session()
             for _ in range(args.limit):
-                job = claim_one_local_repair(
-                    conn,
-                    worker_id=worker_id,
-                    stale_after_minutes=args.stale_after_minutes,
-                    max_attempts=args.max_attempts,
-                    retry_failed=(args.mode == "retry-failed"),
-                )
-                if job is not None:
-                    summary["metrics"]["local_repair_claims"] += 1
-                else:
+                job = None
+
+                if not args.missing_only:
+                    job = claim_one_local_repair(
+                        conn,
+                        worker_id=worker_id,
+                        stale_after_minutes=args.stale_after_minutes,
+                        max_attempts=args.max_attempts,
+                        retry_failed=(args.mode == "retry-failed"),
+                    )
+                    if job is not None:
+                        summary["metrics"]["local_repair_claims"] += 1
+
+                if job is None:
                     job = claim_one_job(
                         conn,
                         worker_id=worker_id,

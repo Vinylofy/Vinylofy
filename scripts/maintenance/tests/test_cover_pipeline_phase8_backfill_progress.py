@@ -38,6 +38,13 @@ WORKFLOW = (
     / "cover-backfill.yml"
 )
 
+WORKER = (
+    ROOT
+    / "scripts"
+    / "maintenance"
+    / "cover_worker.py"
+)
+
 
 class Phase8BackfillProgressTests(
     unittest.TestCase
@@ -149,6 +156,56 @@ class Phase8BackfillProgressTests(
         self.assertIn(
             "--dry-run",
             worker,
+        )
+
+    def test_worker_command_forces_missing_only(
+        self,
+    ) -> None:
+        args = self.make_args()
+
+        worker = (
+            cover_backfill
+            .build_worker_command(
+                args,
+                output_path=(
+                    ROOT
+                    / "output"
+                    / "cover_pipeline"
+                    / "backfill"
+                    / "worker.json"
+                ),
+            )
+        )
+
+        self.assertIn(
+            "--missing-only",
+            worker,
+        )
+
+    def test_missing_only_skips_repair_paths(
+        self,
+    ) -> None:
+        text = WORKER.read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            '"--missing-only"',
+            text,
+        )
+
+        self.assertIn(
+            "if not args.missing_only:\n"
+            "                reconciliation = "
+            "reconcile_local_products(",
+            text,
+        )
+
+        self.assertIn(
+            "if not args.missing_only:\n"
+            "                    job = "
+            "claim_one_local_repair(",
+            text,
         )
 
     def test_driver_has_no_offset_pagination(
