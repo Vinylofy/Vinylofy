@@ -4,17 +4,35 @@ on:
   workflow_dispatch:
     inputs:
       refresh_limit:
-        description: "Aantal producten voor candidate refresh"
-        required: true
-        default: "200"
-      publish_limit:
-        description: "Aantal queue-items voor publish"
+        description: "Producten per candidate-refresh batch"
         required: true
         default: "100"
+
+      publish_limit:
+        description: "Maximale worker-claims per batch"
+        required: true
+        default: "100"
+
+      max_batches:
+        description: "Maximaal aantal batches in deze run"
+        required: true
+        default: "3"
+
+      checkpoint:
+        description: "Resume checkpoint; leeg = start cataloguspass"
+        required: false
+        default: ""
+
       include_covered:
-        description: "Ook bestaande covers opnieuw beoordelen"
+        description: "Ook expliciete bestaande-cover repairs meenemen"
         required: true
         default: false
+        type: boolean
+
+      dry_run:
+        description: "Geen database- of Storage-writes"
+        required: true
+        default: true
         type: boolean
 
 concurrency:
@@ -25,6 +43,7 @@ jobs:
   backfill:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -33,6 +52,7 @@ jobs:
       VINYLOFY_COVER_STORAGE_BUCKET: ${{ vars.VINYLOFY_COVER_STORAGE_BUCKET }}
       VINYLOFY_COVER_STORAGE_PREFIX: ${{ vars.VINYLOFY_COVER_STORAGE_PREFIX }}
       VINYLOFY_COVER_SHOP_PRIORITY_JSON: ${{ vars.VINYLOFY_COVER_SHOP_PRIORITY_JSON }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -51,28 +71,35 @@ jobs:
       - name: Prepare folders
         shell: bash
         run: |
-          mkdir -p output/cover_pipeline
+          mkdir -p output/cover_pipeline/backfill
 
-      - name: Refresh candidates
+      # Central cover entrypoints remain the source of truth.
+      # The resumable orchestrator invokes:
+      # scripts/maintenance/cover_candidate_refresh.py
+      # scripts/maintenance/cover_worker.py
+      - name: Run bounded resumable backfill
         shell: bash
         run: |
           INCLUDE_COVERED=""
+          DRY_RUN=""
+
           if [ "${{ github.event.inputs.include_covered }}" = "true" ]; then
             INCLUDE_COVERED="--include-covered"
           fi
-          python -u scripts/maintenance/cover_candidate_refresh.py \
-            --limit "${{ github.event.inputs.refresh_limit }}" \
-            --max-offers-per-product 3 \
-            $INCLUDE_COVERED \
-            --output-json output/cover_pipeline/backfill_candidate_refresh_summary.json
 
-      - name: Publish backfill batch
-        shell: bash
-        run: |
-          python -u scripts/maintenance/cover_worker.py \
-            --mode publish \
-            --limit "${{ github.event.inputs.publish_limit }}" \
-            --output-json output/cover_pipeline/backfill_publish_summary.json
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            DRY_RUN="--dry-run"
+          fi
+
+          python -u scripts/maintenance/cover_backfill.py \
+            --refresh-limit "${{ github.event.inputs.refresh_limit }}" \
+            --publish-limit "${{ github.event.inputs.publish_limit }}" \
+            --max-batches "${{ github.event.inputs.max_batches }}" \
+            --checkpoint "${{ github.event.inputs.checkpoint }}" \
+            $INCLUDE_COVERED \
+            $DRY_RUN \
+            --output-json \
+              output/cover_pipeline/backfill_progress.json
 
       - name: Write run summary
         if: always()
@@ -82,9 +109,7 @@ jobs:
             --title "Cover Backfill" \
             --status "${{ job.status }}" \
             --summary-json \
-              "Candidate refresh=output/cover_pipeline/backfill_candidate_refresh_summary.json" \
-            --summary-json \
-              "Cover worker=output/cover_pipeline/backfill_publish_summary.json" \
+              "Backfill progress=output/cover_pipeline/backfill_progress.json" \
             >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload artifacts
