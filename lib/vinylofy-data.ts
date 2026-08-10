@@ -1,6 +1,7 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { enrichOffersWithShipping } from "@/lib/shipping";
 import { getShippingRulesMap } from "@/lib/shipping-repository";
+import { resolveCoverUrl } from "@/lib/cover-url";
 
 type ProductRow = {
   id: string;
@@ -178,6 +179,15 @@ function isBlacklistedFormat(formatLabel: string | null | undefined): boolean {
 
 function isAllowedProduct(product: Pick<ProductRow, "format_label">): boolean {
   return !isBlacklistedFormat(product.format_label);
+}
+
+function toPublicCoverUrl(
+  product: Pick<ProductRow, "cover_url" | "cover_storage_path">,
+): string | null {
+  return resolveCoverUrl({
+    coverUrl: product.cover_url,
+    storagePath: product.cover_storage_path,
+  });
 }
 
 function toNumber(value: number | string | null | undefined): number | null {
@@ -421,7 +431,7 @@ export async function getHomePageData(): Promise<{
         artist: product.artist,
         title: product.title,
         formatLabel: product.format_label,
-        coverUrl: product.cover_url,
+        coverUrl: toPublicCoverUrl(product),
   coverStoragePath: product.cover_storage_path,
         lowestPrice: toNumber(row.lowest_fresh_price),
         freshShopCount: row.fresh_instock_shop_count ?? 0,
@@ -454,7 +464,7 @@ export async function getHomePageData(): Promise<{
         artist: product.artist,
         title: product.title,
         formatLabel: product.format_label,
-        coverUrl: product.cover_url,
+        coverUrl: toPublicCoverUrl(product),
   coverStoragePath: product.cover_storage_path,
         lowestPrice: toNumber(best?.lowest_fresh_price),
         freshShopCount: best?.fresh_instock_shop_count ?? 0,
@@ -521,7 +531,7 @@ export async function getProductDetail(id: unknown): Promise<ProductDetail | nul
     artist: product.artist,
     title: product.title,
     formatLabel: product.format_label,
-    coverUrl: product.cover_url,
+    coverUrl: toPublicCoverUrl(product),
     coverStoragePath: product.cover_storage_path,
     lowestPrice,
     freshShopCount,
@@ -595,7 +605,7 @@ export async function searchProducts(
         artist: product.artist,
         title: product.title,
         formatLabel: product.format_label,
-        coverUrl: product.cover_url,
+        coverUrl: toPublicCoverUrl(product),
   coverStoragePath: product.cover_storage_path,
         lowestPrice,
         foundIn: freshShopCount,

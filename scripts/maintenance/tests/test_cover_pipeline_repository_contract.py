@@ -30,6 +30,8 @@ WORKER = MAINTENANCE / "cover_worker.py"
 MB_WORKER = MAINTENANCE / "cover_mb_worker.py"
 COVER_URL = ROOT / "lib" / "cover-url.ts"
 COVER_IMAGE = ROOT / "components" / "cover-image.tsx"
+COVER_IMAGE_CLIENT = ROOT / "components" / "cover-image-client.tsx"
+COVER_ROUTE = ROOT / "app" / "covers" / "[...path]" / "route.ts"
 VINYLOFY_DATA = ROOT / "lib" / "vinylofy-data.ts"
 SEARCH_RESULT_CARD = ROOT / "components" / "search" / "product-result-card.tsx"
 PRODUCT_SUMMARY_CARD = ROOT / "components" / "product" / "product-summary-card.tsx"
@@ -90,6 +92,8 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
             MB_WORKER,
             COVER_URL,
             COVER_IMAGE,
+            COVER_IMAGE_CLIENT,
+            COVER_ROUTE,
             VINYLOFY_DATA,
             SEARCH_RESULT_CARD,
             PRODUCT_SUMMARY_CARD,
@@ -754,21 +758,55 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, card_text)
 
-    def test_frontend_cover_url_helper_is_strict(self) -> None:
+    def test_public_product_cover_urls_are_sanitized_before_react_tree(self) -> None:
+        text = source(VINYLOFY_DATA)
+        self.assertIn(
+            'import { resolveCoverUrl } from "@/lib/cover-url";',
+            text,
+        )
+        self.assertEqual(
+            text.count("coverUrl: toPublicCoverUrl(product),"),
+            4,
+        )
+        self.assertEqual(
+            text.count("coverUrl: product.cover_url,"),
+            1,
+        )
+
+        helper_start = text.index("function toPublicCoverUrl(")
+        helper_end = text.index("\n}\n", helper_start) + 3
+        helper_text = text[helper_start:helper_end]
+
+        for token in (
+            "return resolveCoverUrl({",
+            "coverUrl: product.cover_url,",
+            "storagePath: product.cover_storage_path,",
+        ):
+            self.assertIn(token, helper_text)
+
+        self.assertNotIn(
+            "coverUrl: toPublicCoverUrl(product),",
+            helper_text,
+        )
+
+    def test_frontend_cover_url_helper_is_same_origin(self) -> None:
         text = source(COVER_URL)
         for token in (
             'PRODUCT_COVERS_BUCKET = "product-covers"',
-            "NEXT_PUBLIC_SUPABASE_URL",
+            'COVER_DELIVERY_PREFIX = "/covers/"',
             "normalizeCoverStoragePath",
             "buildProductCoverUrl",
+            "isLocalCoverAsset",
             "isSafeCoverUrl",
             "resolveCoverUrl",
-            "parsed.origin !== origin",
-            "parsed.pathname === expectedPathname",
             "COVER_PLACEHOLDER_SRC",
         ):
             self.assertIn(token, text)
+
         for forbidden in (
+            "NEXT_PUBLIC_SUPABASE_URL",
+            "/storage/v1/object/public",
+            "supabase.co",
             "data:",
             "blob:",
             "images.unsplash.com",
@@ -776,20 +814,73 @@ class RepositoryArchitectureContractTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, text)
 
-    def test_cover_image_has_single_local_fallback(self) -> None:
-        text = source(COVER_IMAGE)
+    def test_cover_image_resolves_server_side_and_client_fallback(self) -> None:
+        wrapper_text = source(COVER_IMAGE)
+        client_text = source(COVER_IMAGE_CLIENT)
+
+        self.assertNotIn('"use client"', wrapper_text)
+        for token in (
+            'import { CoverImageClient } from "./cover-image-client";',
+            "resolveCoverUrl",
+            "const resolvedSrc = resolveCoverUrl({",
+            "coverUrl: src",
+            "storagePath",
+            "resolvedSrc={resolvedSrc}",
+        ):
+            self.assertIn(token, wrapper_text)
+
+        for forbidden in (
+            "NEXT_PUBLIC_SUPABASE_URL",
+            "/storage/v1/object/public",
+            "onError=",
+            "COVER_PLACEHOLDER_SRC",
+        ):
+            self.assertNotIn(forbidden, wrapper_text)
+
         for token in (
             '"use client"',
-            "resolveCoverUrl",
             "COVER_PLACEHOLDER_SRC",
             "failedSrc === resolvedSrc",
             "setFailedSrc(resolvedSrc)",
             'data-cover-fallback={showPlaceholder ? "true" : "false"}',
         ):
+            self.assertIn(token, client_text)
+
+        self.assertNotIn("useEffect", client_text)
+        self.assertNotIn("fallbackSrc", client_text)
+        self.assertNotIn("coverSourceUrl", client_text)
+        self.assertNotIn("NEXT_PUBLIC_SUPABASE_URL", client_text)
+
+    def test_cover_delivery_route_is_strict_proxy(self) -> None:
+        text = source(COVER_ROUTE)
+
+        for token in (
+            'export const runtime = "nodejs";',
+            "PRODUCT_COVERS_BUCKET",
+            "normalizeCoverStoragePath",
+            "NEXT_PUBLIC_SUPABASE_URL",
+            "/storage/v1/object/public/",
+            'redirect: "error"',
+            'cache: "no-store"',
+            '"image/webp"',
+            '"image/jpeg"',
+            '"image/png"',
+            '"public, max-age=3600, s-maxage=3600"',
+            '"X-Content-Type-Options": "nosniff"',
+            "errorResponse(404)",
+            "errorResponse(502)",
+            "errorResponse(503)",
+        ):
             self.assertIn(token, text)
-        self.assertNotIn("useEffect", text)
-        self.assertNotIn("fallbackSrc", text)
-        self.assertNotIn("coverSourceUrl", text)
+
+        for forbidden in (
+            "SUPABASE_SECRET_KEY",
+            "SUPABASE_SERVICE_ROLE_KEY",
+            "Authorization",
+            "Location",
+            "redirect(",
+        ):
+            self.assertNotIn(forbidden, text)
 
     def test_rollback_does_not_delete_storage_by_inference(self) -> None:
         text = source(ROLLBACK).lower()
