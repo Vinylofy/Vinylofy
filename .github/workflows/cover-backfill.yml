@@ -130,25 +130,25 @@ jobs:
           SCHEDULED_RUN_IDS="$(
             printf '%s' "$RUNS_JSON" |
               python -c '
-import json
-import sys
-data = json.load(sys.stdin)
-for run in data.get("workflow_runs", []):
-    if run.get("event") == "schedule":
-        print(run["id"])
-'
+          import json
+          import sys
+          data = json.load(sys.stdin)
+          for run in data.get("workflow_runs", []):
+              if run.get("event") == "schedule":
+                  print(run["id"])
+          '
           )"
 
           MANUAL_RUN_IDS="$(
             printf '%s' "$RUNS_JSON" |
               python -c '
-import json
-import sys
-data = json.load(sys.stdin)
-for run in data.get("workflow_runs", []):
-    if run.get("event") == "workflow_dispatch":
-        print(run["id"])
-'
+          import json
+          import sys
+          data = json.load(sys.stdin)
+          for run in data.get("workflow_runs", []):
+              if run.get("event") == "workflow_dispatch":
+                  print(run["id"])
+          '
           )"
 
           RUN_IDS="$(
@@ -190,29 +190,29 @@ for run in data.get("workflow_runs", []):
 
             mapfile -t META < <(
               python - "$PROGRESS" <<'PYMETA'
-import json
-import sys
+          import json
+          import sys
 
-with open(sys.argv[1], encoding="utf-8") as handle:
-    payload = json.load(handle)
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              payload = json.load(handle)
 
-eligible = (
-    not bool(payload.get("dry_run"))
-    and not bool(payload.get("include_covered"))
-)
+          eligible = (
+              not bool(payload.get("dry_run"))
+              and not bool(payload.get("include_covered"))
+          )
 
-complete = bool(payload.get("catalog_pass_complete"))
+          complete = bool(payload.get("catalog_pass_complete"))
 
-checkpoint = (
-    payload.get("resume_checkpoint")
-    or payload.get("checkpoint_end")
-    or ""
-)
+          checkpoint = (
+              payload.get("resume_checkpoint")
+              or payload.get("checkpoint_end")
+              or ""
+          )
 
-print("true" if eligible else "false")
-print("true" if complete else "false")
-print(checkpoint)
-PYMETA
+          print("true" if eligible else "false")
+          print("true" if complete else "false")
+          print(checkpoint)
+          PYMETA
             )
 
             ELIGIBLE="${META[0]:-false}"
