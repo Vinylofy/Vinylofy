@@ -272,7 +272,7 @@ class Phase8BackfillProgressTests(
                 text,
             )
 
-    def test_backfill_remains_manual_only(
+    def test_backfill_has_temporary_bulk_schedule(
         self,
     ) -> None:
         text = WORKFLOW.read_text(
@@ -283,11 +283,32 @@ class Phase8BackfillProgressTests(
             "workflow_dispatch:",
             text,
         )
-
-        self.assertNotIn(
+        self.assertIn(
             "schedule:",
             text,
         )
+        self.assertEqual(
+            text.count("cron:"),
+            10,
+        )
+
+        for token in (
+            '"2026-08-12"',
+            '"2026-08-21"',
+            "scheduled-bulk",
+            "gh run download",
+            "resume_checkpoint",
+            "refresh_limit=100",
+            "publish_limit=100",
+            "max_batches=10",
+            "include_covered=false",
+            "dry_run=false",
+            "queue: max",
+        ):
+            self.assertIn(
+                token,
+                text,
+            )
 
 
 if __name__ == "__main__":

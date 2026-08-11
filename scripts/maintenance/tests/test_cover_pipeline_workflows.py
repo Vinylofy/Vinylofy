@@ -40,9 +40,40 @@ class CoverPipelineWorkflowTests(unittest.TestCase):
             'cron: "45 */6 * * *"',
             source(PUBLISH),
         )
-        self.assertNotIn(
-            "schedule:",
-            source(BACKFILL),
+
+        backfill = source(BACKFILL)
+
+        expected_bulk_crons = (
+            'cron: "7 0 12-21 8 *"',
+            'cron: "31 2 12-21 8 *"',
+            'cron: "55 4 12-21 8 *"',
+            'cron: "19 7 12-21 8 *"',
+            'cron: "43 9 12-21 8 *"',
+            'cron: "7 12 12-21 8 *"',
+            'cron: "31 14 12-21 8 *"',
+            'cron: "55 16 12-21 8 *"',
+            'cron: "19 19 12-21 8 *"',
+            'cron: "43 21 12-21 8 *"',
+        )
+
+        self.assertEqual(
+            backfill.count("cron:"),
+            len(expected_bulk_crons),
+        )
+
+        for cron in expected_bulk_crons:
+            self.assertIn(
+                cron,
+                backfill,
+            )
+
+        self.assertIn(
+            '"2026-08-12"',
+            backfill,
+        )
+        self.assertIn(
+            '"2026-08-21"',
+            backfill,
         )
 
     def test_shared_concurrency(self) -> None:
@@ -57,6 +88,11 @@ class CoverPipelineWorkflowTests(unittest.TestCase):
             )
             self.assertIn(
                 "cancel-in-progress: false",
+                text,
+                str(path),
+            )
+            self.assertIn(
+                "queue: max",
                 text,
                 str(path),
             )
