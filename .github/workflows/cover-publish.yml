@@ -21,6 +21,7 @@ on:
 concurrency:
   group: vinylofy-cover-pipeline
   cancel-in-progress: false
+  queue: max
 
 jobs:
   publish:
