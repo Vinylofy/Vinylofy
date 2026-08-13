@@ -450,6 +450,15 @@ def candidate_records_from_discovered(
             offer.product_url,
             item.get("image_url"),
         )
+        source_type = normalize_source_type(
+            normalize_text(item.get("source_type"))
+        )
+
+        # Arbitrary page <img> elements are insufficient evidence
+        # for automatic cover publication.
+        if source_type == "img_tag":
+            continue
+
         if not image_url or image_url in seen_urls:
             continue
         seen_urls.add(image_url)
@@ -462,9 +471,7 @@ def candidate_records_from_discovered(
             shop_name=offer.shop_name,
             product_url=offer.product_url,
             image_url=image_url,
-            source_type=normalize_source_type(
-                normalize_text(item.get("source_type"))
-            ),
+            source_type=source_type,
             source_rank=0,
             is_primary=bool(item.get("is_primary")),
             mime_type=None,
@@ -705,7 +712,7 @@ def update_candidate_row(
         )
         payload["candidate_status"] = (
             current_status
-            if current_status in {"published", "accepted"}
+            if current_status in {"published", "rejected"}
             else "pending"
         )
     if "last_seen_at" in columns:

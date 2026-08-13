@@ -16,6 +16,7 @@ EXPECTED_STATUSES = {
     "new",
     "pending",
     "published",
+    "rejected",
 }
 
 
