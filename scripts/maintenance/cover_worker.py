@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, dataclass
 import os
+import re
 from pathlib import Path
 from uuid import UUID
 import socket
@@ -179,6 +180,15 @@ def parse_args() -> argparse.Namespace:
             "Globale recovery/reconciliation wordt overgeslagen."
         ),
     )
+    parser.add_argument(
+        "--candidate-id",
+        type=str,
+        default="",
+        help=(
+            "Maintenance/recoverymodus: beperk --product-id tot exact "
+            "deze product_cover_candidates.id."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -217,6 +227,19 @@ def validate_args(args: argparse.Namespace) -> None:
             raise CoverPipelineError(
                 "--product-id wordt in deze onderhoudsroute "
                 "niet gecombineerd met --dry-run."
+            )
+
+    if args.candidate_id:
+        try:
+            UUID(args.candidate_id)
+        except ValueError as exc:
+            raise CoverPipelineError(
+                "--candidate-id moet een geldige UUID zijn."
+            ) from exc
+
+        if not args.product_id:
+            raise CoverPipelineError(
+                "--candidate-id vereist --product-id."
             )
 
 
@@ -936,11 +959,107 @@ def load_product_state(
     )
 
 
+
+def image_url_contains_exact_ean(
+    image_url: str,
+    ean: str,
+) -> bool:
+    ean_clean = normalize_ean(ean)
+    if not ean_clean:
+        return False
+
+    return (
+        re.search(
+            rf"(?<!\d){re.escape(ean_clean)}(?!\d)",
+            normalize_text(image_url),
+        )
+        is not None
+    )
+
+
+def require_pinned_candidate(
+    conn,
+    *,
+    product_id: str,
+    candidate_id: str,
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select
+                p.ean,
+                c.image_url,
+                c.source_type,
+                c.candidate_status
+            from public.product_cover_candidates c
+            join public.products p
+              on p.id = c.product_id
+            where c.id = %s
+              and c.product_id = %s
+            limit 1
+            """,
+            (
+                candidate_id,
+                product_id,
+            ),
+        )
+        row = cur.fetchone()
+
+    if row is None:
+        raise CoverPipelineError(
+            "Pinned covercandidate ontbreekt of hoort niet "
+            "bij het opgegeven product."
+        )
+
+    product_ean = normalize_ean(row[0]) or ""
+    image_url = normalize_text(row[1])
+    source_type = normalize_source_type(
+        normalize_text(row[2])
+    )
+    candidate_status = normalize_text(row[3])
+
+    if not product_ean:
+        raise CoverPipelineError(
+            "Pinned recoveryproduct heeft geen geldige EAN."
+        )
+
+    if not image_url_contains_exact_ean(
+        image_url,
+        product_ean,
+    ):
+        raise CoverPipelineError(
+            "Pinned covercandidate mist exact EAN-bewijs "
+            "in de image-URL."
+        )
+
+    if candidate_status not in RETRYABLE_CANDIDATE_STATUSES:
+        raise CoverPipelineError(
+            "Pinned covercandidate is niet publish-eligible: "
+            f"{candidate_status!r}."
+        )
+
+    if source_type in {"img_tag", "img", "image"}:
+        raise CoverPipelineError(
+            "Pinned covercandidate gebruikt verboden legacy "
+            f"source_type {source_type!r}."
+        )
+
+    parts = urlsplit(image_url)
+    if (
+        parts.scheme.lower() not in {"http", "https"}
+        or not parts.netloc
+    ):
+        raise CoverPipelineError(
+            "Pinned covercandidate heeft geen geldige HTTP(S)-URL."
+        )
+
+
 def load_candidates(
     conn,
     product: ProductState,
     *,
     retry_failed: bool,
+    candidate_id: str | None = None,
 ) -> list[CandidateChoice]:
     statuses = (
         RETRY_FAILED_CANDIDATE_STATUSES
@@ -976,6 +1095,10 @@ def load_candidates(
                     lower(btrim(c.source_type)),
                     ''
                   ) not in ('img_tag', 'img', 'image')
+              and (
+                    %s::text is null
+                    or c.id::text = %s::text
+                  )
             order by
                 c.is_selected desc,
                 c.source_rank desc,
@@ -984,7 +1107,12 @@ def load_candidates(
                 c.updated_at desc,
                 c.id
             """,
-            (product.product_id, list(statuses)),
+            (
+                product.product_id,
+                list(statuses),
+                candidate_id,
+                candidate_id,
+            ),
         )
         rows = cur.fetchall()
 
@@ -1560,6 +1688,7 @@ def process_claimed_job(
     session,
     retry_failed: bool,
     max_attempts: int,
+    pinned_candidate_id: str | None = None,
 ) -> dict[str, Any]:
     product: ProductState | None = None
     is_local_repair = job.source_reason == "local_repair"
@@ -1616,6 +1745,7 @@ def process_claimed_job(
             conn,
             product,
             retry_failed=retry_failed,
+            candidate_id=pinned_candidate_id,
         )
         target_path = (
             product.cover_storage_path
@@ -1878,6 +2008,7 @@ def main() -> None:
         "worker_id": worker_id,
         "mode": args.mode,
         "target_product_id": args.product_id or None,
+        "target_candidate_id": args.candidate_id or None,
         "dry_run": bool(args.dry_run),
         "limit": args.limit,
         "max_attempts": args.max_attempts,
@@ -1913,6 +2044,13 @@ def main() -> None:
         require_schema(conn)
 
         if args.product_id:
+            if args.candidate_id:
+                require_pinned_candidate(
+                    conn,
+                    product_id=args.product_id,
+                    candidate_id=args.candidate_id,
+                )
+
             job = claim_one_job_for_product(
                 conn,
                 worker_id=worker_id,
@@ -1931,6 +2069,9 @@ def main() -> None:
                     session=session,
                     retry_failed=False,
                     max_attempts=args.max_attempts,
+                    pinned_candidate_id=(
+                        args.candidate_id or None
+                    ),
                 )
                 summary["jobs"].append(result)
 
