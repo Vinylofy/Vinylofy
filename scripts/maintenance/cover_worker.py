@@ -37,12 +37,11 @@ from cover_common import (
 
 
 QUEUEABLE_STATUSES = ("pending", "retry_later")
-RETRYABLE_CANDIDATE_STATUSES = ("pending", "accepted", "published")
+RETRYABLE_CANDIDATE_STATUSES = ("pending", "published")
 MAX_STORAGE_OBJECT_BYTES = 5 * 1024 * 1024
 
 RETRY_FAILED_CANDIDATE_STATUSES = (
     "pending",
-    "accepted",
     "published",
     "failed",
 )
@@ -973,6 +972,10 @@ def load_candidates(
               on s.id = c.shop_id
             where c.product_id = %s
               and c.candidate_status = any(%s)
+              and coalesce(
+                    lower(btrim(c.source_type)),
+                    ''
+                  ) not in ('img_tag', 'img', 'image')
             order by
                 c.is_selected desc,
                 c.source_rank desc,
@@ -1122,7 +1125,7 @@ def publish_database_state(
                 is_selected = false,
                 candidate_status = case
                     when candidate_status = 'published'
-                        then 'accepted'
+                        then 'pending'
                     else candidate_status
                 end,
                 updated_at = now()

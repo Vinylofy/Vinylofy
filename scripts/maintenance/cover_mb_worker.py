@@ -407,7 +407,7 @@ set
     source_rank = greatest(source_rank, %(source_rank)s),
     is_primary = true,
     candidate_status = case
-        when candidate_status in ('accepted', 'published')
+        when candidate_status in ('published', 'rejected')
             then candidate_status
         else 'pending'
     end,

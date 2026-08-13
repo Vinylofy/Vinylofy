@@ -77,7 +77,7 @@ SOURCE_TYPE_SCORES: dict[str, int] = {
 }
 
 
-CANDIDATE_STATUSES = {"pending", "accepted", "rejected", "failed", "published"}
+CANDIDATE_STATUSES = {"new", "pending", "rejected", "failed", "published"}
 QUEUE_STATUSES = {"pending", "processing", "published", "failed", "review", "retry_later"}
 
 DEFAULT_CONNECT_TIMEOUT = 15
@@ -506,45 +506,10 @@ def extract_image_candidates_from_html(html: str, page_url: str) -> list[dict[st
         for candidate in extract_candidates_from_json_ld(parsed, page_url):
             add(candidate.get("image_url"), candidate.get("source_type", "jsonld"), is_primary=candidate.get("is_primary", False))
 
-    img_candidates: list[tuple[int, dict[str, Any]]] = []
-    for img in soup.find_all("img"):
-        src = img.get("src") or img.get("data-src") or img.get("data-srcset")
-        classes = " ".join(img.get("class", []))
-        alt = normalize_text(img.get("alt"))
-        hint_text = f"{classes} {alt}".lower()
-        priority = 0
-        if any(token in hint_text for token in ("product", "gallery", "media", "cover", "vinyl", "album", "plaat")):
-            priority += 20
-        if img.get("width") and img.get("height"):
-            try:
-                shortest = min(int(img.get("width")), int(img.get("height")))
-                priority += min(shortest // 40, 20)
-            except (TypeError, ValueError):
-                pass
-        if img.get("loading") == "lazy":
-            priority += 2
-        if src:
-            img_candidates.append(
-                (
-                    priority,
-                    {
-                        "image_url": src,
-                        "source_type": "img_tag",
-                        "is_primary": False,
-                        "width": img.get("width"),
-                        "height": img.get("height"),
-                    },
-                )
-            )
-
-    for _, candidate in sorted(img_candidates, key=lambda item: item[0], reverse=True)[:5]:
-        add(
-            candidate.get("image_url"),
-            candidate.get("source_type", "img_tag"),
-            is_primary=not results,
-            width=candidate.get("width"),
-            height=candidate.get("height"),
-        )
+    # Safety contract:
+    # arbitrary page <img> tags are intentionally excluded.
+    # Automatic candidates must originate from structured
+    # product metadata such as OG, Twitter, image_src or JSON-LD.
 
     return results
 
