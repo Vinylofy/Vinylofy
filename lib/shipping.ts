@@ -12,6 +12,7 @@ export type ShippingInfo = {
   freeShippingApplied: boolean;
   shippingNote: string | null;
   shippingConfidence: string | null;
+  freeShippingThresholdPrice: number | null;
 };
 
 export function enrichOffersWithShipping<
@@ -46,6 +47,7 @@ export function enrichOffersWithShipping<
         freeShippingApplied: false,
         shippingNote: null,
         shippingConfidence: null,
+      freeShippingThresholdPrice: null,
       };
     }
 
@@ -67,6 +69,10 @@ export function enrichOffersWithShipping<
       freeShippingApplied: free,
       shippingNote: rule.shippingNote,
       shippingConfidence: rule.confidence,
+    freeShippingThresholdPrice:
+      rule.freeShippingThresholdCents !== null
+        ? rule.freeShippingThresholdCents / 100
+        : null,
     };
   });
 }
