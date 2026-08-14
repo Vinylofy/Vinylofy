@@ -39,6 +39,17 @@ def extract_price(text: str) -> str | None:
 
     In that case, use the active sale price, not the strike-through compare-at price.
     """
+    # ROV can place a discount-code value inside the same price text
+    # as the actual product price. Remove only the explicitly labelled
+    # discount-code fragment before applying the existing price rules.
+    text = re.sub(
+        r"(?:discountcode|kortingscode)\s*:\s*[^()]{1,80}"
+        r"\(\s*(?:€|EUR)\s*[0-9]+(?:[.,][0-9]{1,2})?\s*\)",
+        " ",
+        text,
+        flags=re.I,
+    )
+
     sale_patterns = [
         r"(?:aanbiedingsprijs|sale\s*price)\s*[:]?\s*€\s*([0-9]+(?:[.,][0-9]{1,2})?)",
         r"(?:aanbiedingsprijs|sale\s*price)\s*[:]?\s*EUR\s*([0-9]+(?:[.,][0-9]{1,2})?)",
