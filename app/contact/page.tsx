@@ -18,18 +18,19 @@ export default function ContactPage() {
 
           <div className="mt-8 space-y-5 text-neutral-600">
             <p>
-              Heb je een vraag, mis je een shop, of klopt een prijs volgens jou
-              niet? Dan horen we dat graag.
+              Heb je een algemene vraag over Vinylofy of mis je een winkel in de
+              prijsvergelijking? Laat het gerust weten.
             </p>
 
             <p>
-              Voor nu kun je contact opnemen via het centrale contactadres van
-              Vinylofy. Deze pagina kan later worden uitgebreid met een formulier
-              of supportflow.
+              Koop je regelmatig bij een platenzaak die nog niet in Vinylofy staat?
+              Of wil je jouw eigen webshop onder de aandacht brengen? Suggesties
+              voor nieuwe winkels zijn welkom.
             </p>
 
-            <p className="rounded-xl bg-neutral-50 px-4 py-3 text-sm text-neutral-700">
-              contact@vinylofy.com
+            <p>
+              Neem contact op via{" "}
+              <a href="mailto:info@vinylofy.com">info@vinylofy.com</a>.
             </p>
           </div>
         </div>

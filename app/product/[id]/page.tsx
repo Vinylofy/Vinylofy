@@ -4,6 +4,7 @@ import { ProductOffersCard } from "@/components/product/product-offers-card";
 import { ProductSummaryCard } from "@/components/product/product-summary-card";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
+import { SearchControls } from "@/components/search/search-controls";
 import { CoverQueueBeacon } from "@/components/cover-queue-beacon";
 import { getProductDetail, getProductPriceHistory, type ProductPriceHistoryPoint } from "@/lib/vinylofy-data";
 
@@ -55,7 +56,7 @@ export default async function ProductDetailPage({ params }: ProductPageProps) {
 
   return (
     <div className="min-h-screen bg-[#f8f7f4] text-neutral-900">
-      <SiteHeader />
+      <SiteHeader searchSlot={<SearchControls initialQuery="" />} />
 
       <main className="mx-auto max-w-6xl px-4 py-6 md:px-6 md:py-8">
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_300px] xl:gap-5">

@@ -18,21 +18,53 @@ export default function PrivacyPage() {
 
           <div className="mt-8 space-y-5 text-neutral-600">
             <p>
-              Vinylofy verwerkt op dit moment alleen beperkte technische data
-              die nodig is om de website goed te laten werken, zoals
-              serververzoeken en basisanalyse van gebruik.
+              Vinylofy is opgezet om vinylprijzen te kunnen vergelijken zonder dat
+              je een account hoeft aan te maken of onnodig persoonlijke gegevens
+              hoeft achter te laten.
             </p>
 
             <p>
-              Vinylofy verkoopt geen persoonlijke gegevens. Externe winkels waar
-              je naartoe klikt, hanteren hun eigen privacy- en cookiebeleid.
+              Bij het bezoeken van de website kunnen beperkte technische gegevens
+              worden verwerkt die nodig zijn om Vinylofy goed, veilig en
+              betrouwbaar te laten werken. Denk aan serververzoeken, technische
+              foutmeldingen en algemene informatie over het gebruik van de website.
+              Deze gegevens worden gebruikt voor beheer, beveiliging,
+              probleemoplossing en het verbeteren van Vinylofy.
             </p>
 
             <p>
-              Deze pagina is een eerste basisversie en wordt later uitgebreid
-              met een formele privacytekst zodra tracking, alerts of accounts
-              worden toegevoegd.
+              Op dit moment biedt Vinylofy geen persoonlijke accounts,
+              verlanglijsten of prijsalerts aan. Vinylofy verkoopt geen
+              persoonlijke gegevens.
             </p>
+
+            <p>
+              Wanneer je via een link op Vinylofy naar een externe winkel gaat,
+              verlaat je de website van Vinylofy. De betreffende winkel verwerkt
+              gegevens volgens het eigen privacy- en cookiebeleid. Vinylofy heeft
+              geen invloed op de manier waarop externe winkels met jouw gegevens
+              omgaan.
+            </p>
+
+            <p>
+              Stuur je een e-mail naar Vinylofy, dan worden je e-mailadres en de
+              inhoud van je bericht alleen gebruikt om je vraag, suggestie of
+              verzoek te behandelen.
+            </p>
+
+            <p>
+              Wanneer Vinylofy in de toekomst wordt uitgebreid met functies zoals
+              accounts, verlanglijsten, prijsalerts of aanvullende
+              analysemogelijkheden, wordt deze privacyverklaring hierop aangepast.
+            </p>
+
+            <p>
+              Heb je een vraag over privacy of de verwerking van gegevens? Neem dan
+              contact op via{" "}
+              <a href="mailto:info@vinylofy.com">info@vinylofy.com</a>.
+            </p>
+
+            <p>Laatst bijgewerkt: juli 2026.</p>
           </div>
         </div>
       </main>
