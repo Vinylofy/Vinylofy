@@ -10,6 +10,14 @@ type ShopRow = {
   is_active: boolean;
 };
 
+const EXCLUDED_PUBLIC_SHOP_DOMAINS = new Set([
+  "bol.com",
+  "groovespin.nl",
+  "hhv.de",
+  "junorecords.com",
+  "soundsdelft.nl",
+]);
+
 export default async function ShopsPage() {
   const supabase = createSupabaseServerClient();
 
@@ -22,7 +30,11 @@ export default async function ShopsPage() {
     throw error;
   }
 
-  const shops = (data ?? []) as ShopRow[];
+  const shops = ((data ?? []) as ShopRow[]).filter(
+    (shop) =>
+      shop.is_active &&
+      !EXCLUDED_PUBLIC_SHOP_DOMAINS.has(shop.domain.trim().toLowerCase()),
+  );
 
   return (
     <div className="min-h-screen bg-white text-neutral-900">
@@ -33,12 +45,16 @@ export default async function ShopsPage() {
           <p className="text-sm font-medium uppercase tracking-[0.14em] text-orange-600">
             Shops
           </p>
+
           <h1 className="mt-4 text-3xl font-semibold tracking-tight md:text-4xl">
-            Aangesloten winkels
+            Winkels in de prijsvergelijking
           </h1>
+
           <p className="mt-4 max-w-2xl text-neutral-600">
-            Dit zijn de winkels waarvan Vinylofy momenteel prijsdata verwerkt of
-            voorbereidt voor vergelijking.
+            Vinylofy vergelijkt het actuele aanbod van onderstaande winkels.
+            Vermelding betekent niet dat er sprake is van een commerciële
+            samenwerking of partnerschap. Het winkelaanbod binnen Vinylofy kan
+            in de loop van de tijd veranderen en wordt regelmatig bijgewerkt.
           </p>
         </div>
 
@@ -59,15 +75,8 @@ export default async function ShopsPage() {
                     <p className="mt-1 text-sm text-neutral-500">{shop.domain}</p>
                   </div>
 
-                  <span
-                    className={[
-                      "inline-flex rounded-full px-3 py-1 text-xs font-medium",
-                      shop.is_active
-                        ? "bg-orange-50 text-orange-700"
-                        : "bg-neutral-100 text-neutral-500",
-                    ].join(" ")}
-                  >
-                    {shop.is_active ? "actief" : "inactief"}
+                  <span className="inline-flex rounded-full bg-orange-50 px-3 py-1 text-xs font-medium text-orange-700">
+                    actief
                   </span>
                 </div>
 
