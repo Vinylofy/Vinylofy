@@ -36,19 +36,19 @@ on:
         type: boolean
 
   # Tijdelijke bulkfill:
-  # 10 runs per dag van 12 t/m 21 augustus 2026.
+  # 10 runs per dag van 12 t/m 23 augustus 2026.
   # Cron is UTC; Nederland is in deze periode CEST (UTC+2).
   schedule:
-    - cron: "7 0 12-21 8 *"
-    - cron: "31 2 12-21 8 *"
-    - cron: "55 4 12-21 8 *"
-    - cron: "19 7 12-21 8 *"
-    - cron: "43 9 12-21 8 *"
-    - cron: "7 12 12-21 8 *"
-    - cron: "31 14 12-21 8 *"
-    - cron: "55 16 12-21 8 *"
-    - cron: "19 19 12-21 8 *"
-    - cron: "43 21 12-21 8 *"
+    - cron: "7 0 12-23 8 *"
+    - cron: "31 2 12-23 8 *"
+    - cron: "55 4 12-23 8 *"
+    - cron: "19 7 12-23 8 *"
+    - cron: "43 9 12-23 8 *"
+    - cron: "7 12 12-23 8 *"
+    - cron: "31 14 12-23 8 *"
+    - cron: "55 16 12-23 8 *"
+    - cron: "19 19 12-23 8 *"
+    - cron: "43 21 12-23 8 *"
 
 permissions:
   actions: read
@@ -109,7 +109,7 @@ jobs:
 
           # Cron kent geen jaarveld. Buiten deze exacte periode
           # mag de tijdelijke bulkfill nooit meer uitvoeren.
-          if [[ "$TODAY" < "2026-08-12" || "$TODAY" > "2026-08-21" ]]; then
+          if [[ "$TODAY" < "2026-08-12" || "$TODAY" > "2026-08-23" ]]; then
             {
               echo "run_backfill=false"
               echo "reason=outside-2026-bulk-window"
