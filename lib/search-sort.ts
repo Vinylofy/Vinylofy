@@ -1,4 +1,4 @@
-import { getOfferDisplayPrice } from "@/lib/offer-summary";
+import { getVisibleBasePriceOfferSummary } from "@/lib/offer-summary";
 import type { SearchResultItem } from "@/lib/vinylofy-data";
 
 export const SEARCH_SORT_OPTIONS = [
@@ -75,15 +75,10 @@ function compareText(
 function getResultPrice(
   item: SearchResultItem,
 ): number | null {
-  const prices = item.shops
-    .map((offer) => getOfferDisplayPrice(offer))
-    .filter(
-      (price): price is number =>
-        price !== null && Number.isFinite(price),
-    );
+  const bestOffer = getVisibleBasePriceOfferSummary(item.shops, 1)[0];
 
-  if (prices.length > 0) {
-    return Math.min(...prices);
+  if (bestOffer && Number.isFinite(bestOffer.price)) {
+    return bestOffer.price;
   }
 
   if (

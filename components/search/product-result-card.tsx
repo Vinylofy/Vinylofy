@@ -3,8 +3,7 @@ import Link from "next/link";
 import { CoverImage } from "@/components/cover-image";
 
 import {
-  getOfferDisplayPrice,
-  getVisibleOfferSummary,
+  getVisibleBasePriceOfferSummary,
 } from "@/lib/offer-summary";
 import { getShopCountryCode } from "@/lib/shop-country";
 import { formatEuro, type SearchResultItem } from "@/lib/vinylofy-data";
@@ -22,7 +21,7 @@ function OfferCountLabel({ count }: { count: number }) {
 }
 
 export function ProductResultCard({ item }: ProductResultCardProps) {
-  const visibleOffers = getVisibleOfferSummary(item.shops, 3);
+  const visibleOffers = getVisibleBasePriceOfferSummary(item.shops, 3);
   const visibleShopCount = item.shops.length;
   const effectiveOfferCount = Math.max(item.foundIn ?? 0, visibleShopCount);
   const ctaLabel = formatCtaLabel(effectiveOfferCount);
@@ -56,7 +55,6 @@ export function ProductResultCard({ item }: ProductResultCardProps) {
 
             {visibleOffers.map((shop) => {
               const countryCode = getShopCountryCode(shop);
-              const displayPrice = getOfferDisplayPrice(shop);
 
               return (
                 <div key={`${shop.name}-${shop.productUrl}`} className="contents">
@@ -66,7 +64,7 @@ export function ProductResultCard({ item }: ProductResultCardProps) {
                   </div>
 
                   <div className="shrink-0 text-right text-sm font-medium text-neutral-950">
-                    {formatEuro(displayPrice)}
+                    {formatEuro(shop.price)}
                   </div>
                 </div>
               );

@@ -91,6 +91,29 @@ export function getOfferDisplayPrice(offer: SearchShopOffer): number | null {
   return getEstimatedTotalPrice(enrichedOffer) ?? offer.price;
 }
 
+export function compareOffersByBasePrice(
+  a: SearchShopOffer,
+  b: SearchShopOffer,
+): number {
+  const aAvailabilityRank = a.availability === "in_stock" ? 0 : 1;
+  const bAvailabilityRank = b.availability === "in_stock" ? 0 : 1;
+
+  if (aAvailabilityRank !== bAvailabilityRank) {
+    return aAvailabilityRank - bAvailabilityRank;
+  }
+
+  if (a.price !== b.price) return a.price - b.price;
+
+  return b.lastSeenAt.localeCompare(a.lastSeenAt);
+}
+
+export function getVisibleBasePriceOfferSummary(
+  offers: SearchShopOffer[],
+  limit = 3,
+): SearchShopOffer[] {
+  return offers.slice().sort(compareOffersByBasePrice).slice(0, limit);
+}
+
 export function compareOffersForSummary(
   a: SearchShopOffer,
   b: SearchShopOffer,
