@@ -92,6 +92,8 @@ type ProductRow = {
     string | null;
   cover_storage_path:
     string | null;
+  cover_sha256:
+    string | null;
 };
 
 function firstValue(
@@ -205,21 +207,14 @@ export default async function CoverReviewPage({
 
   let query =
     supabase
-      .from("products")
+      .from(
+        "cover_review_pending_products",
+      )
       .select(
-        "id, ean, artist, title, format_label, cover_url, cover_storage_path",
+        "id, ean, artist, title, format_label, cover_url, cover_storage_path, cover_sha256",
         {
           count: "exact",
         },
-      )
-      .eq(
-        "cover_status",
-        "ready",
-      )
-      .not(
-        "cover_storage_path",
-        "is",
-        null,
       );
 
   if (
@@ -286,6 +281,8 @@ export default async function CoverReviewPage({
             storagePath:
               row.cover_storage_path,
           }),
+        coverSha256:
+          row.cover_sha256,
       }),
     );
 
@@ -337,10 +334,10 @@ export default async function CoverReviewPage({
               styles.summary
             }
           >
+            Nog te beoordelen:{" "}
             {total.toLocaleString(
               "nl-NL",
-            )}{" "}
-            covers
+            )}
             {letter !==
             "ALL"
               ? ` · artiest ${letter}`

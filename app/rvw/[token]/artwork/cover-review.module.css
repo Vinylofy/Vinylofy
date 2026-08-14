@@ -90,13 +90,6 @@
   background: white;
   border: 1px solid #ddd;
   border-radius: 10px;
-  transition:
-    opacity 140ms ease,
-    transform 140ms ease;
-}
-
-.cardRejected {
-  opacity: 0.38;
 }
 
 .imageWrap {
@@ -111,18 +104,6 @@
   height: 100%;
   display: block;
   object-fit: cover;
-}
-
-.overlay {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  background: rgba(0, 0, 0, 0.7);
-  color: white;
-  font-size: 15px;
-  font-weight: 900;
-  letter-spacing: 0.08em;
 }
 
 .info {
@@ -156,41 +137,52 @@
   overflow-wrap: anywhere;
 }
 
-.rejectButton {
-  width: 100%;
+.actions {
+  display: grid;
+  grid-template-columns:
+    minmax(0, 1fr)
+    minmax(0, 1fr);
+  gap: 6px;
   margin-top: 6px;
-  padding: 9px 10px;
-  border: 0;
-  border-radius: 7px;
-  background: #b42318;
-  color: white;
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 850;
-  letter-spacing: 0.06em;
 }
 
+.approveButton,
+.rejectButton {
+  min-width: 0;
+  padding: 9px 5px;
+  border: 0;
+  border-radius: 7px;
+  color: white;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.03em;
+}
+
+.approveButton {
+  background: #287a46;
+}
+
+.rejectButton {
+  background: #b42318;
+}
+
+.approveButton:hover:not(:disabled),
 .rejectButton:hover:not(:disabled) {
   filter: brightness(0.9);
 }
 
+.approveButton:disabled,
 .rejectButton:disabled {
   cursor: default;
-  background: #555;
+  background: #777;
 }
 
-.result,
 .error {
+  margin-top: 3px;
+  color: #a40000;
   font-size: 10px;
   line-height: 1.35;
-}
-
-.result {
-  color: #35651d;
-}
-
-.error {
-  color: #a40000;
 }
 
 .empty {
@@ -258,5 +250,10 @@
         minmax(0, 1fr)
       );
     gap: 9px;
+  }
+
+  .approveButton,
+  .rejectButton {
+    font-size: 9px;
   }
 }

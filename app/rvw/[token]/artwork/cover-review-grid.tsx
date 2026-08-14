@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+
 import {
   useState,
 } from "react";
@@ -14,13 +15,15 @@ export type CoverReviewProduct = {
   title: string;
   formatLabel: string | null;
   coverSrc: string;
+  coverSha256: string | null;
 };
 
 type CardStatus =
   | "idle"
-  | "busy"
-  | "done"
-  | "safe-warning"
+  | "approving"
+  | "rejecting"
+  | "approved"
+  | "rejected"
   | "error";
 
 export default function CoverReviewGrid({
@@ -48,36 +51,62 @@ export default function CoverReviewGrid({
     Record<string, string>
   >({});
 
-  async function disqualify(
-    product:
-      CoverReviewProduct,
+  function setBusy(
+    productId: string,
+    status:
+      | "approving"
+      | "rejecting",
   ) {
-    const current =
-      states[product.id];
-
-    if (
-      current === "busy" ||
-      current === "done" ||
-      current ===
-        "safe-warning"
-    ) {
-      return;
-    }
-
     setStates((old) => ({
       ...old,
-      [product.id]: "busy",
+      [productId]:
+        status,
     }));
 
     setMessages((old) => ({
       ...old,
-      [product.id]: "",
+      [productId]: "",
     }));
+  }
+
+  function setError(
+    productId: string,
+    error: unknown,
+  ) {
+    setStates((old) => ({
+      ...old,
+      [productId]:
+        "error",
+    }));
+
+    setMessages((old) => ({
+      ...old,
+      [productId]:
+        error instanceof Error
+          ? error.message
+          : "Onbekende fout",
+    }));
+  }
+
+  async function approve(
+    product:
+      CoverReviewProduct,
+  ) {
+    if (
+      !product.coverSha256
+    ) {
+      return;
+    }
+
+    setBusy(
+      product.id,
+      "approving",
+    );
 
     try {
       const response =
         await fetch(
-          "/api/rvw/cover-disqualify",
+          "/api/rvw/cover-approve",
           {
             method: "POST",
             credentials:
@@ -92,6 +121,8 @@ export default function CoverReviewGrid({
               JSON.stringify({
                 productId:
                   product.id,
+                coverSha256:
+                  product.coverSha256,
               }),
           },
         );
@@ -111,52 +142,76 @@ export default function CoverReviewGrid({
         );
       }
 
-      if (result.cleanupOk) {
-        setStates((old) => ({
-          ...old,
-          [product.id]:
-            "done",
-        }));
+      setStates((old) => ({
+        ...old,
+        [product.id]:
+          "approved",
+      }));
+    } catch (error) {
+      setError(
+        product.id,
+        error,
+      );
+    }
+  }
 
-        setMessages(
-          (old) => ({
-            ...old,
-            [product.id]:
-              `Afgekeurd · ${result.rejectedCandidates ?? 0} candidate(s)`,
-          }),
+  async function disqualify(
+    product:
+      CoverReviewProduct,
+  ) {
+    setBusy(
+      product.id,
+      "rejecting",
+    );
+
+    try {
+      const response =
+        await fetch(
+          "/api/rvw/cover-disqualify",
+          {
+            method: "POST",
+            credentials:
+              "same-origin",
+            headers: {
+              "Content-Type":
+                "application/json",
+              "X-Cover-Review-Token":
+                token,
+            },
+            body:
+              JSON.stringify({
+                productId:
+                  product.id,
+                coverSha256:
+                  product.coverSha256,
+              }),
+          },
         );
 
-        return;
+      const result =
+        await response
+          .json()
+          .catch(() => null);
+
+      if (
+        !response.ok ||
+        !result?.ok
+      ) {
+        throw new Error(
+          result?.error ??
+            `HTTP ${response.status}`,
+        );
       }
 
       setStates((old) => ({
         ...old,
         [product.id]:
-          "safe-warning",
+          "rejected",
       }));
-
-      setMessages(
-        (old) => ({
-          ...old,
-          [product.id]:
-            "Cover verwijderd en product geblokkeerd.",
-        }),
-      );
     } catch (error) {
-      setStates((old) => ({
-        ...old,
-        [product.id]:
-          "error",
-      }));
-
-      setMessages(
-        (old) => ({
-          ...old,
-          [product.id]:
-            error instanceof Error
-              ? error.message
-              : "Onbekende fout",
-        }),
+      setError(
+        product.id,
+        error,
       );
     }
   }
@@ -170,7 +225,7 @@ export default function CoverReviewGrid({
           styles.empty
         }
       >
-        Geen covers in deze selectie.
+        Geen covers meer in deze selectie.
       </div>
     );
   }
@@ -188,26 +243,29 @@ export default function CoverReviewGrid({
               product.id
             ] ?? "idle";
 
-          const removed =
-            state === "done" ||
+          if (
             state ===
-              "safe-warning";
+              "approved" ||
+            state ===
+              "rejected"
+          ) {
+            return null;
+          }
+
+          const busy =
+            state ===
+              "approving" ||
+            state ===
+              "rejecting";
 
           return (
             <article
               key={
                 product.id
               }
-              className={[
-                styles.card,
-                removed
-                  ? styles.cardRejected
-                  : "",
-              ]
-                .filter(
-                  Boolean,
-                )
-                .join(" ")}
+              className={
+                styles.card
+              }
             >
               <div
                 className={
@@ -227,16 +285,6 @@ export default function CoverReviewGrid({
                   sizes="(max-width: 600px) 46vw, (max-width: 1000px) 23vw, 180px"
                   unoptimized
                 />
-
-                {removed ? (
-                  <div
-                    className={
-                      styles.overlay
-                    }
-                  >
-                    AFGEKEURD
-                  </div>
-                ) : null}
               </div>
 
               <div
@@ -288,39 +336,66 @@ export default function CoverReviewGrid({
                   }
                 </span>
 
-                <button
-                  type="button"
+                <div
                   className={
-                    styles.rejectButton
-                  }
-                  disabled={
-                    state ===
-                      "busy" ||
-                    removed
-                  }
-                  onClick={() =>
-                    disqualify(
-                      product,
-                    )
+                    styles.actions
                   }
                 >
-                  {state ===
-                  "busy"
-                    ? "BEZIG…"
-                    : removed
-                      ? "AFGEKEURD"
-                      : "AFKEUREN"}
-                </button>
+                  <button
+                    type="button"
+                    className={
+                      styles.approveButton
+                    }
+                    disabled={
+                      busy ||
+                      !product.coverSha256
+                    }
+                    title={
+                      product.coverSha256
+                        ? "Deze exacte cover goedkeuren"
+                        : "Deze cover heeft nog geen SHA256 en kan daarom niet definitief worden goedgekeurd"
+                    }
+                    onClick={() =>
+                      approve(
+                        product,
+                      )
+                    }
+                  >
+                    {state ===
+                    "approving"
+                      ? "BEZIG…"
+                      : product.coverSha256
+                        ? "✓ GOEDKEUREN"
+                        : "GEEN HASH"}
+                  </button>
+
+                  <button
+                    type="button"
+                    className={
+                      styles.rejectButton
+                    }
+                    disabled={
+                      busy
+                    }
+                    onClick={() =>
+                      disqualify(
+                        product,
+                      )
+                    }
+                  >
+                    {state ===
+                    "rejecting"
+                      ? "BEZIG…"
+                      : "✕ AFKEUREN"}
+                  </button>
+                </div>
 
                 {messages[
                   product.id
                 ] ? (
                   <span
                     className={
-                      state ===
-                      "error"
-                        ? styles.error
-                        : styles.result
+                      styles.error
                     }
                   >
                     {

@@ -11,8 +11,16 @@ import {
 
 export const runtime = "nodejs";
 
+const SHA256_RE =
+  /^[0-9a-f]{64}$/;
+
 const PayloadSchema = z.object({
-  productId: z.string().uuid(),
+  productId:
+    z.string().uuid(),
+  coverSha256:
+    z.string()
+      .regex(SHA256_RE)
+      .nullable(),
 });
 
 type ReviewProductRow = {
@@ -23,6 +31,7 @@ type ReviewProductRow = {
   cover_status: string | null;
   cover_url: string | null;
   cover_storage_path: string | null;
+  cover_sha256: string | null;
 };
 
 type FinalProductRow = {
@@ -30,6 +39,8 @@ type FinalProductRow = {
   cover_url: string | null;
   cover_storage_path: string | null;
   cover_error_code: string | null;
+  cover_review_status: string | null;
+  cover_review_sha256: string | null;
 };
 
 function hidden404() {
@@ -38,9 +49,27 @@ function hidden404() {
     {
       status: 404,
       headers: {
-        "Cache-Control": "no-store",
+        "Cache-Control":
+          "no-store",
         "X-Robots-Tag":
           "noindex, nofollow, noarchive",
+      },
+    },
+  );
+}
+
+function conflict() {
+  return NextResponse.json(
+    {
+      ok: false,
+      error:
+        "cover_changed_refresh",
+    },
+    {
+      status: 409,
+      headers: {
+        "Cache-Control":
+          "no-store",
       },
     },
   );
@@ -109,7 +138,7 @@ export async function POST(
     await supabase
       .from("products")
       .select(
-        "id, ean, artist, title, cover_status, cover_url, cover_storage_path",
+        "id, ean, artist, title, cover_status, cover_url, cover_storage_path, cover_sha256",
       )
       .eq(
         "id",
@@ -147,22 +176,25 @@ export async function POST(
     return hidden404();
   }
 
-  /*
-   * Eerst product veilig BLOCKED
-   * en covervelden leegmaken.
-   *
-   * Daarna candidate permanent
-   * REJECTED en queue FAILED.
-   */
+  if (
+    product.cover_status !==
+      "ready" ||
+    !product.cover_storage_path
+      ?.trim() ||
+    (
+      product.cover_sha256 ??
+      null
+    ) !==
+      payload.coverSha256
+  ) {
+    return conflict();
+  }
 
   const now =
     new Date().toISOString();
 
-  const {
-    data: blockedRaw,
-    error: productWriteError,
-  } =
-    await supabase
+  const baseBlockQuery =
+    supabase
       .from("products")
       .update({
         cover_url: null,
@@ -185,12 +217,41 @@ export async function POST(
           "manual_wrong_cover",
         cover_error_message:
           "Handmatig afgekeurd via private cover review.",
+
+        cover_review_status:
+          "rejected",
+        cover_review_sha256:
+          payload.coverSha256,
+        cover_reviewed_at: now,
+
         updated_at: now,
       })
       .eq(
         "id",
         payload.productId,
       )
+      .eq(
+        "cover_status",
+        "ready",
+      );
+
+  const guardedBlockQuery =
+    payload.coverSha256 ===
+      null
+      ? baseBlockQuery.is(
+          "cover_sha256",
+          null,
+        )
+      : baseBlockQuery.eq(
+          "cover_sha256",
+          payload.coverSha256,
+        );
+
+  const {
+    data: blockedRaw,
+    error: productWriteError,
+  } =
+    await guardedBlockQuery
       .select("id")
       .maybeSingle();
 
@@ -198,25 +259,14 @@ export async function POST(
     productWriteError ||
     !blockedRaw
   ) {
-    console.error(
-      "cover review block failed",
-      productWriteError,
-    );
+    if (productWriteError) {
+      console.error(
+        "cover review block failed",
+        productWriteError,
+      );
+    }
 
-    return NextResponse.json(
-      {
-        ok: false,
-        error:
-          "product_block_failed",
-      },
-      {
-        status: 500,
-        headers: {
-          "Cache-Control":
-            "no-store",
-        },
-      },
-    );
+    return conflict();
   }
 
   const {
@@ -297,7 +347,7 @@ export async function POST(
     await supabase
       .from("products")
       .select(
-        "cover_status, cover_url, cover_storage_path, cover_error_code",
+        "cover_status, cover_url, cover_storage_path, cover_error_code, cover_review_status, cover_review_sha256",
       )
       .eq(
         "id",
@@ -345,7 +395,13 @@ export async function POST(
       null &&
     finalProduct
       .cover_error_code ===
-      "manual_wrong_cover";
+      "manual_wrong_cover" &&
+    finalProduct
+      .cover_review_status ===
+      "rejected" &&
+    finalProduct
+      .cover_review_sha256 ===
+      payload.coverSha256;
 
   if (!productSafe) {
     console.error(
@@ -386,6 +442,7 @@ export async function POST(
         rejectedRows?.length ?? 0,
       selectedAfter:
         selectedAfter ?? null,
+      status: "rejected",
       product: {
         id: product.id,
         ean: product.ean,
