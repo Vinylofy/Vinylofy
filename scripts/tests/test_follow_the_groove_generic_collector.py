@@ -24,6 +24,20 @@ class ConfigTests(unittest.TestCase):
         args=argparse.Namespace(write=True,dry_run=False,max_sources=3,max_direct_targets=25,lastfm_limit=5,graph_depth=1,source_mbid=[],recording_release_seed=[],output=None)
         with self.assertRaises(Exception): generic.run(args)
 
+    def test_frontier_write_is_explicit_and_hard_capped(self):
+        generic.validate_write_scope(argparse.Namespace(write=True,frontier=True,refresh=False,max_sources=3,source_mbid=[]))
+        with self.assertRaises(persistence.PersistenceDisabled):
+            generic.validate_write_scope(argparse.Namespace(write=True,frontier=True,refresh=False,max_sources=4,source_mbid=[]))
+        with self.assertRaises(persistence.PersistenceDisabled):
+            generic.validate_write_scope(argparse.Namespace(write=True,frontier=False,refresh=False,max_sources=1,source_mbid=[]))
+
+    def test_refresh_write_requires_exact_explicit_scope(self):
+        generic.validate_write_scope(argparse.Namespace(write=True,frontier=False,refresh=True,max_sources=1,source_mbid=[SOURCE.mbid]))
+        with self.assertRaises(persistence.PersistenceDisabled):
+            generic.validate_write_scope(argparse.Namespace(write=True,frontier=False,refresh=True,max_sources=1,source_mbid=[]))
+        with self.assertRaises(persistence.PersistenceDisabled):
+            generic.validate_write_scope(argparse.Namespace(write=True,frontier=False,refresh=True,max_sources=4,source_mbid=[SOURCE.mbid]*4))
+
     def test_recording_seed_must_be_uuid(self):
         with self.assertRaises(ValueError): generic.BoundedConfig(recording_release_seeds=("all",))
 

@@ -455,11 +455,13 @@ def orchestrate(sources: list[Source], collect: Callable[[Source], SourceResult]
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser=argparse.ArgumentParser(description="Generic bounded Follow-the-Groove collector (dry-run only)")
+    parser=argparse.ArgumentParser(description="Generic bounded Follow-the-Groove collector")
     mode=parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run",action="store_true")
     mode.add_argument("--write",action="store_true")
-    parser.add_argument("--refresh",action="store_true",help="allow explicit successful sources to be replayed")
+    source_mode=parser.add_mutually_exclusive_group()
+    source_mode.add_argument("--frontier",action="store_true",help="select unprocessed bounded frontier sources")
+    source_mode.add_argument("--refresh",action="store_true",help="allow explicit successful sources to be replayed")
     parser.add_argument("--max-sources",type=int,default=10)
     parser.add_argument("--max-direct-targets",type=int,default=25)
     parser.add_argument("--lastfm-limit",type=int,default=5)
@@ -470,11 +472,29 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def validate_write_scope(args: argparse.Namespace) -> None:
+    if not bool(getattr(args,"write",False)):
+        return
+    refresh=bool(getattr(args,"refresh",False)); frontier=bool(getattr(args,"frontier",False))
+    if refresh:
+        if not 1 <= args.max_sources <= 3:
+            raise persistence.PersistenceDisabled("refresh write max_sources must be between 1 and 3")
+        if not args.source_mbid or len(args.source_mbid)!=args.max_sources:
+            raise persistence.PersistenceDisabled("refresh write requires one explicit --source-mbid per bounded source")
+        return
+    if frontier:
+        if args.source_mbid:
+            raise persistence.PersistenceDisabled("frontier write does not accept explicit source MBIDs")
+        if not 1 <= args.max_sources <= 3:
+            raise persistence.PersistenceDisabled("frontier write max_sources must be between 1 and 3")
+        return
+    raise persistence.PersistenceDisabled("write requires explicit --frontier or --refresh mode")
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     if load_dotenv: load_dotenv(".env.local",override=False)
     write=bool(getattr(args,"write",False))
-    if write and (not args.source_mbid or len(args.source_mbid)!=args.max_sources):
-        raise persistence.PersistenceDisabled("--write requires an explicit --source-mbid for every bounded source")
+    validate_write_scope(args)
     config=BoundedConfig(args.max_sources,args.max_direct_targets,args.lastfm_limit,args.graph_depth,tuple(args.recording_release_seed),True)
     started=now(); started_perf=time.perf_counter()
     conn=psycopg.connect(os.environ["DATABASE_URL"],autocommit=False); conn.execute("begin read only")

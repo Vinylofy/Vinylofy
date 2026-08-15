@@ -1,0 +1,158 @@
+name: Follow the Groove Collector
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Bounded frontier collection or explicit source refresh"
+        required: true
+        default: frontier
+        type: choice
+        options:
+          - frontier
+          - refresh
+      max_sources:
+        description: "Hard-bounded number of source artists"
+        required: true
+        default: "1"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+      source_mbids:
+        description: "Comma-separated MBIDs; required only for refresh and count must equal max_sources"
+        required: false
+        default: ""
+        type: string
+      write:
+        description: "Explicitly enable bounded database writes"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: follow-the-groove-collector
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests "psycopg[binary]" python-dotenv
+
+      - name: Validate configuration and run bounded collector
+        shell: bash
+        env:
+          MODE_INPUT: ${{ inputs.mode }}
+          MAX_SOURCES_INPUT: ${{ inputs.max_sources }}
+          SOURCE_MBIDS_INPUT: ${{ inputs.source_mbids }}
+          WRITE_INPUT: ${{ inputs.write }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DATABASE_URL:-}" || -z "${LASTFM_API_KEY:-}" ]]; then
+            echo "Required collector secrets are not configured."
+            exit 1
+          fi
+          if [[ ! "$MAX_SOURCES_INPUT" =~ ^[1-3]$ ]]; then
+            echo "max_sources must be an integer from 1 through 3."
+            exit 1
+          fi
+          if [[ "$MODE_INPUT" != "frontier" && "$MODE_INPUT" != "refresh" ]]; then
+            echo "mode must be frontier or refresh."
+            exit 1
+          fi
+
+          mkdir -p output/follow_the_groove
+          args=(
+            python -u scripts/follow_the_groove/generic_collector.py
+            --max-sources "$MAX_SOURCES_INPUT"
+            --max-direct-targets 25
+            --lastfm-limit 5
+            --graph-depth 1
+            --output output/follow_the_groove/collector-result.json
+          )
+          if [[ "$WRITE_INPUT" == "true" ]]; then
+            args+=(--write)
+          else
+            args+=(--dry-run)
+          fi
+
+          if [[ "$MODE_INPUT" == "frontier" ]]; then
+            if [[ -n "$SOURCE_MBIDS_INPUT" ]]; then
+              echo "frontier mode does not accept source_mbids."
+              exit 1
+            fi
+            args+=(--frontier)
+          else
+            if [[ -z "$SOURCE_MBIDS_INPUT" ]]; then
+              echo "refresh mode requires explicit source_mbids."
+              exit 1
+            fi
+            IFS=',' read -r -a raw_mbids <<< "$SOURCE_MBIDS_INPUT"
+            if [[ "${#raw_mbids[@]}" -ne "$MAX_SOURCES_INPUT" ]]; then
+              echo "refresh source_mbids count must equal max_sources."
+              exit 1
+            fi
+            args+=(--refresh)
+            for raw_mbid in "${raw_mbids[@]}"; do
+              mbid="${raw_mbid//[[:space:]]/}"
+              if [[ -z "$mbid" ]]; then
+                echo "refresh contains an empty source MBID."
+                exit 1
+              fi
+              args+=(--source-mbid "$mbid")
+            done
+          fi
+
+          "${args[@]}"
+
+      - name: Write summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f output/follow_the_groove/collector-result.json ]]; then
+            python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          data=json.loads(Path("output/follow_the_groove/collector-result.json").read_text())
+          print("## Follow the Groove Collector")
+          print(f"- Mode: {data.get('mode')}")
+          print(f"- Selected sources: {len(data.get('selected_sources', []))}")
+          print(f"- Recording API calls: {data.get('recording_api_calls')}")
+          print(f"- Same-run recursion: {data.get('same_run_recursion')}")
+          for source in data.get("sources", []):
+              print(f"- {source['source']['display_name']}: {source['status']}")
+          PY
+          else
+            echo "Collector produced no JSON artifact." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload collector artifact
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: follow-the-groove-${{ github.run_id }}
+          path: output/follow_the_groove/collector-result.json
+          if-no-files-found: warn
+          retention-days: 14
