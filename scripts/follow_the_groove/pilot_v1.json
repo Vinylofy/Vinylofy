@@ -1,0 +1,31 @@
+{
+  "version": "PILOTSET V1",
+  "artists": [
+    {"name": "Queens of the Stone Age", "mbid": "7dc8f5bd-9d0b-4087-9f73-dc164950bbd8", "entity_type": "Group"},
+    {"name": "Kyuss", "mbid": "ea0f2a37-7007-4217-a812-396227f5013a", "entity_type": "Group"},
+    {"name": "Josh Homme", "mbid": "dbecd515-aac9-4e7b-808e-bca22809c316", "entity_type": "Person"},
+    {"name": "Brant Bjork", "mbid": "9c17713b-14f7-47ee-b0ba-87802d186aab", "entity_type": "Person"},
+    {"name": "Nick Oliveri", "mbid": "f3907034-e3db-499b-b46e-0d485ce3dbf7", "entity_type": "Person"},
+    {"name": "Fu Manchu", "mbid": "f96de591-5dae-41da-855b-eb387d88d7d4", "entity_type": "Group"},
+    {"name": "Monster Magnet", "mbid": "a0955511-1324-4e9b-834f-e1e140502850", "entity_type": "Group"},
+    {"name": "Them Crooked Vultures", "mbid": "4bc09c51-5d42-4c93-9ba6-8cc21a0edb8d", "entity_type": "Group"},
+    {"name": "Dave Grohl", "mbid": "4d5f891d-9bce-45ae-ad86-912dd27252fa", "entity_type": "Person"},
+    {"name": "John Paul Jones", "mbid": "4490113a-3880-4f5b-a39b-105bfceaed04", "entity_type": "Person"},
+    {"name": "Tony Bennett", "mbid": "8be0594f-8c13-46bb-ab06-f93ffba5c776", "entity_type": "Person"},
+    {"name": "Lady Gaga", "mbid": "650e7db6-b795-4eb5-a702-5ea2fc46c848", "entity_type": "Person"},
+    {"name": "Prince", "mbid": "070d193a-845c-479f-980e-bef15710653e", "entity_type": "Person"},
+    {"name": "Sinéad O’Connor", "mbid": "c78a77fa-507c-4c07-947a-0355029453bd", "entity_type": "Person"},
+    {"name": "Arctic Monkeys", "mbid": "ada7a83c-e3e1-40f1-93f9-3e73dbc9298a", "entity_type": "Group"},
+    {"name": "Miles Davis", "mbid": "561d854a-6a28-4aa7-8c99-323e6ce46c2a", "entity_type": "Person"},
+    {"name": "John Coltrane", "mbid": "b625448e-bf4a-41c3-a421-72ad46cdb831", "entity_type": "Person"},
+    {"name": "Beyoncé", "mbid": "859d0860-d480-4efd-970c-c05d5f1776b8", "entity_type": "Person"},
+    {"name": "JAŸ-Z", "mbid": "f82bcf78-5b69-4622-a5ef-73800768d9ac", "entity_type": "Person"},
+    {"name": "Miles Davis Quintet", "mbid": "fe7245e7-d734-4ca1-8e26-691883f58201", "entity_type": "Group"}
+  ],
+  "evidence_releases": [
+    {"mbid": "74c0deef-6915-4f06-bf1a-1ac26db0d983", "case": "tony_bennett_lady_gaga"},
+    {"mbid": "d2575e54-1d71-4142-b5cd-620d9699c85b", "case": "beyonce_jay_z"},
+    {"mbid": "a681034b-b886-4df9-aff2-f47efcf96f2f", "case": "josh_homme_producer_rejection"},
+    {"mbid": "906fc9f8-7819-4963-8620-59c88e56507e", "case": "prince_sinead_cover_rejection"}
+  ]
+}
