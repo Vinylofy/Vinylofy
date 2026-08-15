@@ -68,12 +68,60 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(manifest["status"],"PROVEN")
         self.assertEqual(manifest["dependency_delete_order"][-1],"collection_run")
         self.assertTrue(manifest["preexisting_artists_protected"])
+        self.assertTrue(manifest["late_revalidation_required"])
 
     def test_conflict_blocks_rollback_proof(self):
         self.assertEqual(persistence.rollback_manifest({"artists":[{"action":"CONFLICT"}]})["status"],"NOT_PROVEN")
 
     def test_writer_is_hard_disabled(self):
         with self.assertRaises(persistence.PersistenceDisabled): persistence.DisabledWriter.persist({})
+
+
+class DependencyAwareRollbackTests(unittest.TestCase):
+    RUN_A="00000000-0000-0000-0000-00000000000a"
+    RUN_B="00000000-0000-0000-0000-00000000000b"
+    RUN_C="00000000-0000-0000-0000-00000000000c"
+
+    def classify_created(self, *, last_seen=None, dependencies=()):
+        return persistence.classify_created_rollback_row(
+            run_id=self.RUN_A,last_seen_run_id=last_seen or self.RUN_A,
+            external_dependencies=dependencies,
+        )
+
+    def test_nas_britney_shared_artist_preserves_later_edge_and_evidence(self):
+        dependencies=[{"family":"edges","created_by_run_id":self.RUN_B},{"family":"evidence","created_by_run_id":self.RUN_B}]
+        self.assertEqual(self.classify_created(dependencies=dependencies),"PRESERVE_SHARED")
+
+    def test_reverse_order_allows_b_then_a_when_dependencies_are_gone(self):
+        self.assertEqual(persistence.classify_created_rollback_row(run_id=self.RUN_B,last_seen_run_id=self.RUN_B,external_dependencies=()),"DELETE_SAFE")
+        self.assertEqual(self.classify_created(dependencies=()),"DELETE_SAFE")
+
+    def test_multiple_dependencies_preserve_without_opportunistic_cleanup(self):
+        self.assertEqual(self.classify_created(dependencies=[{"created_by_run_id":self.RUN_B},{"created_by_run_id":self.RUN_C}]),"PRESERVE_SHARED")
+        self.assertEqual(self.classify_created(dependencies=[{"created_by_run_id":self.RUN_C}]),"PRESERVE_SHARED")
+        self.assertEqual(self.classify_created(dependencies=()),"DELETE_SAFE")
+        self.assertIn("opportunistic_cleanup",inspect.getsource(persistence.revalidate_rollback_plan))
+
+    def test_edge_with_external_evidence_is_preserved(self):
+        self.assertEqual(self.classify_created(dependencies=[{"family":"evidence","created_by_run_id":self.RUN_B}]),"PRESERVE_SHARED")
+
+    def test_similarity_seen_by_later_run_is_preserved(self):
+        self.assertEqual(self.classify_created(last_seen=self.RUN_B),"PRESERVE_SHARED")
+
+    def test_product_artist_seen_by_later_run_is_preserved_and_products_are_never_deleted(self):
+        self.assertEqual(self.classify_created(last_seen=self.RUN_B),"PRESERVE_SHARED")
+        self.assertNotIn("products",persistence.DELETE_ORDER)
+
+    def test_preimage_restore_never_clobbers_later_last_seen(self):
+        self.assertEqual(persistence.classify_preimage_rollback_row(run_id=self.RUN_A,row_exists=True,last_seen_run_id=self.RUN_A),"RESTORE_PREIMAGE")
+        self.assertEqual(persistence.classify_preimage_rollback_row(run_id=self.RUN_A,row_exists=True,last_seen_run_id=self.RUN_B),"PRESERVE_SHARED")
+        self.assertEqual(persistence.classify_preimage_rollback_row(run_id=self.RUN_A,row_exists=False,last_seen_run_id=None),"BLOCKED_UNSAFE")
+
+    def test_created_by_is_immutable_and_late_plan_is_read_only(self):
+        source=inspect.getsource(persistence.revalidate_rollback_plan).lower()
+        self.assertNotIn("update ",source)
+        self.assertNotIn("delete ",source)
+        self.assertIn("created_by_run_id",source)
 
 
 class WriterContractTests(unittest.TestCase):

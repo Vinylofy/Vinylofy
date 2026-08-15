@@ -176,6 +176,7 @@ def evidence_contract(row: Mapping[str, Any]) -> str:
 
 
 DELETE_ORDER = ("product_artists", "similarities", "evidence", "edges", "aliases", "artists", "collection_run")
+ROLLBACK_OUTCOMES = frozenset({"DELETE_SAFE", "PRESERVE_SHARED", "RESTORE_PREIMAGE", "BLOCKED_UNSAFE"})
 
 
 def rollback_manifest(plans: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[str, Any]:
@@ -194,6 +195,7 @@ def rollback_manifest(plans: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[
         "artist_delete_condition": "created_by_run_id=current_run AND no remaining dependencies AND no later run dependency",
         "preexisting_artists_protected": True,
         "collection_run_deleted_last": True,
+        "late_revalidation_required": True,
     }
 
 
@@ -429,6 +431,95 @@ def apply_source_plan(
     return {"run_id":run_id,"before":before,"after":after,"actions":action_counts,"created_ids":created_ids,"preimages":preimages,"rollback":rollback,"checks":checks}
 
 
+def classify_created_rollback_row(
+    *, run_id: str, last_seen_run_id: str | None, external_dependencies: Sequence[Mapping[str, Any]] = (),
+) -> str:
+    """Classify a created row using current state, never creator ownership alone."""
+    if external_dependencies or (last_seen_run_id is not None and str(last_seen_run_id) != str(run_id)):
+        return "PRESERVE_SHARED"
+    return "DELETE_SAFE"
+
+
+def classify_preimage_rollback_row(
+    *, run_id: str, row_exists: bool, last_seen_run_id: str | None,
+) -> str:
+    """Restore only when the rollback run is still the latest observer."""
+    if not row_exists:
+        return "BLOCKED_UNSAFE"
+    if last_seen_run_id is not None and str(last_seen_run_id) != str(run_id):
+        return "PRESERVE_SHARED"
+    return "RESTORE_PREIMAGE"
+
+
+def revalidate_rollback_plan(conn: psycopg.Connection[Any], run_id: str) -> dict[str, Any]:
+    """Replan rollback against current DB dependencies without mutating data.
+
+    The durable original manifest remains audit evidence. This late plan is the
+    authority for execution: rows used by later runs are preserved, preimages
+    are restored only while this run remains the latest observer, and unknown
+    or missing mutable rows block rollback.
+    """
+    run=conn.execute("select status,counters from follow_the_groove_collection_runs where id=%s",(run_id,)).fetchone()
+    if run is None:
+        return {"proven":False,"reason":"run_missing","outcomes":{},"counts":{"BLOCKED_UNSAFE":1}}
+    status,counters=run
+    expected=counters.get("created_ids",{})
+    preimages=counters.get("mutable_preimages",{})
+    table_for={"artists":"artists","aliases":"artist_aliases","edges":"artist_edges","evidence":"artist_relation_evidence","similarities":"artist_similarity","product_artists":"product_artists"}
+    outcomes: dict[str,list[dict[str,Any]]]={family:[] for family in (*table_for,"collection_run")}
+
+    # Children are classified before artists so the artist decision can use
+    # the exact set of rows that would survive this rollback.
+    for family in ("product_artists","similarities","evidence","edges","aliases"):
+        table=table_for[family]
+        for row_id in expected.get(family,[]):
+            row=conn.execute(f"select last_seen_run_id::text from {table} where id=%s and created_by_run_id=%s",(row_id,run_id)).fetchone()
+            if row is None:
+                outcomes[family].append({"id":str(row_id),"outcome":"BLOCKED_UNSAFE","reason":"owned_row_missing_or_creator_changed"})
+                continue
+            dependencies=[]
+            if family=="edges":
+                dependencies=[{"family":"evidence","id":str(r[0]),"created_by_run_id":str(r[1])} for r in conn.execute(
+                    "select id,created_by_run_id from artist_relation_evidence where edge_id=%s and created_by_run_id is distinct from %s",(row_id,run_id)).fetchall()]
+            outcome=classify_created_rollback_row(run_id=run_id,last_seen_run_id=row[0],external_dependencies=dependencies)
+            outcomes[family].append({"id":str(row_id),"outcome":outcome,"dependencies":dependencies})
+
+    preserved_child_ids={family:{item["id"] for item in rows if item["outcome"]=="PRESERVE_SHARED"} for family,rows in outcomes.items()}
+    for row_id in expected.get("artists",[]):
+        row=conn.execute("select last_seen_run_id::text from artists where id=%s and created_by_run_id=%s",(row_id,run_id)).fetchone()
+        if row is None:
+            outcomes["artists"].append({"id":str(row_id),"outcome":"BLOCKED_UNSAFE","reason":"owned_row_missing_or_creator_changed"})
+            continue
+        dependencies=[]
+        specs=(
+          ("aliases","artist_aliases","artist_id"),("edges","artist_edges","artist_low_id"),("edges","artist_edges","artist_high_id"),
+          ("evidence","artist_relation_evidence","source_artist_id"),("evidence","artist_relation_evidence","target_artist_id"),
+          ("similarities","artist_similarity","source_artist_id"),("similarities","artist_similarity","target_artist_id"),
+          ("product_artists","product_artists","artist_id"),
+        )
+        for family,table,column in specs:
+            for dep_id,creator in conn.execute(f"select id::text,created_by_run_id::text from {table} where {column}=%s",(row_id,)).fetchall():
+                if str(creator)!=str(run_id) or dep_id in preserved_child_ids.get(family,set()):
+                    dependencies.append({"family":family,"id":dep_id,"created_by_run_id":creator})
+        outcome=classify_created_rollback_row(run_id=run_id,last_seen_run_id=row[0],external_dependencies=dependencies)
+        outcomes["artists"].append({"id":str(row_id),"outcome":outcome,"dependencies":dependencies})
+
+    for family,rows in preimages.items():
+        table=table_for.get(family)
+        if table is None:
+            outcomes.setdefault(family,[]).append({"outcome":"BLOCKED_UNSAFE","reason":"unknown_preimage_family"})
+            continue
+        for image in rows:
+            row=conn.execute(f"select last_seen_run_id::text from {table} where id=%s",(image.get("id"),)).fetchone()
+            outcome=classify_preimage_rollback_row(run_id=run_id,row_exists=row is not None,last_seen_run_id=row[0] if row else None)
+            outcomes[family].append({"id":str(image.get("id")),"outcome":outcome,"preimage":dict(image)})
+
+    preserved_owned=any(item["outcome"]=="PRESERVE_SHARED" for family in table_for for item in outcomes[family] if item.get("id") in {str(x) for x in expected.get(family,[])})
+    outcomes["collection_run"].append({"id":str(run_id),"outcome":"PRESERVE_SHARED" if preserved_owned else "DELETE_SAFE","reason":"immutable creator provenance" if preserved_owned else "no surviving owned rows"})
+    counts={name:sum(item["outcome"]==name for rows in outcomes.values() for item in rows) for name in ROLLBACK_OUTCOMES}
+    return {"proven":status=="succeeded" and counts["BLOCKED_UNSAFE"]==0,"status":status,"outcomes":outcomes,"counts":counts,"rollback_order":list(DELETE_ORDER),"late_revalidated":True,"opportunistic_cleanup":False}
+
+
 def audit_source_run(conn: psycopg.Connection[Any], run_id: str) -> dict[str, Any]:
     run=conn.execute("select status,counters from follow_the_groove_collection_runs where id=%s",(run_id,)).fetchone()
     if run is None:
@@ -438,6 +529,7 @@ def audit_source_run(conn: psycopg.Connection[Any], run_id: str) -> dict[str, An
     created={family:conn.execute(f"select count(*) from {table} where created_by_run_id=%s",(run_id,)).fetchone()[0] for family,table in table_for.items()}
     expected_counts={family:len(expected.get(family,[])) for family in table_for}
     restored={family:len(rows) for family,rows in counters.get("mutable_preimages",{}).items()}
+    late_plan=revalidate_rollback_plan(conn,run_id)
     checks={
         "status_succeeded":run[0]=="succeeded",
         "created_counts":created==expected_counts,
@@ -445,12 +537,7 @@ def audit_source_run(conn: psycopg.Connection[Any], run_id: str) -> dict[str, An
         "allowed_edges_supported":conn.execute("select count(*) from artist_edges e where e.created_by_run_id=%s and not exists(select 1 from artist_relation_evidence ev where ev.edge_id=e.id and ev.classification='allowed')",(run_id,)).fetchone()[0]==0,
         "rejected_unlinked":conn.execute("select count(*) from artist_relation_evidence where created_by_run_id=%s and classification<>'allowed' and edge_id is not null",(run_id,)).fetchone()[0]==0,
         "product_fk":conn.execute("select count(*) from product_artists pa left join products p on p.id=pa.product_id where pa.created_by_run_id=%s and p.id is null",(run_id,)).fetchone()[0]==0,
-        "external_artist_dependencies":conn.execute("""select count(*) from artists a where a.created_by_run_id=%s and (
-          exists(select 1 from artist_aliases x where x.artist_id=a.id and x.created_by_run_id is distinct from %s) or
-          exists(select 1 from artist_edges x where (x.artist_low_id=a.id or x.artist_high_id=a.id) and x.created_by_run_id is distinct from %s) or
-          exists(select 1 from artist_relation_evidence x where (x.source_artist_id=a.id or x.target_artist_id=a.id) and x.created_by_run_id is distinct from %s) or
-          exists(select 1 from artist_similarity x where (x.source_artist_id=a.id or x.target_artist_id=a.id) and x.created_by_run_id is distinct from %s) or
-          exists(select 1 from product_artists x where x.artist_id=a.id and x.created_by_run_id is distinct from %s))""",(run_id,run_id,run_id,run_id,run_id,run_id)).fetchone()[0]==0,
+        "late_dependency_plan":late_plan["proven"],
     }
     return {"proven":all(checks.values()),"status":run[0],"created":created,"freshness_restores":restored,"checks":checks,
-            "rollback_order":list(DELETE_ORDER),"collection_run":1,"preexisting_rows_delete":0}
+            "rollback_order":list(DELETE_ORDER),"collection_run":1,"preexisting_rows_delete":0,"late_plan":late_plan}
