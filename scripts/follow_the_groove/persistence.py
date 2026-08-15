@@ -58,7 +58,7 @@ CONTRACTS: dict[str, EntityContract] = {
     ),
     "membership": EntityContract(
         ("source_system", "relation_type_id", "source_mbid", "target_mbid", "begin_date", "end_date", "attribute_ids"),
-        ("source_system", "relation_type_id", "source_mbid", "target_mbid", "begin_date", "end_date", "attribute_ids", "ended", "direction", "classification", "evidence_kind", "provenance"),
+        ("source_system", "relation_type_id", "source_mbid", "target_mbid", "begin_date", "end_date", "attribute_ids", "ended", "direction", "classification", "evidence_kind"),
     ),
     "artist_credit": EntityContract(
         ("source_system", "recording_mbid", "source_mbid", "target_mbid", "evidence_kind"),
@@ -117,7 +117,72 @@ def similarity_resolution_preimage(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def product_artist_enrichment_preimage(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Capture every field changed by a safe product-credit enrichment."""
+    preimage = seen_again_preimage(row)
+    preimage["credit_position"] = row.get("credit_position")
+    return preimage
+
+
+def plan_product_artist_rows(
+    incoming: Iterable[Mapping[str, Any]], existing: Iterable[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """Reconcile one physical product/artist link without stealing provenance."""
+    kind = "product_artists"
+    current = {natural_key(kind, row): dict(row) for row in existing}
+    planned: list[dict[str, Any]] = []
+    observed: set[tuple[Any, ...]] = set()
+    for raw in incoming:
+        row = dict(raw)
+        key = natural_key(kind, row)
+        if key in observed:
+            planned.append({**row, "action": "SKIP", "reason": "duplicate_incoming"})
+            continue
+        observed.add(key)
+        old = current.get(key)
+        if old is None:
+            planned.append({**row, "action": "CREATE", "planned_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"ftg:{kind}:{key!r}"))})
+            continue
+
+        old_position = old.get("credit_position")
+        new_position = row.get("credit_position")
+        if old_position is not None and new_position is not None and old_position != new_position:
+            planned.append({
+                **row, "action": "CONFLICT", "existing_id": old.get("id"),
+                "conflicts": {"credit_position": {"existing": old_position, "incoming": new_position}},
+            })
+        elif old_position is None and new_position is not None:
+            if row.get("source_system") != "musicbrainz_artist_credit":
+                planned.append({
+                    **row, "action": "CONFLICT", "existing_id": old.get("id"),
+                    "conflicts": {"credit_position_provenance": {
+                        "existing": old.get("source_system"), "incoming": row.get("source_system"),
+                    }},
+                })
+            else:
+                planned.append({
+                    **row, "action": "ENRICH_SAFE", "existing_id": old.get("id"),
+                    "preimage": product_artist_enrichment_preimage(old),
+                    "preserved_source_system": old.get("source_system"),
+                    "preserved_credited_name": old.get("credited_name"),
+                    "observed_source_system": row.get("source_system"),
+                    "observed_credited_name": row.get("credited_name"),
+                })
+        else:
+            planned.append({
+                **row, "action": "SEEN_AGAIN", "existing_id": old.get("id"),
+                "preimage": seen_again_preimage(old),
+                "preserved_source_system": old.get("source_system"),
+                "preserved_credited_name": old.get("credited_name"),
+                "observed_source_system": row.get("source_system"),
+                "observed_credited_name": row.get("credited_name"),
+            })
+    return planned
+
+
 def plan_rows(kind: str, incoming: Iterable[Mapping[str, Any]], existing: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    if kind == "product_artists":
+        return plan_product_artist_rows(incoming, existing)
     contract = CONTRACTS[kind]
     current = {natural_key(kind, row): dict(row) for row in existing}
     planned: list[dict[str, Any]] = []
@@ -141,7 +206,11 @@ def plan_rows(kind: str, incoming: Iterable[Mapping[str, Any]], existing: Iterab
         if conflicts:
             planned.append({**row, "action": "CONFLICT", "conflicts": conflicts, "existing_id": old.get("id")})
         else:
-            planned.append({**row, "action": "SEEN_AGAIN", "existing_id": old.get("id"), "preimage": seen_again_preimage(old)})
+            planned_row = {**row, "action": "SEEN_AGAIN", "existing_id": old.get("id"), "preimage": seen_again_preimage(old)}
+            if kind == "membership" and _hashable(old.get("provenance")) != _hashable(row.get("provenance")):
+                planned_row["preserved_provenance"] = old.get("provenance")
+                planned_row["observed_provenance"] = row.get("provenance")
+            planned.append(planned_row)
     return planned
 
 
@@ -255,7 +324,7 @@ def _counts(conn: psycopg.Connection[Any]) -> dict[str, int]:
 
 def _action_counts(plans: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[str, dict[str, int]]:
     return {family: {action: sum(row.get("action") == action for row in rows) for action in
-                     ("CREATE", "SEEN_AGAIN", "RESOLVE_EXISTING_UNRESOLVED", "CONFLICT", "SKIP")}
+                     ("CREATE", "SEEN_AGAIN", "ENRICH_SAFE", "RESOLVE_EXISTING_UNRESOLVED", "CONFLICT", "SKIP")}
             for family, rows in plans.items()}
 
 
@@ -411,6 +480,13 @@ def apply_source_plan(
             row_id=_row_id(row); conn.execute("insert into product_artists (id,product_id,artist_id,credited_name,credit_position,source_system,created_by_run_id,last_seen_run_id) values (%s,%s,%s,%s,%s,%s,%s,%s)",(row_id,row["product_id"],artist_ids[row["artist_mbid"]],row.get("credited_name"),row.get("credit_position"),row["source_system"],run_id,run_id)); created_ids["product_artists"].append(row_id)
         elif action=="SEEN_AGAIN":
             row_id=_row_id(row); preimages["product_artists"].append(dict(row["preimage"])); conn.execute("update product_artists set last_seen_run_id=%s,last_verified_at=now() where id=%s",(run_id,row_id))
+        elif action=="ENRICH_SAFE":
+            row_id=_row_id(row); preimages["product_artists"].append(dict(row["preimage"]))
+            changed=conn.execute(
+                "update product_artists set credit_position=%s,last_seen_run_id=%s,last_verified_at=now() where id=%s and credit_position is null",
+                (row["credit_position"],run_id,row_id),
+            )
+            if changed.rowcount != 1: raise PersistenceConflict("product artist enrichment precondition changed")
 
     after=_counts(conn); action_counts=_action_counts(plans)
     expected_delta={"artists":action_counts["artists"]["CREATE"],"artist_aliases":action_counts["aliases"]["CREATE"],"artist_edges":action_counts["edges"]["CREATE"],"artist_relation_evidence":action_counts["evidence"]["CREATE"],"artist_similarity":action_counts["similarities"]["CREATE"],"product_artists":action_counts["product_artists"]["CREATE"]}

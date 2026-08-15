@@ -48,9 +48,64 @@ class PlannerTests(unittest.TestCase):
         fields=set(persistence.CONTRACTS["membership"].key+persistence.CONTRACTS["membership"].immutable)
         self.assertNotIn("pair_low_id",fields); self.assertNotIn("pair_high_id",fields)
 
+    def test_membership_reverse_fetch_is_seen_again_without_losing_provenance(self):
+        base={"id":"e1","source_system":"musicbrainz","relation_type_id":"member",
+              "source_mbid":"person","target_mbid":"group","begin_date":"1968","end_date":"1980",
+              "attribute_ids":["vocal"],"ended":True,"direction":"source_to_target",
+              "classification":"allowed","evidence_kind":"membership","last_seen_run_id":"run-a",
+              "provenance":{"fetched_for_mbid":"group","source_direction":"backward"}}
+        incoming={**base,"id":None,"provenance":{"fetched_for_mbid":"person","source_direction":"forward"}}
+        plan=persistence.plan_rows("membership",[incoming],[base])[0]
+        self.assertEqual(plan["action"],"SEEN_AGAIN")
+        self.assertEqual(plan["preserved_provenance"],base["provenance"])
+        self.assertEqual(plan["observed_provenance"],incoming["provenance"])
+
+    def test_membership_real_immutable_difference_still_conflicts(self):
+        base={"id":"e1","source_system":"musicbrainz","relation_type_id":"member",
+              "source_mbid":"person","target_mbid":"group","begin_date":None,"end_date":None,
+              "attribute_ids":[],"ended":False,"direction":"source_to_target",
+              "classification":"allowed","evidence_kind":"membership"}
+        self.assertEqual(persistence.plan_rows("membership",[{**base,"ended":True}],[base])[0]["action"],"CONFLICT")
+        self.assertEqual(persistence.plan_rows("membership",[{**base,"relation_type_id":"founder"}],[base])[0]["action"],"CREATE")
+
     def test_product_link_dedupes_on_product_artist(self):
         row={"product_id":"p","artist_mbid":"a","credited_name":"A","credit_position":1,"source_system":"musicbrainz_artist_credit"}
         self.assertEqual([x["action"] for x in persistence.plan_rows("product_artists",[row,row],[])],["CREATE","SKIP"])
+
+    def test_product_link_safe_musicbrainz_credit_enrichment(self):
+        old={"id":"pa","product_id":"p","artist_mbid":"a","credited_name":"John Coltrane",
+             "credit_position":None,"source_system":"vinylofy_exact","last_seen_run_id":"old",
+             "last_verified_at":"before"}
+        incoming={"product_id":"p","artist_mbid":"a","credited_name":"Coltrane",
+                  "credit_position":1,"source_system":"musicbrainz_artist_credit"}
+        plan=persistence.plan_rows("product_artists",[incoming],[old])[0]
+        self.assertEqual(plan["action"],"ENRICH_SAFE")
+        self.assertEqual(plan["preimage"],{"id":"pa","last_seen_run_id":"old","last_verified_at":"before","credit_position":None})
+        self.assertEqual(plan["preserved_source_system"],"vinylofy_exact")
+        self.assertEqual(plan["preserved_credited_name"],"John Coltrane")
+
+    def test_product_link_identical_is_seen_again(self):
+        row={"id":"pa","product_id":"p","artist_mbid":"a","credited_name":"A",
+             "credit_position":1,"source_system":"musicbrainz_artist_credit"}
+        self.assertEqual(persistence.plan_rows("product_artists",[row],[row])[0]["action"],"SEEN_AGAIN")
+
+    def test_product_link_conflicting_non_null_position_fails_closed(self):
+        old={"id":"pa","product_id":"p","artist_mbid":"a","credited_name":"A",
+             "credit_position":2,"source_system":"vinylofy_exact"}
+        incoming={**old,"credit_position":1,"source_system":"musicbrainz_artist_credit"}
+        self.assertEqual(persistence.plan_rows("product_artists",[incoming],[old])[0]["action"],"CONFLICT")
+
+    def test_product_link_different_artist_is_a_distinct_create(self):
+        old={"id":"pa","product_id":"p","artist_mbid":"a","credited_name":"A",
+             "credit_position":1,"source_system":"musicbrainz_artist_credit"}
+        incoming={**old,"id":None,"artist_mbid":"b"}
+        self.assertEqual(persistence.plan_rows("product_artists",[incoming],[old])[0]["action"],"CREATE")
+
+    def test_unverified_product_position_enrichment_fails_closed(self):
+        old={"id":"pa","product_id":"p","artist_mbid":"a","credited_name":"A",
+             "credit_position":None,"source_system":"vinylofy_exact"}
+        incoming={**old,"credit_position":1,"source_system":"other"}
+        self.assertEqual(persistence.plan_rows("product_artists",[incoming],[old])[0]["action"],"CONFLICT")
 
     def test_similarity_resolution_preimage_is_complete(self):
         old={"id":"s","source_system":"lastfm","source_mbid":"a","returned_target_name_normalized":"b","returned_mbid":"m","position":1,"match_score":"1","resolution_status":"unresolved","target_artist_id":None,"last_seen_run_id":"r1","updated_at":"time"}
@@ -237,6 +292,14 @@ class WriterContractTests(unittest.TestCase):
         self.assertIn("created_ids",source)
         self.assertIn("preimages",source)
         self.assertIn("rollback_manifest",source)
+
+    def test_product_enrichment_preserves_creator_provenance_and_has_atomic_precondition(self):
+        source=inspect.getsource(persistence.apply_source_plan)
+        statement=next(line for line in source.splitlines() if 'update product_artists set credit_position=' in line)
+        self.assertNotIn("source_system",statement)
+        self.assertNotIn("credited_name",statement)
+        self.assertIn("credit_position is null",statement)
+        self.assertIn('action=="ENRICH_SAFE"',source)
 
 
 if __name__ == "__main__": unittest.main()
