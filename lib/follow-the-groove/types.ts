@@ -30,6 +30,7 @@ export type FtgCandidateView = FtgArtistView & {
   rank: number;
   reasonCode: FtgReasonCode;
   reasonLabel: string;
+  bridgeName?: string | null;
 };
 
 export type FtgTrailItem = {

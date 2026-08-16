@@ -32,10 +32,12 @@ export default async function FollowTheGroovePage({ params }: FollowTheGroovePag
           <aside className="space-y-5 lg:sticky lg:top-28 lg:self-start">
             <div>
               <p className="text-xs font-medium uppercase tracking-[0.16em] text-orange-600">Follow the Groove</p>
-              <p className="mt-2 text-sm leading-6 text-neutral-600">Ontdek muziek via echte connecties.</p>
+              <p className="mt-2 text-sm leading-6 text-neutral-600">
+                Ontdek muziek via echte connecties tussen artiesten. Kies een volgende stap en bouw je eigen muzikale route.
+              </p>
             </div>
             <div className="space-y-3">
-              <h2 className="text-sm font-semibold text-neutral-950">Jouw groove</h2>
+              <h2 className="border-l-2 border-orange-500 pl-3 text-base font-semibold text-neutral-950">Jouw groove</h2>
               <GrooveTrail trail={data.trail} />
             </div>
           </aside>

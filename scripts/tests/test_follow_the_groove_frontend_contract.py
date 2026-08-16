@@ -15,11 +15,18 @@ ROOT = Path(__file__).resolve().parents[2]
 def run_typescript(module: str, expression: str, payload: object) -> object:
     module_path = ROOT / module
     temporary_module: Path | None = None
-    if module.endswith("representative-cover.ts"):
-        source = module_path.read_text().replace(
-            'from "../cover-url"',
-            f'from "{(ROOT / "lib/cover-url.ts").as_uri()}"',
-        )
+    if module.endswith("representative-cover.ts") or module.endswith("destination-selection.ts"):
+        source = module_path.read_text()
+        if module.endswith("representative-cover.ts"):
+            source = source.replace(
+                'from "../cover-url"',
+                f'from "{(ROOT / "lib/cover-url.ts").as_uri()}"',
+            )
+        else:
+            source = source.replace(
+                'from "./ranking"',
+                f'from "{(ROOT / "lib/follow-the-groove/ranking.ts").as_uri()}"',
+            )
         handle = tempfile.NamedTemporaryFile(mode="w", suffix=".ts", delete=False)
         with handle:
             handle.write(source)
@@ -132,6 +139,71 @@ class V3TypescriptParityTests(unittest.TestCase):
             rows,
         )
         self.assertEqual(actual, ["A", "B"])
+
+
+class NextDestinationSelectionTests(unittest.TestCase):
+    def test_weak_direct_can_be_replaced_by_bounded_bridge_destination(self) -> None:
+        direct = [
+            fixture_candidate("Franz Stahl", factual=True, mechanisms=("membership",), product_count=0),
+            fixture_candidate("Dave Grohl", factual=True, mechanisms=("membership",), similarity=True, position=1),
+        ]
+        onward = {
+            "dave-grohl": [
+                {**fixture_candidate("Queens of the Stone Age", factual=True, mechanisms=("artist_credit",)), "sourceArtistId": "dave-grohl"},
+            ]
+        }
+        actual = run_typescript(
+            "lib/follow-the-groove/destination-selection.ts",
+            "subject.selectNextDestinations({ sourceArtistId: 'source', direct: input.direct, onward: new Map(Object.entries(input.onward)), limit: 2 }).map(row => ({ name: row.displayName, bridge: row.bridgeName }))",
+            {"direct": direct, "onward": onward},
+        )
+        self.assertIn({"name": "Queens of the Stone Age", "bridge": "Dave Grohl"}, actual)
+        self.assertNotIn({"name": "Franz Stahl", "bridge": None}, actual)
+
+    def test_direct_hub_and_people_are_not_excluded(self) -> None:
+        direct = [fixture_candidate("Person Hub", factual=True), fixture_candidate("Group", factual=True)]
+        onward = {
+            "person-hub": [
+                {**fixture_candidate("Destination A", similarity=True, position=1), "sourceArtistId": "person-hub"},
+                {**fixture_candidate("Destination B", similarity=True, position=2), "sourceArtistId": "person-hub"},
+            ],
+            "group": [],
+        }
+        actual = run_typescript(
+            "lib/follow-the-groove/destination-selection.ts",
+            "subject.selectNextDestinations({ sourceArtistId: 'source', direct: input.direct, onward: new Map(Object.entries(input.onward)), limit: 5 }).map(row => row.displayName)",
+            {"direct": direct, "onward": onward},
+        )
+        self.assertIn("Person Hub", actual)
+
+    def test_selection_is_bounded_deterministic_and_collapses_duplicates(self) -> None:
+        direct = [fixture_candidate("Bridge", factual=True, similarity=True, position=1)]
+        relation = {**fixture_candidate("Destination", factual=True), "sourceArtistId": "bridge"}
+        actual = run_typescript(
+            "lib/follow-the-groove/destination-selection.ts",
+            "subject.selectNextDestinations({ sourceArtistId: 'source', direct: input.direct, onward: new Map([['bridge', [input.relation, input.relation]]]), limit: 5 }).map(row => ({ name: row.displayName, count: row.onwardCount }))",
+            {"direct": direct, "relation": relation},
+        )
+        self.assertEqual(actual.count({"name": "Destination", "count": 1}), 1)
+
+    def test_zero_products_is_not_a_dead_end_rule_and_depth_does_not_recurse(self) -> None:
+        direct = [fixture_candidate("Hub", factual=True, product_count=0)]
+        onward = {
+            "hub": [
+                {**fixture_candidate("One Hop", factual=True), "sourceArtistId": "hub"},
+            ],
+            "one-hop": [
+                {**fixture_candidate("Two Hop", factual=True), "sourceArtistId": "one-hop"},
+            ],
+        }
+        actual = run_typescript(
+            "lib/follow-the-groove/destination-selection.ts",
+            "subject.selectNextDestinations({ sourceArtistId: 'source', direct: input.direct, onward: new Map(Object.entries(input.onward)), limit: 5 }).map(row => row.displayName)",
+            {"direct": direct, "onward": onward},
+        )
+        self.assertIn("Hub", actual)
+        self.assertIn("One Hop", actual)
+        self.assertNotIn("Two Hop", actual)
 
 
 class FrontendPureContractTests(unittest.TestCase):

@@ -29,18 +29,20 @@ export function GrooveCandidateCard({
           </h3>
           <p className="mt-2 min-h-[3rem] text-sm leading-6 text-neutral-600">{candidate.reasonLabel}</p>
           <div className="mt-2 min-h-5">
-          {candidate.productCount > 0 ? (
-            <p className="text-xs text-neutral-500">
-              {candidate.productCount === 1
-                ? "1 titel op Vinylofy"
-                : `${candidate.productCount} titels op Vinylofy`}
-            </p>
+          {candidate.productCount > 0 && candidate.searchHref ? (
+            <Link
+              href={candidate.searchHref}
+              prefetch={false}
+              className="text-xs font-medium text-orange-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300"
+            >
+              {candidate.productCount === 1 ? "1 titel op Vinylofy →" : `${candidate.productCount} titels op Vinylofy →`}
+            </Link>
           ) : null}
           </div>
         </div>
       </div>
 
-      <div className="mt-5 flex min-h-[76px] flex-col items-stretch justify-end gap-2">
+      <div className="mt-5 flex min-h-11 flex-col items-stretch justify-end">
         <Link
           href={buildGrooveHref(trailMbids, candidate.mbid)}
           prefetch={false}
@@ -48,11 +50,6 @@ export function GrooveCandidateCard({
         >
           Volg de groove →
         </Link>
-        {candidate.productCount > 0 && candidate.searchHref ? (
-          <Link href={candidate.searchHref} prefetch={false} className="text-center text-xs font-medium text-orange-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300">
-            Bekijk titels →
-          </Link>
-        ) : null}
       </div>
     </article>
   );

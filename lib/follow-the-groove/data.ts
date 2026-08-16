@@ -1,5 +1,6 @@
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { getReasonCodes, rankCandidates, type FtgRankingCandidate } from "./ranking";
+import { selectNextDestinations, type FtgOnwardRelation } from "./destination-selection";
 import { mapReasonLabel, type AllowedEvidence } from "./reasons";
 import { isValidTrail } from "./presentation";
 import {
@@ -299,6 +300,54 @@ export async function getFollowTheGroovePage(input: {
         )
       : Promise.resolve([]),
   ]);
+  const [onwardEdges, onwardSimilarities] = await Promise.all([
+    candidateIds.length
+      ? unwrap<EdgeRow>(
+          supabase
+            .from("artist_edges")
+            .select("id, artist_low_id, artist_high_id")
+            .or(
+              `artist_low_id.in.(${candidateIds.join(",")}),artist_high_id.in.(${candidateIds.join(",")})`,
+            ),
+        )
+      : Promise.resolve([]),
+    candidateIds.length
+      ? unwrap<SimilarityRow & { source_artist_id: string }>(
+          supabase
+            .from("artist_similarity")
+            .select("source_artist_id, target_artist_id, position, match_score")
+            .in("source_artist_id", candidateIds)
+            .eq("resolution_status", "resolved")
+            .not("target_artist_id", "is", null),
+        )
+      : Promise.resolve([]),
+  ]);
+  const onwardEdgeIds = [...new Set(onwardEdges.map((edge) => edge.id))];
+  const onwardEvidence = onwardEdgeIds.length
+    ? await unwrap<EvidenceRow>(
+        supabase
+          .from("artist_relation_evidence")
+          .select(
+            "edge_id, source_artist_id, target_artist_id, evidence_kind, classification, ended, recording_mbid",
+          )
+          .in("edge_id", onwardEdgeIds)
+          .eq("classification", "allowed"),
+      )
+    : [];
+  const onwardTargetIds = [
+    ...new Set([
+      ...onwardEdges.flatMap((edge) => [edge.artist_low_id, edge.artist_high_id]),
+      ...onwardSimilarities.map((row) => row.target_artist_id),
+    ]),
+  ];
+  const onwardArtists = onwardTargetIds.length
+    ? await unwrap<ArtistRow>(
+        supabase
+          .from("artists")
+          .select("id, musicbrainz_artist_mbid, display_name, entity_type")
+          .in("id", onwardTargetIds),
+      )
+    : [];
   const candidatesById = new Map(candidateArtists.map((artist) => [artist.id, artist]));
   const similaritiesByTarget = new Map(similarities.map((row) => [row.target_artist_id, row]));
   const edgeTargetIds = new Set(edges.map((edge) => getFactualTarget(edge, activeArtist.id)));
@@ -332,9 +381,84 @@ export async function getFollowTheGroovePage(input: {
       productCount: 0,
     }];
   });
-  const ranked = rankCandidates(rankingInput, { mode, limit });
-  const rankedArtists = ranked.map((candidate) => candidatesById.get(candidate.targetArtistId)!);
-  const views = await loadPresentationData([activeArtist, ...rankedArtists]);
+  const ranked = rankCandidates(rankingInput, { mode, limit: rankingInput.length });
+  const onwardArtistsById = new Map(onwardArtists.map((artist) => [artist.id, artist]));
+  const onwardSimilaritiesBySource = new Map<string, typeof onwardSimilarities>();
+  for (const similarity of onwardSimilarities) {
+    const current = onwardSimilaritiesBySource.get(similarity.source_artist_id) ?? [];
+    current.push(similarity);
+    onwardSimilaritiesBySource.set(similarity.source_artist_id, current);
+  }
+  const onwardEdgesBySource = new Map<string, EdgeRow[]>();
+  for (const edge of onwardEdges) {
+    for (const sourceId of [edge.artist_low_id, edge.artist_high_id]) {
+      if (!candidateIds.includes(sourceId)) continue;
+      const current = onwardEdgesBySource.get(sourceId) ?? [];
+      current.push(edge);
+      onwardEdgesBySource.set(sourceId, current);
+    }
+  }
+  const onwardRelations = new Map<string, FtgOnwardRelation[]>();
+  for (const bridge of ranked) {
+    const relations: FtgOnwardRelation[] = [];
+    const bridgeEdges = onwardEdgesBySource.get(bridge.targetArtistId) ?? [];
+    const bridgeEdgeTargets = new Set(
+      bridgeEdges.map((edge) => getFactualTarget(edge, bridge.targetArtistId)),
+    );
+    const bridgeSimilarities = onwardSimilaritiesBySource.get(bridge.targetArtistId) ?? [];
+    const bridgeSimilarityByTarget = new Map(
+      bridgeSimilarities.map((similarity) => [similarity.target_artist_id, similarity]),
+    );
+    const relationIds = [...new Set([...bridgeEdgeTargets, ...bridgeSimilarityByTarget.keys()])];
+    for (const targetId of relationIds) {
+      const target = onwardArtistsById.get(targetId);
+      if (!target || targetId === activeArtist.id) continue;
+      const targetEvidence = onwardEvidence.filter(
+        (row) =>
+          row.edge_id &&
+          bridgeEdges.some((edge) => edge.id === row.edge_id) &&
+          ((row.source_artist_id === bridge.targetArtistId && row.target_artist_id === targetId) ||
+            (row.target_artist_id === bridge.targetArtistId && row.source_artist_id === targetId)),
+      );
+      const factual = targetEvidence.length > 0 && bridgeEdgeTargets.has(targetId);
+      const similarity = bridgeSimilarityByTarget.get(targetId);
+      if (!factual && !similarity) continue;
+      relations.push({
+        sourceArtistId: bridge.targetArtistId,
+        targetArtistId: targetId,
+        displayName: target.display_name,
+        musicbrainzArtistMbid: target.musicbrainz_artist_mbid,
+        entityType: target.entity_type,
+        factual,
+        factualMechanisms: [...new Set(targetEvidence.map((row) => row.evidence_kind))],
+        allowedEvidenceCount: targetEvidence.length,
+        uniqueRecordingCount: new Set(targetEvidence.map((row) => row.recording_mbid).filter(Boolean)).size,
+        similarity: Boolean(similarity),
+        similarityPosition: similarity?.position ?? null,
+        similarityMatchScore: similarity ? Number(similarity.match_score) : null,
+        searchEligible: false,
+        productCount: 0,
+      });
+    }
+    onwardRelations.set(bridge.targetArtistId, relations);
+  }
+  const selected = selectNextDestinations({
+    sourceArtistId: activeArtist.id,
+    direct: ranked,
+    onward: onwardRelations,
+    excludedArtistIds: new Set(
+      input.trailMbids
+        .slice(0, -1)
+        .map((mbid) => artistsByMbid.get(mbid.toLowerCase())?.id)
+        .filter((id): id is string => Boolean(id)),
+    ),
+    limit,
+  });
+  const selectedArtists = selected.flatMap((candidate) => {
+    const artist = candidatesById.get(candidate.targetArtistId) ?? onwardArtistsById.get(candidate.targetArtistId);
+    return artist ? [artist] : [];
+  });
+  const views = await loadPresentationData([activeArtist, ...selectedArtists]);
   const activeView = views.get(activeArtist.id);
   if (!activeView) return null;
 
@@ -350,9 +474,10 @@ export async function getFollowTheGroovePage(input: {
       ended: row.ended,
     }));
 
-  const candidateViews = ranked.map((candidate, index) => {
-    const view = views.get(candidate.targetArtistId)!;
-    const reasonCode = getReasonCodes(candidate)[0];
+  const candidateViews = selected.map((candidate, index) => {
+    const view = views.get(candidate.targetArtistId);
+    if (!view) return null;
+    const reasonCode = getReasonCodes(candidate)[0] ?? "similar_artist";
     if (!reasonCode) {
       throw new Error(`Candidate ${candidate.targetArtistId} has no supported V1 reason`);
     }
@@ -360,7 +485,8 @@ export async function getFollowTheGroovePage(input: {
       ...view,
       rank: index + 1,
       reasonCode,
-      reasonLabel: mapReasonLabel({
+      bridgeName: candidate.bridgeName,
+      reasonLabel: candidate.bridgeName ? `Via ${candidate.bridgeName}` : mapReasonLabel({
         reasonCode,
         activeArtist: {
           id: activeArtist.id,
@@ -371,7 +497,7 @@ export async function getFollowTheGroovePage(input: {
         evidence: allowedEvidence,
       }),
     };
-  });
+  }).filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
 
   return {
     artist: activeView,
