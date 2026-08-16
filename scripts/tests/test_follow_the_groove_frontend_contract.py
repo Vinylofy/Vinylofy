@@ -327,6 +327,25 @@ class FrontendPureContractTests(unittest.TestCase):
 
 
 class FrontendSourceContractTests(unittest.TestCase):
+    def test_search_integration_inserts_one_bounded_block_after_five(self) -> None:
+        page = (ROOT / "app/search/page.tsx").read_text()
+        block = (ROOT / "components/follow-the-groove/groove-search-block.tsx").read_text()
+        self.assertIn("visibleResults.slice(0, 5)", page)
+        self.assertIn("visibleResults.slice(5)", page)
+        self.assertIn("grooveData.candidates.length > 0", page)
+        self.assertEqual(page.count("<GrooveSearchBlock"), 1)
+        self.assertIn("limit: 3", page)
+        self.assertIn('mode: "search"', page)
+        self.assertIn("buildGrooveHref([activeArtistMbid], candidate.mbid)", block)
+
+    def test_search_block_has_no_prices_or_external_apis(self) -> None:
+        block = (ROOT / "components/follow-the-groove/groove-search-block.tsx").read_text()
+        self.assertNotIn("price", block.lower())
+        self.assertNotIn("fetch(", block)
+        self.assertNotIn("Bekijk titels", block)
+        self.assertIn("Volg de groove", block)
+        self.assertIn("searchHref", block)
+
     def test_page_preserves_service_order_and_supports_empty_state(self) -> None:
         page = (ROOT / "app/follow-the-groove/[...trail]/page.tsx").read_text()
         self.assertNotIn(".sort(", page)

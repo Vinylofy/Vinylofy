@@ -65,6 +65,10 @@ function normalizeArtistLabel(value: string): string {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+function escapeIlike(value: string): string {
+  return value.replace(/[\\%_]/g, "\\$&");
+}
+
 function isAllowedProduct(product: ProductRow): boolean {
   return !BLACKLISTED_FORMAT_LABELS.has((product.format_label ?? "").trim().toUpperCase());
 }
@@ -233,26 +237,43 @@ async function loadPresentationData(
 
 export async function getFollowTheGroovePage(input: {
   trailMbids: string[];
-  mode?: "trail";
+  mode?: "trail" | "search";
   limit?: number;
+  artistName?: string;
 }): Promise<FollowTheGroovePageData | null> {
   const mode = input.mode ?? "trail";
   const limit = Math.min(Math.max(input.limit ?? FTG_MAX_CANDIDATES, 0), FTG_MAX_CANDIDATES);
-  if (mode !== "trail" || !isValidTrail(input.trailMbids, FTG_MAX_TRAIL_LENGTH)) return null;
+  if (mode === "trail" && !isValidTrail(input.trailMbids, FTG_MAX_TRAIL_LENGTH)) return null;
+  if (mode === "search" && input.artistName?.trim() === undefined && input.trailMbids.length === 0) return null;
 
-  const activeArtistMbid = input.trailMbids.at(-1)!;
   const supabase = createSupabaseAdminClient();
-  const trailRows = await unwrap<ArtistRow>(
-    supabase
-      .from("artists")
-      .select("id, musicbrainz_artist_mbid, display_name, entity_type")
-      .in("musicbrainz_artist_mbid", [...new Set(input.trailMbids)]),
-  );
+  const sourceRows = mode === "search" && input.artistName
+    ? await unwrap<ArtistRow>(
+        supabase
+          .from("artists")
+          .select("id, musicbrainz_artist_mbid, display_name, entity_type")
+          .ilike("display_name", escapeIlike(input.artistName.trim()))
+          .limit(2),
+      )
+    : [];
+  if (mode === "search" && sourceRows.length !== 1) return null;
+  const resolvedTrailMbids = mode === "search"
+    ? [sourceRows[0]?.musicbrainz_artist_mbid ?? input.trailMbids.at(-1) ?? ""]
+    : input.trailMbids;
+  const activeArtistMbid = resolvedTrailMbids.at(-1)!;
+  const trailRows = mode === "search" && sourceRows.length === 1
+    ? sourceRows
+    : await unwrap<ArtistRow>(
+        supabase
+          .from("artists")
+          .select("id, musicbrainz_artist_mbid, display_name, entity_type")
+          .in("musicbrainz_artist_mbid", [...new Set(resolvedTrailMbids)]),
+      );
   const artistsByMbid = new Map(
     trailRows.map((artist) => [artist.musicbrainz_artist_mbid.toLowerCase(), artist]),
   );
   const activeArtist = artistsByMbid.get(activeArtistMbid.toLowerCase());
-  if (!activeArtist || input.trailMbids.some((mbid) => !artistsByMbid.has(mbid.toLowerCase()))) {
+  if (!activeArtist || resolvedTrailMbids.some((mbid) => !artistsByMbid.has(mbid.toLowerCase()))) {
     return null;
   }
 
@@ -349,6 +370,9 @@ export async function getFollowTheGroovePage(input: {
       )
     : [];
   const candidatesById = new Map(candidateArtists.map((artist) => [artist.id, artist]));
+  const searchPresentation = mode === "search"
+    ? await loadPresentationData([activeArtist, ...candidateArtists, ...onwardArtists])
+    : null;
   const similaritiesByTarget = new Map(similarities.map((row) => [row.target_artist_id, row]));
   const edgeTargetIds = new Set(edges.map((edge) => getFactualTarget(edge, activeArtist.id)));
 
@@ -377,8 +401,8 @@ export async function getFollowTheGroovePage(input: {
       similarity: Boolean(similarity),
       similarityPosition: similarity?.position ?? null,
       similarityMatchScore: similarity ? Number(similarity.match_score) : null,
-      searchEligible: false,
-      productCount: 0,
+      searchEligible: mode === "search" && (searchPresentation?.get(candidate.id)?.productCount ?? 0) > 0,
+      productCount: searchPresentation?.get(candidate.id)?.productCount ?? 0,
     }];
   });
   const ranked = rankCandidates(rankingInput, { mode, limit: rankingInput.length });
@@ -436,8 +460,8 @@ export async function getFollowTheGroovePage(input: {
         similarity: Boolean(similarity),
         similarityPosition: similarity?.position ?? null,
         similarityMatchScore: similarity ? Number(similarity.match_score) : null,
-        searchEligible: false,
-        productCount: 0,
+        searchEligible: mode === "search" && (searchPresentation?.get(target.id)?.productCount ?? 0) > 0,
+        productCount: searchPresentation?.get(target.id)?.productCount ?? 0,
       });
     }
     onwardRelations.set(bridge.targetArtistId, relations);
@@ -447,7 +471,7 @@ export async function getFollowTheGroovePage(input: {
     direct: ranked,
     onward: onwardRelations,
     excludedArtistIds: new Set(
-      input.trailMbids
+      resolvedTrailMbids
         .slice(0, -1)
         .map((mbid) => artistsByMbid.get(mbid.toLowerCase())?.id)
         .filter((id): id is string => Boolean(id)),
@@ -502,7 +526,7 @@ export async function getFollowTheGroovePage(input: {
   return {
     artist: activeView,
     candidates: candidateViews,
-    trail: input.trailMbids.map((mbid) => {
+    trail: resolvedTrailMbids.map((mbid) => {
       const artist = artistsByMbid.get(mbid.toLowerCase())!;
       return { mbid: artist.musicbrainz_artist_mbid, name: artist.display_name };
     }),

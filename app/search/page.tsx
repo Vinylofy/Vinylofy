@@ -5,7 +5,9 @@ import { SearchSortSelect } from "@/components/search/search-sort-select";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { CoverQueueBeacon } from "@/components/cover-queue-beacon";
+import { GrooveSearchBlock } from "@/components/follow-the-groove/groove-search-block";
 import { searchProducts, type SearchResultItem } from "@/lib/vinylofy-data";
+import { getFollowTheGroovePage } from "@/lib/follow-the-groove/data";
 import {
   parseSearchSort,
   sortSearchResults,
@@ -200,6 +202,19 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
     filteredResults,
     activeSort,
   ).slice(0, 24);
+  const unfilteredArtistOptions = !activeArtistFilter ? getArtistFilterOptions(results, query) : [];
+  const inferredArtistContext = activeArtistFilter ||
+    (unfilteredArtistOptions.length === 1 ? unfilteredArtistOptions[0].artist : "");
+  const grooveData = inferredArtistContext && visibleResults.length > 0
+    ? await getFollowTheGroovePage({
+        trailMbids: [],
+        artistName: inferredArtistContext,
+        mode: "search",
+        limit: 3,
+      }).catch(() => null)
+    : null;
+  const firstResults = visibleResults.slice(0, 5);
+  const remainingResults = visibleResults.slice(5);
 
   return (
     <div className="min-h-screen bg-[#f8f7f4] text-neutral-900">
@@ -248,7 +263,17 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
                 artistFilter={activeArtistFilter}
               />
             </div>
-                {visibleResults.map((item) => (
+                {firstResults.map((item) => (
+                  <ProductResultCard key={item.id} item={item} />
+                ))}
+                {grooveData && grooveData.candidates.length > 0 ? (
+                  <GrooveSearchBlock
+                    activeArtistName={grooveData.artist.name}
+                    activeArtistMbid={grooveData.artist.mbid}
+                    candidates={grooveData.candidates}
+                  />
+                ) : null}
+                {remainingResults.map((item) => (
                   <ProductResultCard key={item.id} item={item} />
                 ))}
               </>
