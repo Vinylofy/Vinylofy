@@ -25,6 +25,7 @@ const BLACKLISTED_FORMAT_LABELS = new Set([
   "BLUERAY",
   "BLURAY",
 ]);
+const FTG_SEARCH_RANKING_POOL_LIMIT = 24;
 
 type ArtistRow = {
   id: string;
@@ -402,11 +403,18 @@ export async function getFollowTheGroovePage(input: {
       similarity: Boolean(similarity),
       similarityPosition: similarity?.position ?? null,
       similarityMatchScore: similarity ? Number(similarity.match_score) : null,
-      searchEligible: mode === "search" && (searchPresentation?.get(candidate.id)?.productCount ?? 0) > 0,
+      searchEligible: mode === "search" &&
+        (searchPresentation?.get(candidate.id)?.productCount ?? 0) > 0 &&
+        searchPresentation?.get(candidate.id)?.searchHref !== null,
       productCount: searchPresentation?.get(candidate.id)?.productCount ?? 0,
     }];
   });
-  const ranked = rankCandidates(rankingInput, { mode, limit: rankingInput.length });
+  const ranked = rankCandidates(rankingInput, {
+    mode,
+    limit: mode === "search"
+      ? Math.min(rankingInput.length, FTG_SEARCH_RANKING_POOL_LIMIT)
+      : rankingInput.length,
+  });
   const onwardArtistsById = new Map(onwardArtists.map((artist) => [artist.id, artist]));
   const onwardSimilaritiesBySource = new Map<string, typeof onwardSimilarities>();
   for (const similarity of onwardSimilarities) {
@@ -461,7 +469,9 @@ export async function getFollowTheGroovePage(input: {
         similarity: Boolean(similarity),
         similarityPosition: similarity?.position ?? null,
         similarityMatchScore: similarity ? Number(similarity.match_score) : null,
-        searchEligible: mode === "search" && (searchPresentation?.get(target.id)?.productCount ?? 0) > 0,
+        searchEligible: mode === "search" &&
+          (searchPresentation?.get(target.id)?.productCount ?? 0) > 0 &&
+          searchPresentation?.get(target.id)?.searchHref !== null,
         productCount: searchPresentation?.get(target.id)?.productCount ?? 0,
       });
     }

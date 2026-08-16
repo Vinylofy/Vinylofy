@@ -140,6 +140,33 @@ class V3TypescriptParityTests(unittest.TestCase):
         )
         self.assertEqual(actual, ["A", "B"])
 
+    def test_search_eligibility_filters_before_final_three_without_reranking(self) -> None:
+        rows = [
+            fixture_candidate("Strong zero", factual=True, product_count=0),
+            fixture_candidate("Eligible two", factual=True, product_count=2),
+            fixture_candidate("Weak zero", factual=True, product_count=0),
+            fixture_candidate("Eligible four", factual=True, product_count=4),
+            fixture_candidate("Eligible five", factual=True, product_count=5),
+        ]
+        for row in rows:
+            row["searchEligible"] = int(row["productCount"]) > 0
+        actual = run_typescript(
+            "lib/follow-the-groove/ranking.ts",
+            "subject.rankCandidates(input, { mode: 'search', limit: 24 }).map(row => row.displayName).filter(name => name.startsWith('Eligible')) .slice(0, 3)",
+            rows,
+        )
+        self.assertEqual(actual, ["Eligible five", "Eligible four", "Eligible two"])
+
+    def test_trail_mode_keeps_zero_product_candidates(self) -> None:
+        row = fixture_candidate("Discovery only", factual=True, product_count=0)
+        row["searchEligible"] = False
+        actual = run_typescript(
+            "lib/follow-the-groove/ranking.ts",
+            "subject.rankCandidates(input, { mode: 'trail', limit: 5 }).map(row => row.displayName)",
+            [row],
+        )
+        self.assertEqual(actual, ["Discovery only"])
+
 
 class NextDestinationSelectionTests(unittest.TestCase):
     def test_meaningful_bridge_precedes_multiple_children(self) -> None:
@@ -345,6 +372,22 @@ class FrontendPureContractTests(unittest.TestCase):
 
 
 class FrontendSourceContractTests(unittest.TestCase):
+    def test_search_service_requires_availability_and_search_href_before_ranking(self) -> None:
+        data = (ROOT / "lib/follow-the-groove/data.ts").read_text()
+        self.assertIn("searchPresentation?.get(candidate.id)?.searchHref !== null", data)
+        self.assertIn("searchPresentation?.get(target.id)?.searchHref !== null", data)
+        self.assertIn("FTG_SEARCH_RANKING_POOL_LIMIT = 24", data)
+
+    def test_search_block_visual_source_is_unchanged(self) -> None:
+        completed = subprocess.run(
+            ["git", "diff", "HEAD^", "HEAD", "--", "components/follow-the-groove/groove-search-block.tsx"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertEqual(completed.stdout, "")
+
     def test_search_integration_inserts_one_bounded_block_after_five(self) -> None:
         page = (ROOT / "app/search/page.tsx").read_text()
         block = (ROOT / "components/follow-the-groove/groove-search-block.tsx").read_text()
