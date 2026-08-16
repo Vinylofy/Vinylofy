@@ -112,7 +112,31 @@ class PlannerTests(unittest.TestCase):
         incoming={**old,"resolution_status":"resolved","target_mbid":"m"}
         plan=persistence.plan_similarity_resolution(incoming,old,identity_proven=True)
         self.assertEqual(plan["action"],"RESOLVE_EXISTING_UNRESOLVED")
-        self.assertEqual(set(plan["preimage"]),{"id","target_artist_id","resolution_status","last_seen_run_id","updated_at"})
+        self.assertEqual(set(plan["preimage"]),{"id","target_artist_id","resolution_status","match_score","position","last_seen_run_id","updated_at","checked_at"})
+
+    def test_similarity_score_and_position_drift_is_safe_enrichment(self):
+        old={"id":"s","source_system":"lastfm","source_mbid":"a","target_mbid":"m",
+             "returned_mbid":"m","returned_target_name_normalized":"b","position":2,
+             "match_score":"0.5","resolution_status":"resolved","last_seen_run_id":"r1"}
+        incoming={**old,"position":3,"match_score":"0.4"}
+        plan=persistence.plan_rows("similarity_resolved",[incoming],[old])[0]
+        self.assertEqual(plan["action"],"ENRICH_SAFE")
+        self.assertEqual(plan["preimage"]["match_score"],"0.5")
+        self.assertEqual(plan["preimage"]["position"],2)
+
+    def test_similarity_identity_drift_still_conflicts(self):
+        old={"id":"s","source_system":"lastfm","source_mbid":"a","target_mbid":"m",
+             "returned_mbid":"m","returned_target_name_normalized":"b","position":2,
+             "match_score":"0.5","resolution_status":"resolved"}
+        incoming={**old,"returned_mbid":"other"}
+        self.assertEqual(persistence.plan_rows("similarity_resolved",[incoming],[old])[0]["action"],"CONFLICT")
+
+    def test_unresolved_similarity_observation_drift_is_safe_enrichment(self):
+        old={"id":"s","source_system":"lastfm","source_mbid":"a",
+             "returned_target_name_normalized":"b","returned_mbid":None,"position":2,
+             "match_score":"0.5","resolution_status":"unresolved","last_seen_run_id":"r1"}
+        incoming={**old,"position":3,"match_score":"0.4"}
+        self.assertEqual(persistence.plan_rows("similarity_unresolved",[incoming],[old])[0]["action"],"ENRICH_SAFE")
 
     def test_unproven_similarity_resolution_conflicts(self):
         old={"resolution_status":"unresolved","target_artist_id":None}
