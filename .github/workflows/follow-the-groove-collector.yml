@@ -20,6 +20,7 @@ on:
           - "1"
           - "2"
           - "3"
+          - "10"
       source_mbids:
         description: "Comma-separated MBIDs; required only for refresh and count must equal max_sources"
         required: false
@@ -74,8 +75,8 @@ jobs:
             echo "Required collector secrets are not configured."
             exit 1
           fi
-          if [[ ! "$MAX_SOURCES_INPUT" =~ ^[1-3]$ ]]; then
-            echo "max_sources must be an integer from 1 through 3."
+          if [[ ! "$MAX_SOURCES_INPUT" =~ ^(1|2|3|10)$ ]]; then
+            echo "max_sources must be one of 1, 2, 3, or 10."
             exit 1
           fi
           if [[ "$MODE_INPUT" != "frontier" && "$MODE_INPUT" != "refresh" ]]; then

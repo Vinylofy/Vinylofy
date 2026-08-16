@@ -477,16 +477,16 @@ def validate_write_scope(args: argparse.Namespace) -> None:
         return
     refresh=bool(getattr(args,"refresh",False)); frontier=bool(getattr(args,"frontier",False))
     if refresh:
-        if not 1 <= args.max_sources <= 3:
-            raise persistence.PersistenceDisabled("refresh write max_sources must be between 1 and 3")
+        if not 1 <= args.max_sources <= 10:
+            raise persistence.PersistenceDisabled("refresh write max_sources must be between 1 and 10")
         if not args.source_mbid or len(args.source_mbid)!=args.max_sources:
             raise persistence.PersistenceDisabled("refresh write requires one explicit --source-mbid per bounded source")
         return
     if frontier:
         if args.source_mbid:
             raise persistence.PersistenceDisabled("frontier write does not accept explicit source MBIDs")
-        if not 1 <= args.max_sources <= 3:
-            raise persistence.PersistenceDisabled("frontier write max_sources must be between 1 and 3")
+        if not 1 <= args.max_sources <= 10:
+            raise persistence.PersistenceDisabled("frontier write max_sources must be between 1 and 10")
         return
     raise persistence.PersistenceDisabled("write requires explicit --frontier or --refresh mode")
 

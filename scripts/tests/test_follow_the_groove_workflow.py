@@ -22,7 +22,8 @@ class WorkflowSafetyTests(unittest.TestCase):
         self.assertIn('          - "1"',self.text)
         self.assertIn('          - "2"',self.text)
         self.assertIn('          - "3"',self.text)
-        self.assertIn('^[1-3]$',self.text)
+        self.assertIn('          - "10"',self.text)
+        self.assertIn('^(1|2|3|10)$',self.text)
 
     def test_concurrency_timeout_and_artifact_contract(self):
         self.assertIn("group: follow-the-groove-collector",self.text)
@@ -55,8 +56,8 @@ class WorkflowSafetyTests(unittest.TestCase):
     def test_unsafe_write_contracts_fail_closed(self):
         parser=generic.build_parser()
         for values in (
-            ["--write","--frontier","--max-sources","4"],
-            ["--write","--refresh","--max-sources","4","--source-mbid",MBID,"--source-mbid",MBID,"--source-mbid",MBID,"--source-mbid",MBID],
+            ["--write","--frontier","--max-sources","11"],
+            ["--write","--refresh","--max-sources","11","--source-mbid",MBID,"--source-mbid",MBID,"--source-mbid",MBID,"--source-mbid",MBID,"--source-mbid",MBID,"--source-mbid",MBID,"--source-mbid",MBID,"--source-mbid",MBID,"--source-mbid",MBID,"--source-mbid",MBID,"--source-mbid",MBID],
             ["--write","--refresh","--max-sources","1"],
             ["--write","--max-sources","1"],
         ):
