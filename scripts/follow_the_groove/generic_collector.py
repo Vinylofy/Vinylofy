@@ -30,6 +30,8 @@ except ImportError:  # pragma: no cover
 
 
 GENERIC_COLLECTOR = "GENERIC_BOUNDED_V1"
+BATCH_COLLECTOR = "GENERIC_BOUNDED_V1_BATCH"
+WRITE_LOCK_KEY = "follow-the-groove:generic-bounded-v1:write:v2"
 MAX_LASTFM_LIMIT = 25
 FAILURES = frozenset({
     "SOURCE_IDENTITY_CONFLICT", "MUSICBRAINZ_TRANSIENT", "MUSICBRAINZ_PERMANENT",
@@ -89,6 +91,79 @@ class SourceResult:
     errors: list[dict[str, str]] = field(default_factory=list)
     rollback: dict[str, Any] = field(default_factory=dict)
     run_plan: dict[str, Any] = field(default_factory=dict)
+
+
+class WriteExecutionBlocked(RuntimeError):
+    """A write cannot start because another durable execution owns the lock."""
+
+
+def acquire_write_lock(database_url: str) -> psycopg.Connection[Any]:
+    """Hold a database-global advisory lock for the whole write execution."""
+    # Transaction-scoped locks remain valid through transaction-pooling and are
+    # released automatically on commit/rollback or process termination.
+    conn = psycopg.connect(database_url, autocommit=False)
+    locked = conn.execute("select pg_try_advisory_xact_lock(hashtext(%s))", (WRITE_LOCK_KEY,)).fetchone()[0]
+    if not locked:
+        conn.close()
+        raise WriteExecutionBlocked("WRITE_BLOCKED_ALREADY_RUNNING")
+    return conn
+
+
+def read_execution_state(database_url: str, execution_id: str) -> dict[str, Any] | None:
+    with psycopg.connect(database_url, autocommit=False) as conn:
+        row = conn.execute(
+            "select id::text,status,counters,started_at::text,finished_at::text "
+            "from follow_the_groove_collection_runs where id=%s and collector=%s",
+            (execution_id, BATCH_COLLECTOR),
+        ).fetchone()
+        source_count = conn.execute(
+            "select count(*) from follow_the_groove_collection_runs where collector=%s and counters->>'execution_id'=%s",
+            (GENERIC_COLLECTOR, execution_id),
+        ).fetchone()[0]
+        conn.rollback()
+    if row is None:
+        return None
+    counters = row[2] or {}
+    if row[1] == "running" and source_count:
+        counters = {**counters, "source_run_count": source_count}
+        status = "recovery_required"
+    else:
+        status = row[1]
+    return {"execution_id": row[0], "status": status, "counters": counters, "started_at": row[3], "finished_at": row[4]}
+
+
+def create_execution_state(database_url: str, execution_id: str, config: BoundedConfig) -> dict[str, Any]:
+    counters = {"execution_id": execution_id, "config": asdict(config), "source_run_ids": []}
+    with psycopg.connect(database_url, autocommit=False) as conn:
+        conn.execute(
+            "insert into follow_the_groove_collection_runs "
+            "(id,collector,source_system,scope,status,counters,error_summary) "
+            "values (%s,%s,%s,%s,'running',%s::jsonb,'[]'::jsonb)",
+            (execution_id, BATCH_COLLECTOR, "control", "bounded_write_batch", json.dumps(counters)),
+        )
+        conn.commit()
+    return {"execution_id": execution_id, "status": "running", "counters": counters}
+
+
+def update_execution_state(database_url: str, execution_id: str, *, status: str, counters: dict[str, Any]) -> None:
+    with psycopg.connect(database_url, autocommit=False) as conn:
+        changed = conn.execute(
+            "update follow_the_groove_collection_runs set status=%s,counters=%s::jsonb,finished_at=case when %s in ('succeeded','failed','recovery_required') then now() else finished_at end where id=%s and collector=%s",
+            (status, json.dumps(counters, default=str), status, execution_id, BATCH_COLLECTOR),
+        )
+        if changed.rowcount != 1:
+            raise persistence.PersistenceConflict("durable execution state transition failed")
+        conn.commit()
+
+
+def validate_execution_id(args: argparse.Namespace) -> str:
+    value = getattr(args, "execution_id", None)
+    if not value:
+        raise persistence.PersistenceDisabled("write requires explicit --execution-id")
+    try:
+        return str(uuid.UUID(value))
+    except ValueError as exc:
+        raise persistence.PersistenceDisabled("execution-id must be a UUID") from exc
 
 
 def select_sources(
@@ -468,6 +543,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--graph-depth",type=int,default=1)
     parser.add_argument("--source-mbid",action="append",default=[])
     parser.add_argument("--recording-release-seed",action="append",default=[])
+    parser.add_argument("--execution-id",help="durable UUID for a controlled write execution")
     parser.add_argument("--output",type=Path)
     return parser
 
@@ -475,6 +551,7 @@ def build_parser() -> argparse.ArgumentParser:
 def validate_write_scope(args: argparse.Namespace) -> None:
     if not bool(getattr(args,"write",False)):
         return
+    validate_execution_id(args)
     refresh=bool(getattr(args,"refresh",False)); frontier=bool(getattr(args,"frontier",False))
     if refresh:
         if not 1 <= args.max_sources <= 10:
@@ -496,36 +573,67 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     write=bool(getattr(args,"write",False))
     validate_write_scope(args)
     config=BoundedConfig(args.max_sources,args.max_direct_targets,args.lastfm_limit,args.graph_depth,tuple(args.recording_release_seed),True)
-    started=now(); started_perf=time.perf_counter()
-    conn=psycopg.connect(os.environ["DATABASE_URL"],autocommit=False); conn.execute("begin read only")
-    try:
-        sources=select_sources(conn,config.max_sources,tuple(args.source_mbid),include_successful=bool(getattr(args,"refresh",False)))
-        existing_snapshot=read_existing(conn)
-        product_rows=[(str(row[0]),str(row[1])) for row in conn.execute("select id::text,artist from products").fetchall()]
-        http=collector.HttpJsonClient(os.getenv("MUSICBRAINZ_USER_AGENT",collector.DEFAULT_USER_AGENT)); mb=collector.MusicBrainzClient(http)
-        lastfm_http=None; lastfm=None; api_key=os.getenv("LASTFM_API_KEY","")
-        if api_key:
-            lastfm_http=collector.HttpJsonClient(collector.DEFAULT_USER_AGENT,sleep_seconds=1.0); lastfm=collector.LastFmClient(lastfm_http,api_key)
-        results=orchestrate(sources,lambda source: collect_source(conn,source,config,mb,lastfm,existing_snapshot,product_rows))
-        output={"mode":"write-preflight" if write else "dry-run","started_at":started,"finished_at":now(),"elapsed_ms":round((time.perf_counter()-started_perf)*1000,3),
-                "config":asdict(config),"selected_sources":[asdict(source) for source in sources],
-                "database_query_plan":{"fixed_queries":8,"per_source_queries":2,"estimated_total":8+2*len(sources),"obvious_n_plus_one":False},
-                "api_counters":{"musicbrainz_requests":http.request_count,"musicbrainz_retries":http.retry_count,"musicbrainz_cache_hits":http.cache_hits,
-                                "lastfm_requests":lastfm_http.request_count if lastfm_http else 0,"lastfm_retries":lastfm_http.retry_count if lastfm_http else 0},
-                "same_run_recursion":0,"recording_api_calls":sum(item.counters.get("recording_api_calls",0) for item in results),
-                "sources":[asdict(item) for item in results]}
-        conn.rollback()
-    finally: conn.close()
+    execution_id = validate_execution_id(args) if write else None
+    lock_conn = None
+    execution = None
     if write:
-        if len(results)!=args.max_sources or any(item.status!="succeeded" or item.rollback.get("status")!="PROVEN" for item in results):
-            raise persistence.PersistenceConflict("write preflight did not produce a successful proven plan for every source")
-        output["writes"]=execute_writes(os.environ["DATABASE_URL"],results)
-        output["mode"]="write"
-    if args.output: args.output.write_text(json.dumps(output,ensure_ascii=False,indent=2,default=str)+"\n",encoding="utf-8")
-    return output
+        lock_conn = acquire_write_lock(os.environ["DATABASE_URL"])
+        existing = read_execution_state(os.environ["DATABASE_URL"], execution_id)
+        if existing is not None:
+            lock_conn.close()
+            state = {"mode": "existing-execution", **existing}
+            if args.output:
+                args.output.write_text(json.dumps(state, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
+            return state
+        execution = create_execution_state(os.environ["DATABASE_URL"], execution_id, config)
+    started=now(); started_perf=time.perf_counter()
+    try:
+        conn=psycopg.connect(os.environ["DATABASE_URL"],autocommit=False); conn.execute("begin read only")
+        try:
+            sources=select_sources(conn,config.max_sources,tuple(args.source_mbid),include_successful=bool(getattr(args,"refresh",False)))
+            existing_snapshot=read_existing(conn)
+            product_rows=[(str(row[0]),str(row[1])) for row in conn.execute("select id::text,artist from products").fetchall()]
+            http=collector.HttpJsonClient(os.getenv("MUSICBRAINZ_USER_AGENT",collector.DEFAULT_USER_AGENT)); mb=collector.MusicBrainzClient(http)
+            lastfm_http=None; lastfm=None; api_key=os.getenv("LASTFM_API_KEY","")
+            if api_key:
+                lastfm_http=collector.HttpJsonClient(collector.DEFAULT_USER_AGENT,sleep_seconds=1.0); lastfm=collector.LastFmClient(lastfm_http,api_key)
+            results=orchestrate(sources,lambda source: collect_source(conn,source,config,mb,lastfm,existing_snapshot,product_rows))
+            output={"mode":"write-preflight" if write else "dry-run","started_at":started,"finished_at":now(),"elapsed_ms":round((time.perf_counter()-started_perf)*1000,3),
+                    "execution_id":execution_id,"config":asdict(config),"selected_sources":[asdict(source) for source in sources],
+                    "database_query_plan":{"fixed_queries":8,"per_source_queries":2,"estimated_total":8+2*len(sources),"obvious_n_plus_one":False},
+                    "api_counters":{"musicbrainz_requests":http.request_count,"musicbrainz_retries":http.retry_count,"musicbrainz_cache_hits":http.cache_hits,
+                                    "lastfm_requests":lastfm_http.request_count if lastfm_http else 0,"lastfm_retries":lastfm_http.retry_count if lastfm_http else 0},
+                    "same_run_recursion":0,"recording_api_calls":sum(item.counters.get("recording_api_calls",0) for item in results),
+                    "sources":[asdict(item) for item in results]}
+            conn.rollback()
+        finally:
+            conn.close()
+        if write:
+            if len(results)!=args.max_sources or any(item.status!="succeeded" or item.rollback.get("status")!="PROVEN" for item in results):
+                update_execution_state(os.environ["DATABASE_URL"], execution_id, status="failed", counters={"execution_id":execution_id,"preflight":output})
+                raise persistence.PersistenceConflict("write preflight did not produce a successful proven plan for every source")
+            for item in results:
+                item.run_plan.setdefault("counters", {})["execution_id"] = execution_id
+                item.counters["execution_id"] = execution_id
+            writes=execute_writes(os.environ["DATABASE_URL"],results,execution_id=execution_id)
+            output["writes"]=writes; output["mode"]="write"
+            execution_counters={"execution_id":execution_id,"selected_sources":output["selected_sources"],"source_run_ids":[w["run_id"] for w in writes],"writes":writes}
+            update_execution_state(os.environ["DATABASE_URL"], execution_id, status="succeeded", counters=execution_counters)
+        if args.output: args.output.write_text(json.dumps(output,ensure_ascii=False,indent=2,default=str)+"\n",encoding="utf-8")
+        return output
+    except Exception:
+        if write and execution_id and read_execution_state(os.environ["DATABASE_URL"], execution_id) and execution and execution.get("status")=="running":
+            with psycopg.connect(os.environ["DATABASE_URL"],autocommit=False) as check:
+                count=check.execute("select count(*) from follow_the_groove_collection_runs where counters->>'execution_id'=%s and collector=%s",(execution_id,GENERIC_COLLECTOR)).fetchone()[0]
+                check.rollback()
+            update_execution_state(os.environ["DATABASE_URL"], execution_id, status="recovery_required" if count else "failed", counters={"execution_id":execution_id,"source_run_count":count})
+        raise
+    finally:
+        if lock_conn is not None:
+            lock_conn.close()
 
 
-def execute_writes(database_url: str, results: list[SourceResult]) -> list[dict[str, Any]]:
+def execute_writes(database_url: str, results: list[SourceResult], *, execution_id: str | None = None) -> list[dict[str, Any]]:
     writes=[]
     for result in results:
         run_id=persistence.register_source_run(database_url,result.run_plan)
@@ -557,7 +665,10 @@ def execute_writes(database_url: str, results: list[SourceResult]) -> list[dict[
 
 
 def main() -> int:
-    args=build_parser().parse_args(); result=run(args); print(json.dumps(result,ensure_ascii=False,indent=2,default=lambda v:str(v) if isinstance(v,Decimal) else v)); return 0 if all(item["status"]=="succeeded" for item in result["sources"]) else 1
+    args=build_parser().parse_args(); result=run(args); print(json.dumps(result,ensure_ascii=False,indent=2,default=lambda v:str(v) if isinstance(v,Decimal) else v))
+    if result.get("mode") == "existing-execution":
+        return 0 if result.get("status") == "succeeded" else 1
+    return 0 if all(item["status"]=="succeeded" for item in result["sources"]) else 1
 
 
 if __name__ == "__main__": raise SystemExit(main())

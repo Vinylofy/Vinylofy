@@ -74,11 +74,11 @@ CONTRACTS: dict[str, EntityContract] = {
     ),
     "similarity_resolved": EntityContract(
         ("source_system", "source_mbid", "target_mbid"),
-        ("source_system", "source_mbid", "target_mbid", "returned_mbid", "resolution_status", "returned_target_name_normalized", "position", "match_score"),
+        ("source_system", "source_mbid", "target_mbid", "returned_mbid", "resolution_status", "returned_target_name_normalized"),
     ),
     "similarity_unresolved": EntityContract(
         ("source_system", "source_mbid", "returned_target_name_normalized"),
-        ("source_system", "source_mbid", "returned_target_name_normalized", "returned_mbid", "resolution_status", "position", "match_score"),
+        ("source_system", "source_mbid", "returned_target_name_normalized", "returned_mbid", "resolution_status"),
     ),
     "product_artists": EntityContract(
         ("product_id", "artist_mbid"),
@@ -112,9 +112,20 @@ def similarity_resolution_preimage(row: Mapping[str, Any]) -> dict[str, Any]:
         "id": row.get("id"),
         "target_artist_id": row.get("target_artist_id"),
         "resolution_status": row.get("resolution_status"),
+        "match_score": row.get("match_score"),
+        "position": row.get("position"),
         "last_seen_run_id": row.get("last_seen_run_id"),
         "updated_at": row.get("updated_at"),
+        "checked_at": row.get("checked_at"),
     }
+
+
+def similarity_observation_preimage(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Capture mutable Last.fm observations before an atomic refresh."""
+    preimage = seen_again_preimage(row)
+    preimage["match_score"] = row.get("match_score")
+    preimage["position"] = row.get("position")
+    return preimage
 
 
 def product_artist_enrichment_preimage(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -206,7 +217,16 @@ def plan_rows(kind: str, incoming: Iterable[Mapping[str, Any]], existing: Iterab
         if conflicts:
             planned.append({**row, "action": "CONFLICT", "conflicts": conflicts, "existing_id": old.get("id")})
         else:
-            planned_row = {**row, "action": "SEEN_AGAIN", "existing_id": old.get("id"), "preimage": seen_again_preimage(old)}
+            mutable_changed = kind in {"similarity_resolved", "similarity_unresolved"} and any(
+                _hashable(old.get(field)) != _hashable(row.get(field))
+                for field in ("match_score", "position")
+            )
+            planned_row = {
+                **row,
+                "action": "ENRICH_SAFE" if mutable_changed else "SEEN_AGAIN",
+                "existing_id": old.get("id"),
+                "preimage": similarity_observation_preimage(old) if mutable_changed else seen_again_preimage(old),
+            }
             if kind == "membership" and _hashable(old.get("provenance")) != _hashable(row.get("provenance")):
                 planned_row["preserved_provenance"] = old.get("provenance")
                 planned_row["observed_provenance"] = row.get("provenance")
@@ -215,7 +235,7 @@ def plan_rows(kind: str, incoming: Iterable[Mapping[str, Any]], existing: Iterab
 
 
 def plan_similarity_resolution(incoming: Mapping[str, Any], unresolved: Mapping[str, Any], *, identity_proven: bool) -> dict[str, Any]:
-    immutable = ("source_system", "source_mbid", "returned_target_name_normalized", "returned_mbid", "position", "match_score")
+    immutable = ("source_system", "source_mbid", "returned_target_name_normalized", "returned_mbid")
     conflicts = {
         field: {"existing": unresolved.get(field), "incoming": incoming.get(field)}
         for field in immutable
@@ -469,9 +489,24 @@ def apply_source_plan(
             ); created_ids["similarities"].append(row_id)
         elif action=="SEEN_AGAIN":
             row_id=_row_id(row); preimages["similarities"].append(dict(row["preimage"])); conn.execute("update artist_similarity set last_seen_run_id=%s,checked_at=now() where id=%s",(run_id,row_id))
+        elif action=="ENRICH_SAFE":
+            row_id=_row_id(row); preimages["similarities"].append(dict(row["preimage"]))
+            old_score=row["preimage"].get("match_score"); old_position=row["preimage"].get("position")
+            changed=conn.execute(
+                "update artist_similarity set match_score=%s,position=%s,last_seen_run_id=%s,updated_at=now(),checked_at=now() "
+                "where id=%s and match_score is not distinct from %s and position is not distinct from %s",
+                (row["match_score"],row["position"],run_id,row_id,old_score,old_position),
+            )
+            if changed.rowcount != 1: raise PersistenceConflict("similarity observation enrichment precondition changed")
         elif action=="RESOLVE_EXISTING_UNRESOLVED":
             row_id=_row_id(row); preimages["similarities"].append(dict(row["preimage"])); target_id=artist_ids[row["target_mbid"]]
-            changed=conn.execute("update artist_similarity set target_artist_id=%s,resolution_status='resolved',last_seen_run_id=%s,updated_at=now() where id=%s and resolution_status='unresolved' and target_artist_id is null",(target_id,run_id,row_id))
+            old_score=row["preimage"].get("match_score"); old_position=row["preimage"].get("position")
+            changed=conn.execute(
+                "update artist_similarity set target_artist_id=%s,resolution_status='resolved',match_score=%s,position=%s,last_seen_run_id=%s,updated_at=now(),checked_at=now() "
+                "where id=%s and resolution_status='unresolved' and target_artist_id is null "
+                "and match_score is not distinct from %s and position is not distinct from %s",
+                (target_id,row["match_score"],row["position"],run_id,row_id,old_score,old_position),
+            )
             if changed.rowcount != 1: raise PersistenceConflict("similarity resolution precondition changed")
 
     for row in plans["product_artists"]:
