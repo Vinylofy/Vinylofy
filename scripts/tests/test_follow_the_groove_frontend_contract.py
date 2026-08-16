@@ -1,0 +1,249 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+
+from scripts.follow_the_groove import ranking as python_ranking
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def run_typescript(module: str, expression: str, payload: object) -> object:
+    module_path = ROOT / module
+    temporary_module: Path | None = None
+    if module.endswith("representative-cover.ts"):
+        source = module_path.read_text().replace(
+            'from "../cover-url"',
+            f'from "{(ROOT / "lib/cover-url.ts").as_uri()}"',
+        )
+        handle = tempfile.NamedTemporaryFile(mode="w", suffix=".ts", delete=False)
+        with handle:
+            handle.write(source)
+        temporary_module = Path(handle.name)
+        module_path = temporary_module
+    script = f"""
+import * as subject from {json.dumps(module_path.as_uri())};
+const chunks = [];
+for await (const chunk of process.stdin) chunks.push(chunk);
+const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+const result = await ({expression});
+process.stdout.write(JSON.stringify(result));
+"""
+    try:
+        completed = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        return json.loads(completed.stdout)
+    finally:
+        if temporary_module:
+            temporary_module.unlink(missing_ok=True)
+
+
+def fixture_candidate(
+    name: str,
+    *,
+    factual: bool = False,
+    mechanisms: tuple[str, ...] = (),
+    similarity: bool = False,
+    position: int | None = None,
+    eligible: bool = True,
+    product_count: int = 1,
+) -> dict[str, object]:
+    key = name.lower().replace(" ", "-")
+    return {
+        "sourceArtistId": "source",
+        "targetArtistId": key,
+        "displayName": name,
+        "musicbrainzArtistMbid": f"{key}-mbid",
+        "entityType": "person",
+        "factual": factual,
+        "factualMechanisms": list(mechanisms),
+        "allowedEvidenceCount": 1 if factual else 0,
+        "uniqueRecordingCount": 1 if set(mechanisms) & {"artist_credit", "instrument", "vocal"} else 0,
+        "similarity": similarity,
+        "similarityPosition": position,
+        "similarityMatchScore": 0.5 if similarity else None,
+        "searchEligible": eligible,
+        "productCount": product_count,
+    }
+
+
+def to_python_candidate(row: dict[str, object]) -> python_ranking.Candidate:
+    return python_ranking.Candidate(
+        source_artist_id=str(row["sourceArtistId"]),
+        target_artist_id=str(row["targetArtistId"]),
+        display_name=str(row["displayName"]),
+        musicbrainz_artist_mbid=str(row["musicbrainzArtistMbid"]),
+        entity_type=str(row["entityType"]),
+        factual=bool(row["factual"]),
+        factual_mechanisms=tuple(row["factualMechanisms"]),
+        allowed_evidence_count=int(row["allowedEvidenceCount"]),
+        unique_recording_count=int(row["uniqueRecordingCount"]),
+        similarity=bool(row["similarity"]),
+        similarity_position=row["similarityPosition"],
+        similarity_match_score=None,
+        search_eligible=bool(row["searchEligible"]),
+        product_count=int(row["productCount"]),
+    )
+
+
+class V3TypescriptParityTests(unittest.TestCase):
+    def test_rank_and_reason_parity_with_python_authority(self) -> None:
+        rows = [
+            fixture_candidate("Multi", factual=True, mechanisms=("membership",), similarity=True, position=4),
+            fixture_candidate("Factual B", factual=True, mechanisms=("artist_credit",), product_count=99),
+            fixture_candidate("Factual A", factual=True, mechanisms=("membership",)),
+            fixture_candidate("Discovery", similarity=True, position=1),
+            fixture_candidate("Later", similarity=True, position=2, eligible=False),
+        ]
+        for mode in ("trail", "search"):
+            for limit in range(0, 6):
+                with self.subTest(mode=mode, limit=limit):
+                    expected = python_ranking.rank_candidates(
+                        [to_python_candidate(row) for row in rows], mode=mode, limit=limit
+                    )
+                    actual = run_typescript(
+                        "lib/follow-the-groove/ranking.ts",
+                        "subject.rankCandidates(input.rows, input.options).map(row => ({ id: row.targetArtistId, reasons: subject.getReasonCodes(row) }))",
+                        {"rows": rows, "options": {"mode": mode, "limit": limit}},
+                    )
+                    self.assertEqual(
+                        actual,
+                        [{"id": row.target_artist_id, "reasons": list(row.reason_codes)} for row in expected],
+                    )
+
+    def test_product_count_does_not_affect_order(self) -> None:
+        rows = [
+            fixture_candidate("B", factual=True, mechanisms=("membership",), product_count=999),
+            fixture_candidate("A", factual=True, mechanisms=("membership",), product_count=0),
+        ]
+        actual = run_typescript(
+            "lib/follow-the-groove/ranking.ts",
+            "subject.rankCandidates(input, { mode: 'trail', limit: 5 }).map(row => row.displayName)",
+            rows,
+        )
+        self.assertEqual(actual, ["A", "B"])
+
+
+class FrontendPureContractTests(unittest.TestCase):
+    def test_mbid_trail_and_candidate_link_contract(self) -> None:
+        mbids = [
+            "79239441-bfd5-4981-a70c-55c3f15c1287",
+            "197450cd-0124-4164-b723-3c22dd16494d",
+        ]
+        actual = run_typescript(
+            "lib/follow-the-groove/presentation.ts",
+            "({ valid: subject.isValidTrail(input), invalid: subject.isValidTrail(['bad']), href: subject.buildGrooveHref([input[0]], input[1]) })",
+            mbids,
+        )
+        self.assertEqual(
+            actual,
+            {
+                "valid": True,
+                "invalid": False,
+                "href": "/follow-the-groove/" + "/".join(mbids),
+            },
+        )
+
+    def test_reason_labels_and_membership_status(self) -> None:
+        common = {
+            "activeArtist": {"id": "group", "name": "The Band", "entityType": "group"},
+            "candidate": {"id": "person", "entityType": "person"},
+        }
+        cases = [
+            ({**common, "reasonCode": "factual_and_similarity", "evidence": []}, "Feitelijke én muzikale connectie"),
+            ({**common, "reasonCode": "similar_artist", "evidence": []}, "Muzikaal verwant"),
+            ({**common, "reasonCode": "recording_collaboration", "evidence": []}, "Werkten samen op een opname"),
+            ({**common, "reasonCode": "membership", "evidence": [{"sourceArtistId": "person", "targetArtistId": "group", "evidenceKind": "membership", "ended": False}]}, "Lid van The Band"),
+            ({**common, "reasonCode": "membership", "evidence": [{"sourceArtistId": "person", "targetArtistId": "group", "evidenceKind": "membership", "ended": True}]}, "Voormalig lid van The Band"),
+            ({**common, "reasonCode": "membership", "evidence": [{"sourceArtistId": "person", "targetArtistId": "group", "evidenceKind": "membership", "ended": None}]}, "Bandconnectie"),
+        ]
+        for payload, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(
+                    run_typescript("lib/follow-the-groove/reasons.ts", "subject.mapReasonLabel(input)", payload),
+                    expected,
+                )
+
+    def test_cover_selection_is_exact_local_and_deterministic(self) -> None:
+        payload = {
+            "artists": [["artist-a", "Artist A"], ["artist-b", "Artist B"]],
+            "links": [
+                {"artistId": "artist-a", "productId": "b", "creditPosition": 1},
+                {"artistId": "artist-a", "productId": "a", "creditPosition": 1},
+                {"artistId": "artist-b", "productId": "external", "creditPosition": 1},
+            ],
+            "products": [
+                {"id": "a", "artist": "Artist A", "coverStatus": "ready", "coverStoragePath": "aa/a.webp", "coverReviewStatus": "approved", "metadataRaw": {}},
+                {"id": "b", "artist": "Artist A", "coverStatus": "ready", "coverStoragePath": "bb/b.webp", "coverReviewStatus": "approved", "metadataRaw": {}},
+                {"id": "external", "artist": "Artist B", "coverStatus": "ready", "coverStoragePath": "https://shop.invalid/c.jpg", "coverReviewStatus": None, "metadataRaw": {}},
+            ],
+        }
+        actual = run_typescript(
+            "lib/follow-the-groove/representative-cover.ts",
+            "Object.fromEntries(subject.resolveRepresentativeCovers(new Map(input.artists), input.links, input.products, new Set()).entries())",
+            payload,
+        )
+        self.assertEqual(actual["artist-a"]["src"], "/covers/aa/a.webp")
+        self.assertFalse(actual["artist-a"]["isPlaceholder"])
+        self.assertEqual(
+            actual["artist-b"]["src"],
+            "/placeholders/vinylofy-cover-placeholder-white2.png",
+        )
+        self.assertTrue(actual["artist-b"]["isPlaceholder"])
+
+    def test_product_count_copy_singular_plural_and_zero(self) -> None:
+        actual = run_typescript(
+            "lib/follow-the-groove/presentation.ts",
+            "[0, 1, 2].map(subject.formatProductCount)",
+            None,
+        )
+        self.assertEqual(actual, ["Vinylofy vond 0 titels", "Vinylofy vond 1 titel", "Vinylofy vond 2 titels"])
+
+
+class FrontendSourceContractTests(unittest.TestCase):
+    def test_page_preserves_service_order_and_supports_empty_state(self) -> None:
+        page = (ROOT / "app/follow-the-groove/[...trail]/page.tsx").read_text()
+        self.assertNotIn(".sort(", page)
+        self.assertIn("data.candidates.length === 0", page)
+        self.assertIn("data.candidates.map", page)
+        self.assertIn('limit: 5', page)
+
+    def test_server_only_data_and_allowed_evidence_contract(self) -> None:
+        data = (ROOT / "lib/follow-the-groove/data.ts").read_text()
+        self.assertIn('from "@/lib/supabase/admin"', data)
+        self.assertIn('.eq("classification", "allowed")', data)
+        self.assertNotIn('classification", "rejected', data)
+        self.assertNotIn("fetch(", data)
+        self.assertNotIn("musicbrainz.org", data.lower())
+        self.assertNotIn("last.fm", data.lower())
+
+    def test_ftg_ui_has_no_prices_external_images_or_technical_reasons(self) -> None:
+        files = list((ROOT / "components/follow-the-groove").glob("*.tsx"))
+        files.append(ROOT / "app/follow-the-groove/[...trail]/page.tsx")
+        text = "\n".join(path.read_text() for path in files)
+        self.assertNotIn("price", text.lower())
+        self.assertNotIn("http://", text)
+        self.assertNotIn("https://", text)
+        for code in ("factual_and_similarity", "recording_collaboration", "similar_artist"):
+            self.assertNotIn(code, text)
+        self.assertIn("focus-visible", text)
+        self.assertIn("<Link", text)
+        self.assertIn("prefetch={false}", text)
+
+    def test_zero_products_hides_cta(self) -> None:
+        hero = (ROOT / "components/follow-the-groove/groove-artist-hero.tsx").read_text()
+        self.assertIn("artist.productCount > 0 && artist.searchHref", hero)
+
+
+if __name__ == "__main__":
+    unittest.main()
