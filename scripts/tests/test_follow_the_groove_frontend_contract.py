@@ -142,6 +142,50 @@ class V3TypescriptParityTests(unittest.TestCase):
 
 
 class NextDestinationSelectionTests(unittest.TestCase):
+    def test_meaningful_bridge_precedes_multiple_children(self) -> None:
+        bridge = fixture_candidate("Them Crooked Vultures", factual=True, mechanisms=("artist_credit",))
+        children = [
+            {**fixture_candidate("John Paul Jones", factual=True, similarity=True, position=1), "sourceArtistId": "bridge"},
+            {**fixture_candidate("Josh Homme", factual=True, similarity=True, position=2), "sourceArtistId": "bridge"},
+        ]
+        actual = run_typescript(
+            "lib/follow-the-groove/destination-selection.ts",
+            "subject.selectNextDestinations({ sourceArtistId: 'source', direct: [input.bridge], onward: new Map([['them-crooked-vultures', input.children]]), limit: 3 }).map(row => ({ name: row.displayName, bridge: row.bridgeName }))",
+            {"bridge": bridge, "children": children},
+        )
+        self.assertEqual(actual[0], {"name": "Them Crooked Vultures", "bridge": None})
+        self.assertEqual(actual[1]["bridge"], "Them Crooked Vultures")
+
+    def test_bridge_semantics_apply_to_people_and_groups_without_entity_quota(self) -> None:
+        for bridge_name, entity_type in (("Dave Grohl", "person"), ("Them Crooked Vultures", "group")):
+            bridge = fixture_candidate(bridge_name, factual=True, mechanisms=("membership",))
+            bridge["entityType"] = entity_type
+            child = {**fixture_candidate("Destination", factual=True), "sourceArtistId": bridge["targetArtistId"]}
+            actual = run_typescript(
+                "lib/follow-the-groove/destination-selection.ts",
+                "subject.selectNextDestinations({ sourceArtistId: 'source', direct: [input.bridge], onward: new Map([[input.bridge.targetArtistId, [input.child]]]), limit: 2 }).map(row => row.displayName)",
+                {"bridge": bridge, "child": child},
+            )
+            self.assertEqual(actual, [bridge_name, "Destination"])
+
+    def test_weak_bridge_can_be_skipped_for_stronger_child(self) -> None:
+        bridge = fixture_candidate("Weak Similarity Bridge", similarity=True, position=4)
+        child = {**fixture_candidate("Strong Destination", factual=True), "sourceArtistId": "weak-similarity-bridge"}
+        actual = run_typescript(
+            "lib/follow-the-groove/destination-selection.ts",
+            "subject.selectNextDestinations({ sourceArtistId: 'source', direct: [input.bridge], onward: new Map([['weak-similarity-bridge', [input.child]]]), limit: 2 }).map(row => row.displayName)",
+            {"bridge": bridge, "child": child},
+        )
+        self.assertEqual(actual, ["Strong Destination", "Weak Similarity Bridge"])
+
+    def test_trail_exclusion_limit_and_input_order_are_deterministic(self) -> None:
+        direct = [fixture_candidate("B", factual=True), fixture_candidate("A", factual=True)]
+        expression = "subject.selectNextDestinations({ sourceArtistId: 'source', direct: input.direct, onward: new Map(), excludedArtistIds: new Set(['b']), limit: 5 }).map(row => row.displayName)"
+        first = run_typescript("lib/follow-the-groove/destination-selection.ts", expression, {"direct": direct})
+        second = run_typescript("lib/follow-the-groove/destination-selection.ts", expression, {"direct": list(reversed(direct))})
+        self.assertEqual(first, ["A"])
+        self.assertEqual(first, second)
+
     def test_weak_direct_can_be_replaced_by_bounded_bridge_destination(self) -> None:
         direct = [
             fixture_candidate("Franz Stahl", factual=True, mechanisms=("membership",), product_count=0),

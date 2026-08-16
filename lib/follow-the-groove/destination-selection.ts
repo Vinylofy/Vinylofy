@@ -17,7 +17,7 @@ function compareStrings(left: string, right: string): number {
   return left < right ? -1 : 1;
 }
 
-function compareDestination(left: FtgDestinationCandidate, right: FtgDestinationCandidate): number {
+function compareDestinationBase(left: FtgDestinationCandidate, right: FtgDestinationCandidate): number {
   const tierOrder = getCandidateTier(left) - getCandidateTier(right);
   if (tierOrder) return tierOrder;
   const onwardOrder = right.onwardCount - left.onwardCount;
@@ -30,11 +30,19 @@ function compareDestination(left: FtgDestinationCandidate, right: FtgDestination
   );
 }
 
+function isMeaningfulBridge(candidate: FtgDestinationCandidate): boolean {
+  // A strong direct relation is meaningful on its own. A lower-tier bridge
+  // earns representation when it is a real project hub with multiple
+  // evidence-backed children; a single weak similarity remains skippable.
+  return candidate.direct && candidate.onwardCount > 0 &&
+    (getCandidateTier(candidate) <= 2 || candidate.onwardCount >= 2);
+}
+
 function isBetterIndirect(
   next: FtgDestinationCandidate,
   previous: FtgDestinationCandidate,
 ): boolean {
-  return compareDestination(next, previous) < 0;
+  return compareDestinationBase(next, previous) < 0;
 }
 
 /**
@@ -53,7 +61,7 @@ export function selectNextDestinations(input: {
   const directIds = new Set(input.direct.map((candidate) => candidate.targetArtistId));
   const byDestination = new Map<string, FtgDestinationCandidate>();
 
-  input.direct.forEach((candidate, index) => {
+  input.direct.forEach((candidate) => {
     if (candidate.targetArtistId === input.sourceArtistId || excluded.has(candidate.targetArtistId)) return;
     byDestination.set(candidate.targetArtistId, {
       ...candidate,
@@ -65,11 +73,11 @@ export function selectNextDestinations(input: {
           .map((relation) => relation.targetArtistId)
           .filter((targetId) => targetId !== input.sourceArtistId && !excluded.has(targetId)),
       ).size,
-      v3Order: index,
+      v3Order: candidate.similarityPosition ?? 2 ** 31,
     });
   });
 
-  input.direct.forEach((bridge, bridgeIndex) => {
+  input.direct.forEach((bridge) => {
     const onward = input.onward.get(bridge.targetArtistId) ?? [];
     const onwardIds = new Set(
       onward
@@ -97,7 +105,7 @@ export function selectNextDestinations(input: {
         bridgeId: bridge.targetArtistId,
         bridgeName: bridge.displayName,
         onwardCount: onwardIds.size,
-        v3Order: bridgeIndex,
+        v3Order: bridge.similarityPosition ?? 2 ** 31,
       };
       const previous = byDestination.get(destinationId);
       if (!previous || (!previous.direct && isBetterIndirect(indirect, previous))) {
@@ -106,5 +114,17 @@ export function selectNextDestinations(input: {
     }
   });
 
-  return [...byDestination.values()].sort(compareDestination).slice(0, Math.max(0, input.limit));
+  const values = [...byDestination.values()];
+  values.sort(compareDestinationBase);
+  // Apply bridge representation after the transparent V3/onward ordering.
+  // This local promotion is deliberately limited to a bridge's own children;
+  // it cannot create an entity-type preference or a global quota.
+  for (const bridge of values.filter(isMeaningfulBridge)) {
+    const bridgeIndex = values.findIndex((candidate) => candidate.targetArtistId === bridge.targetArtistId);
+    const firstChildIndex = values.findIndex((candidate) => candidate.bridgeId === bridge.targetArtistId);
+    if (bridgeIndex < 0 || firstChildIndex < 0 || firstChildIndex > bridgeIndex) continue;
+    values.splice(bridgeIndex, 1);
+    values.splice(firstChildIndex, 0, bridge);
+  }
+  return values.slice(0, Math.max(0, input.limit));
 }
