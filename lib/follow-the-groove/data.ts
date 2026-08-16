@@ -1,6 +1,7 @@
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { getReasonCodes, rankCandidates, type FtgRankingCandidate } from "./ranking";
 import { selectNextDestinations, type FtgOnwardRelation } from "./destination-selection";
+import { resolveSearchGrooveSourceFromMatches } from "./search-source";
 import { mapReasonLabel, type AllowedEvidence } from "./reasons";
 import { isValidTrail } from "./presentation";
 import {
@@ -531,4 +532,26 @@ export async function getFollowTheGroovePage(input: {
       return { mbid: artist.musicbrainz_artist_mbid, name: artist.display_name };
     }),
   };
+}
+
+export async function resolveSearchGrooveSource(input: {
+  query: string;
+  artistFilter?: string;
+  resultArtistNames: string[];
+}): Promise<string | null> {
+  if (input.artistFilter?.trim()) return input.artistFilter.trim();
+  if (!input.query.trim()) return null;
+  const supabase = createSupabaseAdminClient();
+  const exactRows = await unwrap<{ display_name: string }>(
+    supabase
+      .from("artists")
+      .select("display_name")
+      .ilike("display_name", escapeIlike(input.query.trim()))
+      .limit(2),
+  );
+  return resolveSearchGrooveSourceFromMatches({
+    query: input.query,
+    exactArtistNames: exactRows.map((row) => row.display_name),
+    resultArtistNames: input.resultArtistNames,
+  });
 }

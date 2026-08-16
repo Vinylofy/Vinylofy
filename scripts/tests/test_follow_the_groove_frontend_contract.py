@@ -251,6 +251,24 @@ class NextDestinationSelectionTests(unittest.TestCase):
 
 
 class FrontendPureContractTests(unittest.TestCase):
+    def test_search_source_resolution_order_and_safety(self) -> None:
+        module = "lib/follow-the-groove/search-source.ts"
+        resolve = "subject.resolveSearchGrooveSourceFromMatches(input)"
+        cases = [
+            ({"query": "Foo", "artistFilter": "Foo Fighters", "exactArtistNames": [], "resultArtistNames": []}, "Foo Fighters"),
+            ({"query": "Foo Fighters", "exactArtistNames": ["Foo Fighters"], "resultArtistNames": ["Foo Fighters", "Other Artist"]}, "Foo Fighters"),
+            ({"query": " foo   fighters ", "exactArtistNames": ["FOO FIGHTERS"], "resultArtistNames": []}, "FOO FIGHTERS"),
+            ({"query": "Foo", "exactArtistNames": ["Foo Fighters"], "resultArtistNames": ["Foo Fighters", "Other Artist"]}, None),
+            ({"query": "The Colour and the Shape", "exactArtistNames": [], "resultArtistNames": ["Foo Fighters"]}, "Foo Fighters"),
+            ({"query": "Foo Fighters", "exactArtistNames": ["Foo Fighters", "Foo Fighters"], "resultArtistNames": []}, None),
+            ({"query": "anything", "exactArtistNames": [], "resultArtistNames": ["Foo Fighters", "foo fighters"]}, "Foo Fighters"),
+            ({"query": "anything", "exactArtistNames": [], "resultArtistNames": ["Foo Fighters", "Pearl Jam"]}, None),
+            ({"query": "anything", "exactArtistNames": [], "resultArtistNames": []}, None),
+        ]
+        for payload, expected in cases:
+            with self.subTest(payload=payload):
+                self.assertEqual(run_typescript(module, resolve, payload), expected)
+
     def test_mbid_trail_and_candidate_link_contract(self) -> None:
         mbids = [
             "79239441-bfd5-4981-a70c-55c3f15c1287",

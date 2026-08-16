@@ -7,7 +7,7 @@ import { SiteHeader } from "@/components/site-header";
 import { CoverQueueBeacon } from "@/components/cover-queue-beacon";
 import { GrooveSearchBlock } from "@/components/follow-the-groove/groove-search-block";
 import { searchProducts, type SearchResultItem } from "@/lib/vinylofy-data";
-import { getFollowTheGroovePage } from "@/lib/follow-the-groove/data";
+import { getFollowTheGroovePage, resolveSearchGrooveSource } from "@/lib/follow-the-groove/data";
 import {
   parseSearchSort,
   sortSearchResults,
@@ -202,13 +202,17 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
     filteredResults,
     activeSort,
   ).slice(0, 24);
-  const unfilteredArtistOptions = !activeArtistFilter ? getArtistFilterOptions(results, query) : [];
-  const inferredArtistContext = activeArtistFilter ||
-    (unfilteredArtistOptions.length === 1 ? unfilteredArtistOptions[0].artist : "");
-  const grooveData = inferredArtistContext && visibleResults.length > 0
+  const grooveSource = visibleResults.length > 0
+    ? await resolveSearchGrooveSource({
+        query,
+        artistFilter: activeArtistFilter,
+        resultArtistNames: results.map((item) => item.artist),
+      }).catch(() => null)
+    : null;
+  const grooveData = grooveSource
     ? await getFollowTheGroovePage({
         trailMbids: [],
-        artistName: inferredArtistContext,
+        artistName: grooveSource,
         mode: "search",
         limit: 3,
       }).catch(() => null)
