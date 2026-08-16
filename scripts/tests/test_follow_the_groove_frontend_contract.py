@@ -414,6 +414,34 @@ class FrontendPureContractTests(unittest.TestCase):
 
 
 class FrontendSourceContractTests(unittest.TestCase):
+    def test_follow_the_groove_start_page_uses_artist_only_mbid_selection(self) -> None:
+        page = (ROOT / "app/follow-the-groove/page.tsx").read_text()
+        form = (ROOT / "components/search/search-autocomplete-form.tsx").read_text()
+        route = (ROOT / "app/api/search-suggest/route.ts").read_text()
+        self.assertIn("SearchAutocompleteForm", page)
+        self.assertIn('suggestionMode="follow-the-groove"', page)
+        self.assertIn("selectionOnly", page)
+        self.assertIn('inputId="follow-the-groove-artist"', page)
+        self.assertIn("Geen artiest gevonden", page)
+        self.assertIn("selectionOnly", form)
+        self.assertIn("if (!selectionOnly)", form)
+        self.assertIn("mode === \"follow-the-groove\"", route)
+        self.assertIn("isValidArtistMbid", route)
+        self.assertIn("/follow-the-groove/${encodeURIComponent", route)
+
+    def test_start_again_returns_to_ftg_entrypoint_without_ui_redesign(self) -> None:
+        page = (ROOT / "app/follow-the-groove/[...trail]/page.tsx").read_text()
+        self.assertIn('href="/follow-the-groove"', page)
+        self.assertIn("Start opnieuw", page)
+
+    def test_start_page_and_search_suggestions_have_no_external_api_or_admin_client(self) -> None:
+        page = (ROOT / "app/follow-the-groove/page.tsx").read_text()
+        route = (ROOT / "app/api/search-suggest/route.ts").read_text()
+        self.assertNotIn("createSupabaseAdminClient", page)
+        self.assertNotIn("fetch(", page)
+        self.assertNotIn("musicbrainz.org", route.lower())
+        self.assertNotIn("last.fm", route.lower())
+
     def test_search_service_requires_availability_and_search_href_before_ranking(self) -> None:
         data = (ROOT / "lib/follow-the-groove/data.ts").read_text()
         self.assertIn("searchPresentation?.get(candidate.id)?.searchHref !== null", data)

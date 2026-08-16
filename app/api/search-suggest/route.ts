@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { isValidArtistMbid } from "@/lib/follow-the-groove/presentation";
 
 type ProductSuggestionRow = {
   id: string;
@@ -17,6 +18,12 @@ type ArtistSuggestion = {
   score: number;
 };
 
+type FtgArtistSuggestionRow = {
+  musicbrainz_artist_mbid: string;
+  display_name: string;
+  entity_type: "person" | "group";
+};
+
 const BLACKLISTED_FORMAT_LABELS = new Set([
   "CD",
   "POSTER",
@@ -28,6 +35,10 @@ const BLACKLISTED_FORMAT_LABELS = new Set([
 
 function normalizeValue(value: string): string {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function escapeIlike(value: string): string {
+  return value.replace(/[\\%_]/g, "\\$&");
 }
 
 function isAllowedProduct(row: Pick<ProductSuggestionRow, "format_label">): boolean {
@@ -192,12 +203,44 @@ function sortSuggestions(a: ArtistSuggestion, b: ArtistSuggestion): number {
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const query = searchParams.get("q")?.trim() ?? "";
+  const mode = searchParams.get("mode") ?? "products";
 
   if (query.length < 2) {
     return NextResponse.json({ suggestions: [] });
   }
 
   try {
+    if (mode === "follow-the-groove") {
+      const supabase = createSupabaseServerClient();
+      const { data, error } = await supabase
+        .from("artists")
+        .select("musicbrainz_artist_mbid, display_name, entity_type")
+        .ilike("display_name", `%${escapeIlike(query)}%`)
+        .not("musicbrainz_artist_mbid", "is", null)
+        .limit(8);
+      if (error) throw error;
+
+      const suggestions = ((data ?? []) as FtgArtistSuggestionRow[])
+        .filter((row) => row.display_name?.trim() && isValidArtistMbid(row.musicbrainz_artist_mbid))
+        .sort((left, right) => {
+          const leftExact = normalizeValue(left.display_name) === normalizeValue(query);
+          const rightExact = normalizeValue(right.display_name) === normalizeValue(query);
+          if (leftExact !== rightExact) return leftExact ? -1 : 1;
+          return left.display_name.localeCompare(right.display_name, "nl", { sensitivity: "base" });
+        })
+        .slice(0, 5)
+        .map((row) => ({
+          id: `ftg-artist:${row.musicbrainz_artist_mbid}`,
+          kind: "artist" as const,
+          label: row.display_name.trim(),
+          sublabel: row.entity_type === "person" ? "Persoon" : "Groep",
+          href: `/follow-the-groove/${encodeURIComponent(row.musicbrainz_artist_mbid)}`,
+          searchValue: row.display_name.trim(),
+        }));
+
+      return NextResponse.json({ suggestions });
+    }
+
     const rows = await collectRows(query);
     const suggestions = buildArtistSuggestions(rows, query)
       .sort(sortSuggestions)

@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import Link from "next/link";
 import { GrooveArtistHero } from "@/components/follow-the-groove/groove-artist-hero";
 import { GrooveCandidateCard } from "@/components/follow-the-groove/groove-candidate-card";
 import { GrooveEmptyState } from "@/components/follow-the-groove/groove-empty-state";
@@ -39,6 +40,12 @@ export default async function FollowTheGroovePage({ params }: FollowTheGroovePag
             <div className="space-y-3">
               <h2 className="border-l-2 border-orange-500 pl-3 text-base font-semibold text-neutral-950">Jouw groove</h2>
               <GrooveTrail trail={data.trail} />
+              <Link
+                href="/follow-the-groove"
+                className="inline-flex rounded-full px-3 py-2 text-sm text-neutral-600 transition hover:bg-neutral-50 hover:text-neutral-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300"
+              >
+                Start opnieuw
+              </Link>
             </div>
           </aside>
 

@@ -19,6 +19,10 @@ type SearchAutocompleteFormProps = {
   variant: "global" | "search";
   compact?: boolean;
   openOnFocus?: boolean;
+  suggestionMode?: "products" | "follow-the-groove";
+  selectionOnly?: boolean;
+  inputId?: string;
+  noResultsLabel?: string;
 };
 
 function buildSearchHref(query: string) {
@@ -38,6 +42,10 @@ export function SearchAutocompleteForm({
   variant,
   compact = false,
   openOnFocus = true,
+  suggestionMode = "products",
+  selectionOnly = false,
+  inputId,
+  noResultsLabel,
 }: SearchAutocompleteFormProps) {
   const router = useRouter();
 
@@ -90,7 +98,7 @@ export function SearchAutocompleteForm({
         setIsLoading(true);
 
         const response = await fetch(
-          `/api/search-suggest?q=${encodeURIComponent(trimmed)}`,
+          `/api/search-suggest?q=${encodeURIComponent(trimmed)}&mode=${encodeURIComponent(suggestionMode)}`,
           {
             method: "GET",
             signal: controller.signal,
@@ -108,7 +116,7 @@ export function SearchAutocompleteForm({
 
         const nextSuggestions = json.suggestions ?? [];
         setSuggestions(nextSuggestions);
-        setOpen(nextSuggestions.length > 0);
+        setOpen(nextSuggestions.length > 0 || Boolean(noResultsLabel));
         setActiveIndex(-1);
       } catch (error) {
         if ((error as Error).name === "AbortError") {
@@ -130,7 +138,7 @@ export function SearchAutocompleteForm({
       window.clearTimeout(timeoutId);
       controller.abort();
     };
-  }, [canSuggest, query]);
+  }, [canSuggest, noResultsLabel, query, suggestionMode]);
 
   const activeSuggestion = useMemo(() => {
     if (activeIndex < 0 || activeIndex >= suggestions.length) {
@@ -180,7 +188,9 @@ export function SearchAutocompleteForm({
       return;
     }
 
-    goToSearch(query);
+    if (!selectionOnly) {
+      goToSearch(query);
+    }
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
@@ -231,6 +241,7 @@ export function SearchAutocompleteForm({
             ].join(" ")}
           >
             <input
+              id={inputId}
               type="search"
               name="q"
               value={query}
@@ -266,6 +277,7 @@ export function SearchAutocompleteForm({
         ) : (
           <>
             <input
+              id={inputId}
               type="search"
               name="q"
               value={query}
@@ -300,6 +312,9 @@ export function SearchAutocompleteForm({
             role="listbox"
             className="absolute left-0 right-0 top-[calc(100%+8px)] z-50 max-h-[156px] overflow-y-auto rounded-2xl border border-neutral-200 bg-white p-1 shadow-lg"
           >
+            {suggestions.length === 0 && noResultsLabel ? (
+              <p className="px-3 py-2 text-sm text-neutral-500">{noResultsLabel}</p>
+            ) : null}
             {suggestions.map((suggestion, index) => {
               const active = index === activeIndex;
 
