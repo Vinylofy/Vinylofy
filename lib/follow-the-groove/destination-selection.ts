@@ -55,13 +55,17 @@ export function selectNextDestinations(input: {
   direct: FtgRankingCandidate[];
   onward: Map<string, FtgOnwardRelation[]>;
   excludedArtistIds?: Set<string>;
+  requireSearchEligible?: boolean;
   limit: number;
 }): FtgDestinationCandidate[] {
   const excluded = input.excludedArtistIds ?? new Set<string>();
-  const directIds = new Set(input.direct.map((candidate) => candidate.targetArtistId));
+  const visible = (candidate: FtgRankingCandidate): boolean =>
+    !input.requireSearchEligible || candidate.searchEligible;
+  const direct = input.direct.filter(visible);
+  const directIds = new Set(direct.map((candidate) => candidate.targetArtistId));
   const byDestination = new Map<string, FtgDestinationCandidate>();
 
-  input.direct.forEach((candidate) => {
+  direct.forEach((candidate) => {
     if (candidate.targetArtistId === input.sourceArtistId || excluded.has(candidate.targetArtistId)) return;
     byDestination.set(candidate.targetArtistId, {
       ...candidate,
@@ -93,6 +97,7 @@ export function selectNextDestinations(input: {
     for (const relation of onward) {
       const destinationId = relation.targetArtistId;
       if (
+        !visible(relation) ||
         destinationId === input.sourceArtistId ||
         destinationId === bridge.targetArtistId ||
         directIds.has(destinationId) ||

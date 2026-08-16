@@ -487,6 +487,7 @@ export async function getFollowTheGroovePage(input: {
         .map((mbid) => artistsByMbid.get(mbid.toLowerCase())?.id)
         .filter((id): id is string => Boolean(id)),
     ),
+    requireSearchEligible: mode === "search",
     limit,
   });
   const selectedArtists = selected.flatMap((candidate) => {

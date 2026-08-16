@@ -169,6 +169,48 @@ class V3TypescriptParityTests(unittest.TestCase):
 
 
 class NextDestinationSelectionTests(unittest.TestCase):
+    def test_search_selector_excludes_zero_product_direct_and_indirect_candidates(self) -> None:
+        direct = [
+            {**fixture_candidate("Zero Direct", factual=True, product_count=0), "searchEligible": False},
+            fixture_candidate("Eligible Direct", factual=True),
+        ]
+        onward = {
+            "eligible-direct": [
+                {**fixture_candidate("Zero Indirect", factual=True, product_count=0), "sourceArtistId": "eligible-direct", "searchEligible": False},
+                {**fixture_candidate("Eligible Four", factual=True), "sourceArtistId": "eligible-direct"},
+            ]
+        }
+        actual = run_typescript(
+            "lib/follow-the-groove/destination-selection.ts",
+            "subject.selectNextDestinations({ sourceArtistId: 'source', direct: input.direct, onward: new Map(Object.entries(input.onward)), requireSearchEligible: true, limit: 3 }).map(row => row.displayName)",
+            {"direct": direct, "onward": onward},
+        )
+        self.assertEqual(actual, ["Eligible Direct", "Eligible Four"])
+
+    def test_search_selector_allows_eligible_child_through_zero_product_bridge(self) -> None:
+        bridge = {**fixture_candidate("Zero Product Bridge", factual=True, product_count=0), "searchEligible": False}
+        child = {**fixture_candidate("Eligible Child", factual=True), "sourceArtistId": bridge["targetArtistId"]}
+        actual = run_typescript(
+            "lib/follow-the-groove/destination-selection.ts",
+            "subject.selectNextDestinations({ sourceArtistId: 'source', direct: [input.bridge], onward: new Map([[input.bridge.targetArtistId, [input.child]]]), requireSearchEligible: true, limit: 3 }).map(row => row.displayName)",
+            {"bridge": bridge, "child": child},
+        )
+        self.assertEqual(actual, ["Eligible Child"])
+
+    def test_search_selector_fills_after_ineligible_candidate_without_product_bias(self) -> None:
+        direct = [
+            {**fixture_candidate("Eligible A", factual=True), "searchEligible": True},
+            {**fixture_candidate("Zero C", factual=True, product_count=0), "searchEligible": False},
+            {**fixture_candidate("Eligible B", factual=True), "searchEligible": True},
+            {**fixture_candidate("Eligible D", factual=True), "searchEligible": True},
+        ]
+        actual = run_typescript(
+            "lib/follow-the-groove/destination-selection.ts",
+            "subject.selectNextDestinations({ sourceArtistId: 'source', direct: input.direct, onward: new Map(), requireSearchEligible: true, limit: 3 }).map(row => row.displayName)",
+            {"direct": direct},
+        )
+        self.assertEqual(actual, ["Eligible A", "Eligible B", "Eligible D"])
+
     def test_meaningful_bridge_precedes_multiple_children(self) -> None:
         bridge = fixture_candidate("Them Crooked Vultures", factual=True, mechanisms=("artist_credit",))
         children = [
@@ -377,6 +419,7 @@ class FrontendSourceContractTests(unittest.TestCase):
         self.assertIn("searchPresentation?.get(candidate.id)?.searchHref !== null", data)
         self.assertIn("searchPresentation?.get(target.id)?.searchHref !== null", data)
         self.assertIn("FTG_SEARCH_RANKING_POOL_LIMIT = 24", data)
+        self.assertIn("requireSearchEligible: mode === \"search\"", data)
 
     def test_search_block_visual_source_is_unchanged(self) -> None:
         completed = subprocess.run(
