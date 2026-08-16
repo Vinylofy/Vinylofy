@@ -423,6 +423,8 @@ class FrontendSourceContractTests(unittest.TestCase):
         self.assertIn("selectionOnly", page)
         self.assertIn('inputId="follow-the-groove-artist"', page)
         self.assertIn("Geen artiest gevonden", page)
+        self.assertIn('src="/follow-the-groove/FTG.png"', page)
+        self.assertIn("h-auto w-full", page)
         self.assertIn("selectionOnly", form)
         self.assertIn("if (!selectionOnly)", form)
         self.assertIn("mode === \"follow-the-groove\"", route)
@@ -441,6 +443,23 @@ class FrontendSourceContractTests(unittest.TestCase):
         self.assertNotIn("fetch(", page)
         self.assertNotIn("musicbrainz.org", route.lower())
         self.assertNotIn("last.fm", route.lower())
+
+    def test_homepage_has_one_secondary_ftg_entry_without_global_nav_change(self) -> None:
+        homepage = (ROOT / "components/home/hero-search.tsx").read_text()
+        self.assertEqual(homepage.count('href="/follow-the-groove"'), 1)
+        self.assertIn("Start je groove", homepage)
+        self.assertIn("GlobalSearchBar", homepage)
+        self.assertNotIn("SiteHeader", homepage)
+
+    def test_provided_ftg_visual_is_local_and_not_duplicated_on_homepage(self) -> None:
+        asset = ROOT / "public/follow-the-groove/FTG.png"
+        start_page = (ROOT / "app/follow-the-groove/page.tsx").read_text()
+        homepage = (ROOT / "components/home/hero-search.tsx").read_text()
+        self.assertTrue(asset.is_file())
+        self.assertIn("/follow-the-groove/FTG.png", start_page)
+        self.assertNotIn("/follow-the-groove/FTG.png", homepage)
+        self.assertNotIn("http://", start_page)
+        self.assertNotIn("https://", start_page)
 
     def test_search_service_requires_availability_and_search_href_before_ranking(self) -> None:
         data = (ROOT / "lib/follow-the-groove/data.ts").read_text()

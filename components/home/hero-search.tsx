@@ -1,4 +1,5 @@
 import Image from "next/image";
+import Link from "next/link";
 
 import { GlobalSearchBar } from "@/components/global-search-bar";
 import { HomeActionCards } from "@/components/home/home-action-cards";
@@ -28,6 +29,19 @@ export function HeroSearch() {
 
         <div className="mt-4 w-full max-w-[920px]">
           <HomeActionCards />
+        </div>
+
+        <div className="mt-8 w-full max-w-[920px] rounded-3xl border border-neutral-200 bg-white p-5 text-left shadow-sm md:p-6">
+          <p className="text-xs font-medium uppercase tracking-[0.16em] text-orange-600">Follow the Groove</p>
+          <div className="mt-2 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-neutral-600">Ontdek muziek via echte connecties tussen artiesten.</p>
+            <Link
+              href="/follow-the-groove"
+              className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-full border border-neutral-300 px-5 py-2 text-sm font-medium text-neutral-800 transition hover:border-orange-300 hover:bg-orange-50 hover:text-orange-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 focus-visible:ring-offset-2"
+            >
+              Start je groove →
+            </Link>
+          </div>
         </div>
       </div>
     </section>
