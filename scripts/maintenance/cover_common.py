@@ -92,6 +92,17 @@ DEFAULT_IMAGE_QUALITY = 88
 DEFAULT_MAX_OFFERS_PER_PRODUCT = 3
 DEFAULT_RETRY_AFTER_HOURS = 12
 
+BLOCKED_COVER_ERROR_CODE = "blocked_retailer_placeholder"
+BLOCKED_COVER_ERROR_MESSAGE = (
+    "Globally blocked retailer placeholder/logo asset."
+)
+BLOCKED_COVER_URLS = frozenset({
+    "https://www.platomania.nl/fbmania.png",
+})
+BLOCKED_COVER_SHA256 = frozenset({
+    "162468189d7fa6d6481f1c80ef1861bb45af5cb5ae6e5cd317e0a6c9aa5e4e18",
+})
+
 
 @dataclass(slots=True)
 class OfferSource:
@@ -167,6 +178,33 @@ _DOWNLOAD_CACHE: dict[str, DownloadedBinary] = {}
 
 class CoverPipelineError(RuntimeError):
     pass
+
+
+class BlockedCoverAssetError(CoverPipelineError):
+    pass
+
+
+def is_blocked_cover_url(url: str | None) -> bool:
+    """Match only audited, exact bad source URLs."""
+    return normalize_text(url) in BLOCKED_COVER_URLS
+
+
+def is_blocked_cover_sha256(value: str | None) -> bool:
+    return normalize_text(value).lower() in BLOCKED_COVER_SHA256
+
+
+def reject_blocked_cover_url(url: str | None) -> None:
+    if is_blocked_cover_url(url):
+        raise BlockedCoverAssetError(
+            f"{BLOCKED_COVER_ERROR_CODE}: {BLOCKED_COVER_ERROR_MESSAGE}"
+        )
+
+
+def reject_blocked_cover_sha256(value: str | None) -> None:
+    if is_blocked_cover_sha256(value):
+        raise BlockedCoverAssetError(
+            f"{BLOCKED_COVER_ERROR_CODE}: {BLOCKED_COVER_ERROR_MESSAGE}"
+        )
 
 
 def log(message: str) -> None:
@@ -615,6 +653,7 @@ def download_binary(
     url: str,
 ) -> DownloadedBinary:
     requested_url = require_http_url(url, label="Afbeeldings-URL")
+    reject_blocked_cover_url(requested_url)
 
     with _DOWNLOAD_CACHE_LOCK:
         cached = _DOWNLOAD_CACHE.get(requested_url)
@@ -639,6 +678,7 @@ def download_binary(
             response,
             source_url=requested_url,
         )
+    reject_blocked_cover_sha256(downloaded.sha256)
 
     with _DOWNLOAD_CACHE_LOCK:
         existing = _DOWNLOAD_CACHE.setdefault(

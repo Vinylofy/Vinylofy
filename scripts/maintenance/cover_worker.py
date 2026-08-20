@@ -12,6 +12,9 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from cover_common import (
+    BLOCKED_COVER_ERROR_CODE,
+    BLOCKED_COVER_ERROR_MESSAGE,
+    BlockedCoverAssetError,
     CandidateRecord,
     CoverPipelineError,
     build_product_storage_path,
@@ -22,12 +25,14 @@ from cover_common import (
     ensure_runtime_directories,
     get_storage_bucket_api,
     inspect_storage_object,
+    is_blocked_cover_url,
     make_session,
     next_retry_timestamp,
     normalize_ean,
     normalize_source_type,
     normalize_text,
     prepare_image_for_storage,
+    reject_blocked_cover_sha256,
     rank_candidate,
     require_table_columns,
     serialize_json,
@@ -1125,6 +1130,7 @@ def load_candidates(
             parts.scheme.lower() not in {"http", "https"}
             or not parts.netloc
             or image_url in seen_urls
+            or is_blocked_cover_url(image_url)
         ):
             continue
         seen_urls.add(image_url)
@@ -1849,6 +1855,7 @@ def process_claimed_job(
                     downloaded.content,
                     original_mime_type=downloaded.mime_type,
                 )
+                reject_blocked_cover_sha256(prepared.sha256)
                 if len(prepared.output_bytes) > MAX_STORAGE_OBJECT_BYTES:
                     raise CoverPipelineError(
                         "Voorbereide WebP overschrijdt de Storage-limiet "
@@ -1907,19 +1914,45 @@ def process_claimed_job(
                 }
             except Exception as exc:
                 conn.rollback()
-                error_code = type(exc).__name__.lower()
+                blocked = isinstance(exc, BlockedCoverAssetError)
+                error_code = (
+                    BLOCKED_COVER_ERROR_CODE
+                    if blocked
+                    else type(exc).__name__.lower()
+                )
                 error_message = (
                     normalize_text(str(exc))
                     or type(exc).__name__
                 )
                 try:
-                    mark_candidate_failed(
-                        conn,
-                        selected=selected,
-                        error_code=error_code,
-                        error_message=error_message,
-                        preserve_selected_publication=active_local_cover,
-                    )
+                    if blocked:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                """
+                                update public.product_cover_candidates
+                                set candidate_status = 'rejected',
+                                    is_selected = false,
+                                    last_checked_at = now(),
+                                    last_error_code = %s,
+                                    last_error_message = %s,
+                                    updated_at = now()
+                                where id = %s
+                                """,
+                                (
+                                    BLOCKED_COVER_ERROR_CODE,
+                                    BLOCKED_COVER_ERROR_MESSAGE,
+                                    selected.candidate_id,
+                                ),
+                            )
+                        conn.commit()
+                    else:
+                        mark_candidate_failed(
+                            conn,
+                            selected=selected,
+                            error_code=error_code,
+                            error_message=error_message,
+                            preserve_selected_publication=active_local_cover,
+                        )
                 except Exception:
                     conn.rollback()
                 candidate_errors.append(
