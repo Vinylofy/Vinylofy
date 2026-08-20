@@ -30,6 +30,9 @@ from cover_common import (
     safe_parse_datetime,
     serialize_json,
     utc_now,
+    BLOCKED_COVER_ERROR_CODE,
+    BLOCKED_COVER_ERROR_MESSAGE,
+    is_blocked_cover_url,
 )
 
 
@@ -568,6 +571,7 @@ def build_candidate_insert_payload(
     columns: set[str],
 ) -> dict[str, Any]:
     now = utc_now()
+    blocked = is_blocked_cover_url(candidate.image_url)
     values = {
         "product_id": candidate.product_id,
         "shop_id": candidate.shop_id,
@@ -582,7 +586,14 @@ def build_candidate_insert_payload(
         "mime_type": candidate.mime_type,
         "width": candidate.width,
         "height": candidate.height,
-        "candidate_status": "pending",
+        "candidate_status": "rejected" if blocked else "pending",
+        "is_selected": False,
+        "last_error_code": (
+            BLOCKED_COVER_ERROR_CODE if blocked else None
+        ),
+        "last_error_message": (
+            BLOCKED_COVER_ERROR_MESSAGE if blocked else None
+        ),
         "discovered_at": now,
         "first_seen_at": now,
         "last_seen_at": now,
@@ -711,10 +722,19 @@ def update_candidate_row(
             existing.get("candidate_status")
         )
         payload["candidate_status"] = (
-            current_status
+            "rejected"
+            if is_blocked_cover_url(candidate.image_url)
+            else current_status
             if current_status in {"published", "rejected"}
             else "pending"
         )
+    if is_blocked_cover_url(candidate.image_url):
+        if "is_selected" in columns:
+            payload["is_selected"] = False
+        if "last_error_code" in columns:
+            payload["last_error_code"] = BLOCKED_COVER_ERROR_CODE
+        if "last_error_message" in columns:
+            payload["last_error_message"] = BLOCKED_COVER_ERROR_MESSAGE
     if "last_seen_at" in columns:
         payload["last_seen_at"] = now
     if "updated_at" in columns:
