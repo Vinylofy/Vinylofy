@@ -1,6 +1,8 @@
 name: Follow the Groove Collector
 
 on:
+  schedule:
+    - cron: "0 6,10,14,18,22 * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -65,10 +67,10 @@ jobs:
       - name: Validate configuration and run bounded collector
         shell: bash
         env:
-          MODE_INPUT: ${{ inputs.mode }}
-          MAX_SOURCES_INPUT: ${{ inputs.max_sources }}
-          SOURCE_MBIDS_INPUT: ${{ inputs.source_mbids }}
-          WRITE_INPUT: ${{ inputs.write }}
+          MODE_INPUT: ${{ github.event_name == 'schedule' && 'frontier' || inputs.mode }}
+          MAX_SOURCES_INPUT: ${{ github.event_name == 'schedule' && '10' || inputs.max_sources }}
+          SOURCE_MBIDS_INPUT: ${{ github.event_name == 'schedule' && '' || inputs.source_mbids }}
+          WRITE_INPUT: ${{ github.event_name == 'schedule' && 'true' || inputs.write }}
         run: |
           set -euo pipefail
           if [[ -z "${DATABASE_URL:-}" || -z "${LASTFM_API_KEY:-}" ]]; then
@@ -94,7 +96,8 @@ jobs:
             --output output/follow_the_groove/collector-result.json
           )
           if [[ "$WRITE_INPUT" == "true" ]]; then
-            args+=(--write)
+            execution_id="$(python -c 'import uuid; print(uuid.uuid4())')"
+            args+=(--write --execution-id "$execution_id")
           else
             args+=(--dry-run)
           fi
