@@ -9,6 +9,7 @@ from scripts.follow_the_groove import generic_collector as generic, persistence
 
 WORKFLOW=Path(".github/workflows/follow-the-groove-collector.yml")
 MBID="79239441-bfd5-4981-a70c-55c3f15c1287"
+EXECUTION_ID="00000000-0000-4000-8000-000000000001"
 
 
 class WorkflowSafetyTests(unittest.TestCase):
@@ -16,14 +17,21 @@ class WorkflowSafetyTests(unittest.TestCase):
     def setUpClass(cls):
         cls.text=WORKFLOW.read_text(encoding="utf-8")
 
-    def test_manual_only_bounded_workflow(self):
+    def test_scheduled_and_manual_bounded_workflow(self):
         self.assertIn("workflow_dispatch:",self.text)
-        self.assertNotIn("schedule:",self.text)
+        self.assertIn("schedule:",self.text)
+        self.assertEqual(self.text.count('cron: "0 6,10,14,18,22 * * *"'),1)
         self.assertIn('          - "1"',self.text)
         self.assertIn('          - "2"',self.text)
         self.assertIn('          - "3"',self.text)
         self.assertIn('          - "10"',self.text)
         self.assertIn('^(1|2|3|10)$',self.text)
+
+    def test_schedule_is_write_frontier_ten_and_manual_inputs_remain_available(self):
+        self.assertIn("github.event_name == 'schedule' && 'frontier' || inputs.mode",self.text)
+        self.assertIn("github.event_name == 'schedule' && '10' || inputs.max_sources",self.text)
+        self.assertIn("github.event_name == 'schedule' && 'true' || inputs.write",self.text)
+        self.assertIn('args+=(--write --execution-id "$execution_id")',self.text)
 
     def test_concurrency_timeout_and_artifact_contract(self):
         self.assertIn("group: follow-the-groove-collector",self.text)
@@ -44,9 +52,9 @@ class WorkflowSafetyTests(unittest.TestCase):
         parser=generic.build_parser()
         cases=(
             ["--dry-run","--frontier","--max-sources","1"],
-            ["--write","--frontier","--max-sources","1"],
+            ["--write","--frontier","--max-sources","1","--execution-id",EXECUTION_ID],
             ["--dry-run","--refresh","--max-sources","1","--source-mbid",MBID],
-            ["--write","--refresh","--max-sources","1","--source-mbid",MBID],
+            ["--write","--refresh","--max-sources","1","--source-mbid",MBID,"--execution-id",EXECUTION_ID],
         )
         for values in cases:
             with self.subTest(values=values):
