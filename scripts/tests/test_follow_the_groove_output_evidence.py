@@ -41,6 +41,7 @@ class FakeConnection:
     def execute(self, sql, params=None):
         self.commands.append((sql, params))
         return self
+    def fetchone(self): return ("80000000-0000-0000-0000-000000000008",)
     def commit(self): self.commits += 1
     def rollback(self): self.rollbacks += 1
 
@@ -115,6 +116,38 @@ class OutputEvidenceTest(unittest.TestCase):
         self.assertEqual(report["database_writes"], 0)
         self.assertEqual(conn.commits, 0)
         self.assertEqual(conn.rollbacks, 1)
+
+    def test_connection_disables_automatic_preparation_and_preserves_rollback(self):
+        args = argparse.Namespace(dry_run=True, write=False, batch_size=1, after_mbid=None,
+                                  artist_mbid=[], pilot=False, refresh=False, output=None)
+        conn = FakeConnection()
+        client = FakeClient([])
+        with patch.dict(subject.os.environ, {"DATABASE_URL": "postgres://fixture"}), \
+             patch.object(subject.psycopg, "connect", return_value=conn) as connect, \
+             patch.object(subject, "select_artists", return_value=[]), \
+             patch.object(subject, "load_existing", return_value=({}, set(), {})), \
+             patch.object(subject, "load_local_evidence", return_value=[]):
+            subject.run(args, client=client)
+        connect.assert_called_once_with(
+            "postgres://fixture", autocommit=False, prepare_threshold=None,
+        )
+        self.assertEqual(conn.commits, 0)
+        self.assertEqual(conn.rollbacks, 1)
+
+    def test_persistence_executes_sequential_statements(self):
+        evidence = subject.Evidence(
+            ARTIST.id, ARTIST.mbid, "recording_artist", "musicbrainz", "recording",
+            "70000000-0000-0000-0000-000000000007", {}, NOW,
+        )
+        rows = [{"artist": ARTIST, "evidence": evidence, "status": "proven_output",
+                 "evidence_write": True, "status_write": True, "verified_at": NOW}]
+        conn = FakeConnection()
+        subject.persist(conn, "90000000-0000-0000-0000-000000000009", rows)
+        self.assertEqual(len(conn.commands), 4)
+        self.assertIn("follow_the_groove_collection_runs", conn.commands[0][0])
+        self.assertIn("artist_output_evidence", conn.commands[1][0])
+        self.assertIn("select id::text", conn.commands[2][0])
+        self.assertIn("artist_output_status", conn.commands[3][0])
 
     def test_no_product_mutation_or_unrelated_metadata_writes(self):
         source = inspect.getsource(subject.persist).lower()

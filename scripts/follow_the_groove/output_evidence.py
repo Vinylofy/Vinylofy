@@ -299,7 +299,7 @@ def run(args: argparse.Namespace, *, client: MBClient | None = None) -> dict[str
     started = time.monotonic()
     verified_at = utc_now()
     http = client or HttpJsonClient(os.getenv("MUSICBRAINZ_USER_AGENT", DEFAULT_USER_AGENT))
-    with psycopg.connect(database_url, autocommit=False) as conn:
+    with psycopg.connect(database_url, autocommit=False, prepare_threshold=None) as conn:
         conn.execute("begin isolation level repeatable read read only" if args.dry_run else "begin isolation level serializable")
         artists = select_artists(conn, args.batch_size, args.after_mbid, args.artist_mbid, args.pilot)
         existing_by_artist, existing_keys, existing_status = load_existing(conn, artists)
