@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import tempfile
 import unittest
@@ -130,6 +131,52 @@ class AtTheMoviesScraperTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "stopped safely"):
             fetch(session, "https://atthemoviesshop.com/nl/collections/all-products")
         self.assertEqual(session.calls, 1)
+
+    def test_detail_429_keeps_completed_rows_and_writes_checkpoint(self):
+        rows = [
+            {
+                "handle": f"item-{index}",
+                "product_url": f"https://example/item-{index}",
+                "variant_id": str(index),
+                "ean": "",
+                "sku": "",
+                "detail_status": "listing",
+            }
+            for index in range(5)
+        ]
+
+        class Response:
+            def __init__(self, status_code, variant_id=None):
+                self.status_code = status_code
+                self.variant_id = variant_id
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"variants": [{"id": self.variant_id, "barcode": f"ean-{self.variant_id}"}]}
+
+        class Session:
+            calls = 0
+
+            def get(self, _url, **_kwargs):
+                self.calls += 1
+                if self.calls == 4:
+                    return Response(429)
+                return Response(200, self.calls - 1)
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "checkpoint.csv"
+            session = Session()
+            enrich_details(session, rows, 5, checkpoint_path=output)
+
+            self.assertEqual(session.calls, 4)
+            self.assertEqual([row["detail_status"] for row in rows[:3]], ["ok", "ok", "ok"])
+            self.assertEqual([row["detail_status"] for row in rows[3:]], ["listing", "listing"])
+            with output.open(encoding="utf-8", newline="") as handle:
+                checkpoint_rows = list(csv.DictReader(handle))
+            self.assertEqual([row["detail_status"] for row in checkpoint_rows[:3]], ["ok", "ok", "ok"])
+            self.assertEqual(len(checkpoint_rows), 5)
 
     def test_detail_enrichment_never_overwrites_listing_price_or_availability(self):
         rows, _has_next, _handles, _skips = parse_listing_page(listing_html())

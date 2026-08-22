@@ -47,6 +47,10 @@ CSV_COLUMNS = (
 )
 
 
+class RateLimitError(RuntimeError):
+    """The source asked the scraper to stop requesting detail pages."""
+
+
 def now_utc_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -68,7 +72,7 @@ def fetch(session: requests.Session, url: str, *, retries: int = 2, timeout: int
         try:
             response = session.get(url, timeout=timeout)
             if response.status_code == 429:
-                raise RuntimeError(f"HTTP 429 for {url}; scraper stopped safely")
+                raise RateLimitError(f"HTTP 429 for {url}; scraper stopped safely")
             if response.status_code in {500, 502, 503, 504}:
                 raise requests.HTTPError(f"HTTP {response.status_code}", response=response)
             response.raise_for_status()
@@ -245,7 +249,16 @@ def enrich_details(
     detail_rows = pending_rows[:limit]
     for index, row in enumerate(detail_rows, start=1):
         detail_url = f"{row['product_url']}.js"
-        product = fetch(session, detail_url).json()
+        try:
+            product = fetch(session, detail_url).json()
+        except RateLimitError as exc:
+            print(
+                f"[DETAIL] rate-limited during detail enrichment; stopping remaining detail requests: {exc}",
+                flush=True,
+            )
+            if checkpoint_path is not None:
+                write_csv(rows, checkpoint_path)
+            return
         variants = product.get("variants") or []
         variant = next((item for item in variants if str(item.get("id")) == row["variant_id"]), None)
         if variant is None and len(variants) == 1:
