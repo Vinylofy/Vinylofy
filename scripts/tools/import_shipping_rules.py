@@ -4,6 +4,7 @@ import csv
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 import psycopg
 
@@ -36,6 +37,65 @@ def to_bool(value):
     return str(value).strip().lower() in ("true", "1", "yes", "ja")
 
 
+class ShopResolutionError(ValueError):
+    """A shipping row cannot be mapped to exactly one existing shop."""
+
+
+def source_domain(source_url):
+    parsed = urlparse(clean(source_url) or "")
+    hostname = parsed.hostname
+    return hostname.lower().rstrip(".") if hostname else None
+
+
+def resolve_shop_id(cur, row):
+    domain = source_domain(row.get("source_url"))
+    if not domain:
+        raise ShopResolutionError(
+            f"shippingregel heeft geen bruikbaar source_url: "
+            f"shop_slug={row.get('shop_slug')!r}"
+        )
+
+    cur.execute(
+        """
+        select id
+        from public.shops
+        where domain = %s
+        """,
+        (domain,),
+    )
+    matches = cur.fetchall()
+    if len(matches) != 1:
+        state = "ontbreekt" if not matches else "ambigu"
+        raise ShopResolutionError(
+            f"geen unieke bestaande shop voor shippingregel: "
+            f"shop_slug={row.get('shop_slug')!r}, domain={domain!r}, "
+            f"status={state}, matches={len(matches)}"
+        )
+    return matches[0][0]
+
+
+def build_payload(cur, rows):
+    payload = []
+    for row in rows:
+        payload.append({
+            "shop_id": resolve_shop_id(cur, row),
+            "shop_slug": clean(row.get("shop_slug")),
+            "shop_name": clean(row.get("shop_name")),
+            "country_code": clean(row.get("country_code")) or "NL",
+            "currency": clean(row.get("currency")) or "EUR",
+            "shipping_cost_cents": to_int(row.get("shipping_cost_cents")),
+            "free_shipping_threshold_cents": to_int(row.get("free_shipping_threshold_cents")),
+            "shipping_logic": clean(row.get("shipping_logic")) or "threshold",
+            "shipping_note": clean(row.get("shipping_note")),
+            "confidence": clean(row.get("confidence")) or "verified",
+            "source_url": clean(row.get("source_url")),
+            "source_url_2": clean(row.get("source_url_2")),
+            "verified_at": clean(row.get("verified_at")),
+            "active": to_bool(row.get("active", "true")),
+        })
+    return payload
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
@@ -64,7 +124,8 @@ def main():
         return 1
 
     sql = """
-    insert into public.shop_shipping_rules (
+      insert into public.shop_shipping_rules (
+      shop_id,
       shop_slug,
       shop_name,
       country_code,
@@ -80,6 +141,7 @@ def main():
       active
     )
     values (
+      %(shop_id)s,
       %(shop_slug)s,
       %(shop_name)s,
       %(country_code)s,
@@ -96,6 +158,7 @@ def main():
     )
     on conflict (shop_slug, country_code)
     do update set
+      shop_id = excluded.shop_id,
       shop_name = excluded.shop_name,
       currency = excluded.currency,
       shipping_cost_cents = excluded.shipping_cost_cents,
@@ -111,26 +174,9 @@ def main():
       updated_at = now()
     """
 
-    payload = []
-    for row in rows:
-        payload.append({
-            "shop_slug": clean(row.get("shop_slug")),
-            "shop_name": clean(row.get("shop_name")),
-            "country_code": clean(row.get("country_code")) or "NL",
-            "currency": clean(row.get("currency")) or "EUR",
-            "shipping_cost_cents": to_int(row.get("shipping_cost_cents")),
-            "free_shipping_threshold_cents": to_int(row.get("free_shipping_threshold_cents")),
-            "shipping_logic": clean(row.get("shipping_logic")) or "threshold",
-            "shipping_note": clean(row.get("shipping_note")),
-            "confidence": clean(row.get("confidence")) or "verified",
-            "source_url": clean(row.get("source_url")),
-            "source_url_2": clean(row.get("source_url_2")),
-            "verified_at": clean(row.get("verified_at")),
-            "active": to_bool(row.get("active", "true")),
-        })
-
     with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
+            payload = build_payload(cur, rows)
             cur.executemany(sql, payload)
         conn.commit()
 
