@@ -4,11 +4,9 @@ import { buildGrooveHref, formatEntityType } from "@/lib/follow-the-groove/prese
 import type { FtgCandidateView } from "@/lib/follow-the-groove/types";
 
 export function GrooveSearchBlock({
-  activeArtistName,
   activeArtistMbid,
   candidates,
 }: {
-  activeArtistName: string;
   activeArtistMbid: string;
   candidates: FtgCandidateView[];
 }) {
@@ -17,11 +15,11 @@ export function GrooveSearchBlock({
   return (
     <section aria-labelledby="search-groove-heading" className="rounded-3xl border border-orange-100 bg-white p-4 shadow-sm md:p-5">
       <div className="space-y-1">
-        <p className="text-xs font-medium uppercase tracking-[0.16em] text-orange-600">Follow the Groove</p>
+        <p className="text-xs font-medium uppercase tracking-[0.16em] text-orange-600">FOLLOW THE GROOVE</p>
         <h2 id="search-groove-heading" className="text-xl font-semibold tracking-tight text-neutral-950">
-          Follow the Groove
+          Ontdek jouw volgende muzikale bestemming
         </h2>
-        <p className="text-sm text-neutral-600">Ontdek artiesten die muzikaal verbonden zijn met {activeArtistName}.</p>
+        <p className="text-sm text-neutral-600">Verken artiesten die muzikaal verbonden zijn met wat je zoekt.</p>
       </div>
       <div className="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-3">
         {candidates.map((candidate) => (

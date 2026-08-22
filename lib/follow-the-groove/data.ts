@@ -382,7 +382,7 @@ async function loadTrailExplanations(trailArtists: ArtistRow[]): Promise<(string
     }
     const selected = selectNextDestinations({
       sourceArtistId: source.id,
-      sourceArtistName: source.display_name,
+      visitedArtistNames: [source.display_name],
       direct,
       onward,
       limit: Math.max(FTG_MAX_CANDIDATES, direct.length + artistIds.length),
@@ -669,7 +669,7 @@ export async function getFollowTheGroovePage(input: {
   }
   const selected = selectNextDestinations({
     sourceArtistId: activeArtist.id,
-    sourceArtistName: activeArtist.display_name,
+    visitedArtistNames: trailRows.map((artist) => artist.display_name),
     direct: ranked,
     onward: onwardRelations,
     excludedArtistIds: new Set(
