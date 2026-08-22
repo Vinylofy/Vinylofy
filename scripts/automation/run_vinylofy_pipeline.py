@@ -226,7 +226,7 @@ def upload_files_to_supabase(
 
 def resolve_shops(selection: str) -> list[ShopPipelineConfig]:
     if selection == "all":
-        return [SHOPS[key] for key in sorted(SHOPS)]
+        return [SHOPS[key] for key in sorted(SHOPS) if SHOPS[key].include_in_all]
     return [get_shop_config(selection)]
 
 
@@ -643,7 +643,8 @@ def main() -> int:
     else:
         summary_path = PROJECT_ROOT / "output" / "pipeline_runs" / f"pipeline_run_{run_started.strftime('%Y%m%dT%H%M%SZ')}.json"
 
-    conn = maybe_open_logging_connection()
+    # A dry-run must not open a database connection or write monitoring rows.
+    conn = None if args.dry_run_import else maybe_open_logging_connection()
     results: list[ShopRunResult] = []
     exit_code = 0
 
