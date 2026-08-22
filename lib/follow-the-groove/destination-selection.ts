@@ -38,14 +38,17 @@ function isEnsembleVariantOf(candidateName: string, baseName: string): boolean {
 
 function suppressArtistFamilyVariants(
   candidates: FtgDestinationCandidate[],
-  sourceArtistName: string,
+  visitedArtistNames: Iterable<string>,
 ): FtgDestinationCandidate[] {
-  const withoutSourceVariants = candidates.filter(
+  const visitedNames = [...visitedArtistNames];
+  const withoutVisitedVariants = candidates.filter(
     (candidate) =>
-      !sourceArtistName || !isEnsembleVariantOf(candidate.displayName, sourceArtistName),
+      !visitedNames.some((visitedName) =>
+        isEnsembleVariantOf(candidate.displayName, visitedName),
+      ),
   );
-  return withoutSourceVariants.filter(
-    (candidate) => !withoutSourceVariants.some(
+  return withoutVisitedVariants.filter(
+    (candidate) => !withoutVisitedVariants.some(
       (possibleBase) =>
         possibleBase.targetArtistId !== candidate.targetArtistId &&
         isEnsembleVariantOf(candidate.displayName, possibleBase.displayName),
@@ -88,7 +91,7 @@ function isBetterIndirect(
  */
 export function selectNextDestinations(input: {
   sourceArtistId: string;
-  sourceArtistName: string;
+  visitedArtistNames?: Iterable<string>;
   direct: FtgRankingCandidate[];
   onward: Map<string, FtgOnwardRelation[]>;
   excludedArtistIds?: Set<string>;
@@ -119,6 +122,7 @@ export function selectNextDestinations(input: {
   });
 
   input.direct.forEach((bridge) => {
+    if (excluded.has(bridge.targetArtistId)) return;
     const onward = input.onward.get(bridge.targetArtistId) ?? [];
     const onwardIds = new Set(
       onward
@@ -168,6 +172,6 @@ export function selectNextDestinations(input: {
     values.splice(bridgeIndex, 1);
     values.splice(firstChildIndex, 0, bridge);
   }
-  return suppressArtistFamilyVariants(values, input.sourceArtistName)
+  return suppressArtistFamilyVariants(values, input.visitedArtistNames ?? [])
     .slice(0, Math.max(0, input.limit));
 }

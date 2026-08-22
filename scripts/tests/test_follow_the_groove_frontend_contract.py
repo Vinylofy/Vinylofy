@@ -170,12 +170,12 @@ class V3TypescriptParityTests(unittest.TestCase):
 
 class NextDestinationSelectionTests(unittest.TestCase):
     def select_family_destinations(
-        self, source_name: str, direct: list[dict[str, object]], limit: int = 5
+        self, visited_names: list[str], direct: list[dict[str, object]], limit: int = 5
     ) -> list[str]:
         return run_typescript(
             "lib/follow-the-groove/destination-selection.ts",
-            "subject.selectNextDestinations({ sourceArtistId: 'source', sourceArtistName: input.sourceName, direct: input.direct, onward: new Map(), limit: input.limit }).map(row => row.displayName)",
-            {"sourceName": source_name, "direct": direct, "limit": limit},
+            "subject.selectNextDestinations({ sourceArtistId: 'source', visitedArtistNames: input.visitedNames, direct: input.direct, onward: new Map(), limit: input.limit }).map(row => row.displayName)",
+            {"visitedNames": visited_names, "direct": direct, "limit": limit},
         )
 
     def test_active_ella_ensemble_variants_are_suppressed(self) -> None:
@@ -185,7 +185,7 @@ class NextDestinationSelectionTests(unittest.TestCase):
             fixture_candidate("Louis Armstrong", factual=True),
         ]
         self.assertEqual(
-            self.select_family_destinations("Ella Fitzgerald", direct),
+            self.select_family_destinations(["Ella Fitzgerald"], direct),
             ["Louis Armstrong"],
         )
 
@@ -193,11 +193,11 @@ class NextDestinationSelectionTests(unittest.TestCase):
         variant = fixture_candidate("Billie Holiday and Her Orchestra", factual=True)
         canonical = fixture_candidate("Billie Holiday", factual=True)
         self.assertEqual(
-            self.select_family_destinations("Ella Fitzgerald", [variant, canonical]),
+            self.select_family_destinations(["Ella Fitzgerald"], [variant, canonical]),
             ["Billie Holiday"],
         )
         self.assertEqual(
-            self.select_family_destinations("Ella Fitzgerald", [variant]),
+            self.select_family_destinations(["Ella Fitzgerald"], [variant]),
             ["Billie Holiday and Her Orchestra"],
         )
 
@@ -208,7 +208,7 @@ class NextDestinationSelectionTests(unittest.TestCase):
             fixture_candidate("Ella Fitzgerald & Louis Armstrong", factual=True),
         ]
         self.assertEqual(
-            self.select_family_destinations("Ella Fitzgerald", direct),
+            self.select_family_destinations(["Ella Fitzgerald"], direct),
             [
                 "Ella Fitzgerald & Louis Armstrong",
                 "Tom Petty",
@@ -231,7 +231,7 @@ class NextDestinationSelectionTests(unittest.TestCase):
             for index, name in enumerate(names, start=1)
         ]
         self.assertEqual(
-            self.select_family_destinations("Ella Fitzgerald", direct),
+            self.select_family_destinations(["Ella Fitzgerald"], direct),
             ["Billie Holiday", "Louis Armstrong", "Sarah Vaughan", "Duke Ellington", "Count Basie"],
         )
 
@@ -320,6 +320,83 @@ class NextDestinationSelectionTests(unittest.TestCase):
         second = run_typescript("lib/follow-the-groove/destination-selection.ts", expression, {"direct": list(reversed(direct))})
         self.assertEqual(first, ["A"])
         self.assertEqual(first, second)
+
+    def test_visited_artist_is_not_reused_as_bridge_but_direct_destination_survives(self) -> None:
+        ella = fixture_candidate("Ella Fitzgerald", factual=True)
+        louis = fixture_candidate("Louis Armstrong", factual=True)
+        onward_louis = {**louis, "sourceArtistId": ella["targetArtistId"]}
+        expression = "subject.selectNextDestinations({ sourceArtistId: 'billie-holiday', direct: input.direct, onward: new Map([['ella-fitzgerald', [input.onwardLouis]]]), excludedArtistIds: new Set(['ella-fitzgerald']), visitedArtistNames: ['Ella Fitzgerald', 'Billie Holiday'], limit: 5 }).map(row => ({ name: row.displayName, direct: row.direct, bridge: row.bridgeName }))"
+
+        indirect_only = run_typescript(
+            "lib/follow-the-groove/destination-selection.ts",
+            expression,
+            {"direct": [ella], "onwardLouis": onward_louis},
+        )
+        with_direct = run_typescript(
+            "lib/follow-the-groove/destination-selection.ts",
+            expression,
+            {"direct": [ella, louis], "onwardLouis": onward_louis},
+        )
+
+        self.assertEqual(indirect_only, [])
+        self.assertEqual(with_direct, [{"name": "Louis Armstrong", "direct": True, "bridge": None}])
+
+    def test_non_visited_bridge_remains_available(self) -> None:
+        sarah = fixture_candidate("Sarah Vaughan", factual=True)
+        destination = {
+            **fixture_candidate("New Artist", factual=True),
+            "sourceArtistId": sarah["targetArtistId"],
+        }
+        actual = run_typescript(
+            "lib/follow-the-groove/destination-selection.ts",
+            "subject.selectNextDestinations({ sourceArtistId: 'billie-holiday', direct: [input.sarah], onward: new Map([['sarah-vaughan', [input.destination]]]), excludedArtistIds: new Set(['ella-fitzgerald']), visitedArtistNames: ['Ella Fitzgerald', 'Billie Holiday'], limit: 5 }).map(row => ({ name: row.displayName, bridge: row.bridgeName }))",
+            {"sarah": sarah, "destination": destination},
+        )
+        self.assertIn({"name": "New Artist", "bridge": "Sarah Vaughan"}, actual)
+
+    def test_all_visited_families_are_suppressed_without_hiding_named_artists(self) -> None:
+        direct = [
+            fixture_candidate("Ella Fitzgerald and Her Famous Orchestra", factual=True),
+            fixture_candidate("Ella Fitzgerald and Her Savoy Eight", factual=True),
+            fixture_candidate("Billie Holiday and Her Orchestra", factual=True),
+            fixture_candidate("Tom Petty and the Heartbreakers", factual=True),
+            fixture_candidate("Ella Fitzgerald & Louis Armstrong", factual=True),
+        ]
+        self.assertEqual(
+            self.select_family_destinations(
+                ["Ella Fitzgerald", "Billie Holiday", "Tom Petty"], direct
+            ),
+            ["Ella Fitzgerald & Louis Armstrong", "Tom Petty and the Heartbreakers"],
+        )
+
+    def test_visited_bridge_and_family_filter_backfill_five_in_survivor_order(self) -> None:
+        names = [
+            "Ella Fitzgerald",
+            "Ella Fitzgerald and Her Famous Orchestra",
+            "Ella Fitzgerald and Her Savoy Eight",
+            "Sarah Vaughan",
+            "Dinah Washington",
+            "Duke Ellington",
+            "Count Basie",
+            "Nina Simone",
+        ]
+        direct = [
+            fixture_candidate(name, similarity=True, position=index)
+            for index, name in enumerate(names, start=1)
+        ]
+        via_ella = {
+            **fixture_candidate("Louis Armstrong", factual=True),
+            "sourceArtistId": "ella-fitzgerald",
+        }
+        actual = run_typescript(
+            "lib/follow-the-groove/destination-selection.ts",
+            "subject.selectNextDestinations({ sourceArtistId: 'billie-holiday', direct: input.direct, onward: new Map([['ella-fitzgerald', [input.viaElla]]]), excludedArtistIds: new Set(['ella-fitzgerald']), visitedArtistNames: ['Ella Fitzgerald', 'Billie Holiday'], limit: 5 }).map(row => row.displayName)",
+            {"direct": direct, "viaElla": via_ella},
+        )
+        self.assertEqual(
+            actual,
+            ["Sarah Vaughan", "Dinah Washington", "Duke Ellington", "Count Basie", "Nina Simone"],
+        )
 
     def test_weak_direct_can_be_replaced_by_bounded_bridge_destination(self) -> None:
         direct = [
