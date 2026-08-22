@@ -30,6 +30,17 @@ CONFIG = ImportConfig(
     currency="EUR",
 )
 
+# These source EANs currently resolve to more than one existing Vinylofy product.
+# Keep the first import fail-closed until those existing identities are resolved.
+AMBIGUOUS_EXISTING_PRODUCT_EANS = frozenset(
+    {
+        "0191404141410",
+        "0196587335311",
+        "0843563175132",
+        "0889030023018",
+    }
+)
+
 
 def map_atthemovies_row(row: dict, line_number: int) -> tuple[CanonicalRecord | None, str | None]:
     ean = normalize_ean(row.get("ean"))
@@ -42,6 +53,8 @@ def map_atthemovies_row(row: dict, line_number: int) -> tuple[CanonicalRecord | 
 
     if not ean or not gtin_normalized:
         return None, "missing_or_invalid_ean"
+    if ean in AMBIGUOUS_EXISTING_PRODUCT_EANS:
+        return None, "ambiguous_existing_product_identity"
     if not product_url:
         return None, "missing_url"
     if price is None:
