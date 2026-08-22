@@ -235,8 +235,15 @@ def scrape_listings(session: requests.Session, collection_url: str, max_pages: i
     return all_rows
 
 
-def enrich_details(session: requests.Session, rows: list[dict[str, str]], limit: int) -> None:
-    for index, row in enumerate(rows[:limit], start=1):
+def enrich_details(
+    session: requests.Session,
+    rows: list[dict[str, str]],
+    limit: int,
+    checkpoint_path: Path | None = None,
+) -> None:
+    pending_rows = [row for row in rows if row.get("detail_status") != "ok"]
+    detail_rows = pending_rows[:limit]
+    for index, row in enumerate(detail_rows, start=1):
         detail_url = f"{row['product_url']}.js"
         product = fetch(session, detail_url).json()
         variants = product.get("variants") or []
@@ -250,9 +257,34 @@ def enrich_details(session: requests.Session, rows: list[dict[str, str]], limit:
         else:
             row["detail_status"] = "variant_not_found"
         # Deliberately do not assign detail price or availability here.
-        print(f"[DETAIL] {index}/{limit} handle={row['handle']} status={row['detail_status']}", flush=True)
-        if index < limit:
+        print(f"[DETAIL] {index}/{len(detail_rows)} handle={row['handle']} status={row['detail_status']}", flush=True)
+        if checkpoint_path is not None:
+            write_csv(rows, checkpoint_path)
+        if index < len(detail_rows):
             time.sleep(0.75)
+
+
+def merge_cached_details(rows: list[dict[str, str]], output: Path) -> int:
+    if not output.exists():
+        return 0
+
+    with output.open(encoding="utf-8", newline="") as handle:
+        cached_rows = {
+            row.get("handle", ""): row
+            for row in csv.DictReader(handle)
+            if row.get("handle")
+        }
+
+    restored = 0
+    for row in rows:
+        cached = cached_rows.get(row.get("handle", ""))
+        if not cached or cached.get("detail_status") != "ok":
+            continue
+        row["ean"] = cached.get("ean") or row["ean"]
+        row["sku"] = cached.get("sku") or row["sku"]
+        row["detail_status"] = "ok"
+        restored += 1
+    return restored
 
 
 def write_csv(rows: list[dict[str, str]], output: Path) -> None:
@@ -280,7 +312,10 @@ def main() -> int:
         raise SystemExit("--detail-limit cannot be negative")
     session = make_session()
     rows = scrape_listings(session, args.collection_url, args.max_pages)
-    enrich_details(session, rows, min(args.detail_limit, len(rows)))
+    restored = merge_cached_details(rows, args.output)
+    if restored:
+        print(f"[RESUME] restored_detail_rows={restored}", flush=True)
+    enrich_details(session, rows, min(args.detail_limit, len(rows)), checkpoint_path=args.output)
     write_csv(rows, args.output)
     print(f"[DONE] rows={len(rows)} output={args.output}", flush=True)
     return 0

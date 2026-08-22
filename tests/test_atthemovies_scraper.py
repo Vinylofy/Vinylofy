@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from scripts.scrapers.atthemovies import enrich_details, fetch, parse_listing_page, scrape_listings
+from scripts.scrapers.atthemovies import (
+    enrich_details,
+    fetch,
+    merge_cached_details,
+    parse_listing_page,
+    scrape_listings,
+)
 
 
 def listing_html(
@@ -148,6 +156,52 @@ class AtTheMoviesScraperTest(unittest.TestCase):
         self.assertEqual((rows[0]["price"], rows[0]["availability"]), before)
         self.assertEqual(rows[0]["ean"], "8719262046580")
         self.assertEqual(rows[0]["detail_status"], "ok")
+
+    def test_detail_limit_resumes_only_pending_rows(self):
+        rows = [
+            {"handle": "done", "detail_status": "ok", "product_url": "https://example/done", "variant_id": "1", "ean": "1", "sku": ""},
+            {"handle": "pending", "detail_status": "listing", "product_url": "https://example/pending", "variant_id": "2", "ean": "", "sku": ""},
+        ]
+
+        class Response:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"variants": [{"id": 2, "barcode": "0602567988725"}]}
+
+        class Session:
+            def get(self, url, **_kwargs):
+                self.url = url
+                return Response()
+
+        session = Session()
+        enrich_details(session, rows, 1)
+        self.assertEqual(session.url, "https://example/pending.js")
+        self.assertEqual(rows[0]["ean"], "1")
+        self.assertEqual(rows[1]["detail_status"], "ok")
+
+    def test_cached_success_restores_detail_fields_without_listing_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "atthemovies_products.csv"
+            output.write_text(
+                "handle,ean,sku,detail_status,price\n"
+                "example-soundtrack,8719262046580,DETAIL-SKU,ok,99.99\n",
+                encoding="utf-8",
+            )
+            rows = [{
+                "handle": "example-soundtrack",
+                "ean": "0602567988724",
+                "sku": "SKU-1",
+                "detail_status": "listing",
+                "price": "25.59",
+            }]
+
+            self.assertEqual(merge_cached_details(rows, output), 1)
+            self.assertEqual(rows[0]["ean"], "8719262046580")
+            self.assertEqual(rows[0]["price"], "25.59")
 
 
 if __name__ == "__main__":

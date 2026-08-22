@@ -53,6 +53,14 @@ jobs:
           mkdir -p data/raw/atthemovies
           mkdir -p output
 
+      - name: Restore At The Movies detail checkpoint
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw/atthemovies/atthemovies_products.csv
+          key: atthemovies-details-${{ github.run_id }}
+          restore-keys: |
+            atthemovies-details-
+
       - name: Run At The Movies pipeline
         shell: bash
         run: |
@@ -68,3 +76,10 @@ jobs:
             output/atthemovies_rejects.csv
             output/atthemovies_import_summary.json
           if-no-files-found: warn
+
+      - name: Save At The Movies detail checkpoint
+        if: always() && hashFiles('data/raw/atthemovies/atthemovies_products.csv') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: data/raw/atthemovies/atthemovies_products.csv
+          key: atthemovies-details-${{ github.run_id }}
