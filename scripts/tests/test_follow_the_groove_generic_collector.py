@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import inspect
 import unittest
 
 from scripts.follow_the_groove import collector, generic_collector as generic, local_resolution, persistence
@@ -12,6 +13,7 @@ SOURCE=generic.Source("id","00000000-0000-0000-0000-000000000001","Source","pers
 
 
 class ConfigTests(unittest.TestCase):
+    EXECUTION_ID="00000000-0000-0000-0000-000000000099"
     def test_safe_defaults(self):
         cfg=generic.BoundedConfig(); self.assertEqual((cfg.max_sources,cfg.max_direct_targets,cfg.lastfm_limit,cfg.graph_depth),(10,25,5,1)); self.assertEqual(cfg.recording_release_seeds,())
 
@@ -25,22 +27,39 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(Exception): generic.run(args)
 
     def test_frontier_write_is_explicit_and_hard_capped(self):
-        generic.validate_write_scope(argparse.Namespace(write=True,frontier=True,refresh=False,max_sources=3,source_mbid=[]))
-        generic.validate_write_scope(argparse.Namespace(write=True,frontier=True,refresh=False,max_sources=10,source_mbid=[]))
+        generic.validate_write_scope(argparse.Namespace(write=True,frontier=True,refresh=False,max_sources=3,source_mbid=[],execution_id=self.EXECUTION_ID))
+        generic.validate_write_scope(argparse.Namespace(write=True,frontier=True,refresh=False,max_sources=10,source_mbid=[],execution_id=self.EXECUTION_ID))
         with self.assertRaises(persistence.PersistenceDisabled):
-            generic.validate_write_scope(argparse.Namespace(write=True,frontier=True,refresh=False,max_sources=11,source_mbid=[]))
+            generic.validate_write_scope(argparse.Namespace(write=True,frontier=True,refresh=False,max_sources=11,source_mbid=[],execution_id=self.EXECUTION_ID))
         with self.assertRaises(persistence.PersistenceDisabled):
-            generic.validate_write_scope(argparse.Namespace(write=True,frontier=False,refresh=False,max_sources=1,source_mbid=[]))
+            generic.validate_write_scope(argparse.Namespace(write=True,frontier=False,refresh=False,max_sources=1,source_mbid=[],execution_id=self.EXECUTION_ID))
 
     def test_refresh_write_requires_exact_explicit_scope(self):
-        generic.validate_write_scope(argparse.Namespace(write=True,frontier=False,refresh=True,max_sources=1,source_mbid=[SOURCE.mbid]))
+        generic.validate_write_scope(argparse.Namespace(write=True,frontier=False,refresh=True,max_sources=1,source_mbid=[SOURCE.mbid],execution_id=self.EXECUTION_ID))
         with self.assertRaises(persistence.PersistenceDisabled):
-            generic.validate_write_scope(argparse.Namespace(write=True,frontier=False,refresh=True,max_sources=1,source_mbid=[]))
+            generic.validate_write_scope(argparse.Namespace(write=True,frontier=False,refresh=True,max_sources=1,source_mbid=[],execution_id=self.EXECUTION_ID))
         with self.assertRaises(persistence.PersistenceDisabled):
-            generic.validate_write_scope(argparse.Namespace(write=True,frontier=False,refresh=True,max_sources=11,source_mbid=[SOURCE.mbid]*11))
+            generic.validate_write_scope(argparse.Namespace(write=True,frontier=False,refresh=True,max_sources=11,source_mbid=[SOURCE.mbid]*11,execution_id=self.EXECUTION_ID))
 
     def test_recording_seed_must_be_uuid(self):
         with self.assertRaises(ValueError): generic.BoundedConfig(recording_release_seeds=("all",))
+
+    def test_write_requires_durable_execution_id(self):
+        args=argparse.Namespace(write=True,frontier=True,refresh=False,max_sources=1,source_mbid=[])
+        with self.assertRaises(persistence.PersistenceDisabled): generic.validate_write_scope(args)
+        args.execution_id=self.EXECUTION_ID
+        generic.validate_write_scope(args)
+
+    def test_execution_safety_is_database_global_and_durable(self):
+        source=inspect.getsource(generic)
+        self.assertIn("pg_try_advisory_xact_lock",source)
+        self.assertIn("WRITE_BLOCKED_ALREADY_RUNNING",source)
+        self.assertIn("BATCH_COLLECTOR",source)
+        self.assertIn("existing-execution",source)
+
+    def test_output_is_written_after_durable_success_transition(self):
+        source=inspect.getsource(generic.run)
+        self.assertLess(source.rfind("update_execution_state(os.environ[\"DATABASE_URL\"], execution_id, status=\"succeeded\""), source.rfind("args.output.write_text"))
 
 
 class SelectorTests(unittest.TestCase):

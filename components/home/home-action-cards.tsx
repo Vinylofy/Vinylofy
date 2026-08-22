@@ -23,13 +23,18 @@ const links: QuickLink[] = [
     label: "Best Deals",
     imageSrc: "/home-cards/Top45v2.png",
   },
+  {
+    href: "/follow-the-groove",
+    label: "Follow the Groove",
+    imageSrc: "/follow-the-groove/ftg4.png",
+  },
 ];
 
 export function HomeActionCards() {
   return (
     <nav
       aria-label="Snelle navigatie"
-      className="mx-auto grid w-full max-w-[920px] grid-cols-3 gap-4 md:gap-8"
+      className="mx-auto grid w-full max-w-[920px] grid-cols-2 gap-4 md:grid-cols-4 md:gap-8"
     >
       {links.map(({ href, label, imageSrc }) => (
         <Link

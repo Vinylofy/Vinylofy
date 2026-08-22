@@ -2,6 +2,7 @@ export const FTG_MAX_CANDIDATES = 5;
 export const FTG_MAX_TRAIL_LENGTH = 24;
 
 export type FtgEntityType = "person" | "group";
+export type FtgOutputStatus = "proven_output" | "unknown" | "proven_bridge_only";
 
 export type FtgReasonCode =
   | "factual_and_similarity"
@@ -36,6 +37,7 @@ export type FtgCandidateView = FtgArtistView & {
 export type FtgTrailItem = {
   mbid: string;
   name: string;
+  explanation: string | null;
 };
 
 export type FollowTheGroovePageData = {
