@@ -1,4 +1,4 @@
-import type { FtgEntityType, FtgReasonCode } from "./types";
+import type { FtgEntityType, FtgOutputStatus, FtgReasonCode } from "./types";
 
 export type FtgRankingCandidate = {
   sourceArtistId: string;
@@ -15,6 +15,7 @@ export type FtgRankingCandidate = {
   similarityMatchScore: number | null;
   searchEligible: boolean;
   productCount: number;
+  destinationOutputStatus: FtgOutputStatus;
 };
 
 const RECORDING_MECHANISMS = new Set(["artist_credit", "instrument", "vocal"]);

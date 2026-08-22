@@ -8,7 +8,7 @@ export default function FollowTheGrooveStartPage() {
     <div className="min-h-screen bg-[#f8f7f4] text-neutral-900">
       <SiteHeader searchSlot={null} />
       <main className="mx-auto max-w-6xl px-6 py-8 md:py-12">
-        <div className="overflow-hidden rounded-3xl border border-neutral-200 bg-white shadow-sm">
+        <div className="mx-auto max-w-3xl overflow-hidden rounded-3xl border border-neutral-200 bg-white shadow-sm">
           <Image
             src="/follow-the-groove/FTG.png"
             alt="Follow the Groove visualisatie van een vinylplaat met muzikale routes naar verwante artiesten"

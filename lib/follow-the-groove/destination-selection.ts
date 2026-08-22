@@ -100,7 +100,8 @@ export function selectNextDestinations(input: {
 }): FtgDestinationCandidate[] {
   const excluded = input.excludedArtistIds ?? new Set<string>();
   const visible = (candidate: FtgRankingCandidate): boolean =>
-    !input.requireSearchEligible || candidate.searchEligible;
+    candidate.destinationOutputStatus === "proven_output" &&
+    (!input.requireSearchEligible || candidate.searchEligible);
   const direct = input.direct.filter(visible);
   const directIds = new Set(direct.map((candidate) => candidate.targetArtistId));
   const byDestination = new Map<string, FtgDestinationCandidate>();

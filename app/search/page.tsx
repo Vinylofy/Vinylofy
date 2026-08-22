@@ -272,7 +272,6 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
                 ))}
                 {grooveData && grooveData.candidates.length > 0 ? (
                   <GrooveSearchBlock
-                    activeArtistName={grooveData.artist.name}
                     activeArtistMbid={grooveData.artist.mbid}
                     candidates={grooveData.candidates}
                   />

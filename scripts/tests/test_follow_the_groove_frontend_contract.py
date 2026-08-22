@@ -64,6 +64,7 @@ def fixture_candidate(
     position: int | None = None,
     eligible: bool = True,
     product_count: int = 1,
+    output_status: str = "proven_output",
 ) -> dict[str, object]:
     key = name.lower().replace(" ", "-")
     return {
@@ -81,6 +82,7 @@ def fixture_candidate(
         "similarityMatchScore": 0.5 if similarity else None,
         "searchEligible": eligible,
         "productCount": product_count,
+        "destinationOutputStatus": output_status,
     }
 
 
@@ -234,6 +236,55 @@ class NextDestinationSelectionTests(unittest.TestCase):
             self.select_family_destinations(["Ella Fitzgerald"], direct),
             ["Billie Holiday", "Louis Armstrong", "Sarah Vaughan", "Duke Ellington", "Count Basie"],
         )
+
+    def test_output_status_gates_direct_destinations_and_fills(self) -> None:
+        direct = [
+            fixture_candidate("Eligible A", factual=True),
+            fixture_candidate("Unknown", factual=True, output_status="unknown"),
+            fixture_candidate("Bridge Only", factual=True, output_status="proven_bridge_only"),
+            fixture_candidate("Eligible B", factual=True),
+            fixture_candidate("Eligible C", factual=True),
+        ]
+        actual = run_typescript(
+            "lib/follow-the-groove/destination-selection.ts",
+            "subject.selectNextDestinations({ sourceArtistId: 'source', direct: input, onward: new Map(), limit: 3 }).map(row => row.displayName)",
+            direct,
+        )
+        self.assertEqual(actual, ["Eligible A", "Eligible B", "Eligible C"])
+
+    def test_unknown_bridge_is_hidden_but_proven_child_and_winning_path_survive(self) -> None:
+        bridge = fixture_candidate("Unknown Bridge", factual=True, output_status="unknown")
+        child = {**fixture_candidate("Proven Child", factual=True), "sourceArtistId": bridge["targetArtistId"]}
+        actual = run_typescript(
+            "lib/follow-the-groove/destination-selection.ts",
+            "subject.selectNextDestinations({ sourceArtistId: 'source', direct: [input.bridge], onward: new Map([[input.bridge.targetArtistId, [input.child]]]), limit: 5 }).map(row => ({ name: row.displayName, reason: row.bridgeName ? `Via ${row.bridgeName}` : null }))",
+            {"bridge": bridge, "child": child},
+        )
+        self.assertEqual(actual, [{"name": "Proven Child", "reason": "Via Unknown Bridge"}])
+
+    def test_zero_product_proven_output_is_standalone_only(self) -> None:
+        row = fixture_candidate("Zero Product", factual=True, product_count=0, eligible=False)
+        standalone = run_typescript(
+            "lib/follow-the-groove/destination-selection.ts",
+            "subject.selectNextDestinations({ sourceArtistId: 'source', direct: [input], onward: new Map(), limit: 5 }).map(row => row.displayName)",
+            row,
+        )
+        search = run_typescript(
+            "lib/follow-the-groove/destination-selection.ts",
+            "subject.selectNextDestinations({ sourceArtistId: 'source', direct: [input], onward: new Map(), requireSearchEligible: true, limit: 3 }).map(row => row.displayName)",
+            row,
+        )
+        self.assertEqual(standalone, ["Zero Product"])
+        self.assertEqual(search, [])
+
+    def test_search_requires_proven_output_even_with_products_and_href_eligibility(self) -> None:
+        unknown = fixture_candidate("Unknown With Products", factual=True, eligible=True, product_count=10, output_status="unknown")
+        actual = run_typescript(
+            "lib/follow-the-groove/destination-selection.ts",
+            "subject.selectNextDestinations({ sourceArtistId: 'source', direct: [input], onward: new Map(), requireSearchEligible: true, limit: 3 }).map(row => row.displayName)",
+            unknown,
+        )
+        self.assertEqual(actual, [])
 
     def test_search_selector_excludes_zero_product_direct_and_indirect_candidates(self) -> None:
         direct = [
@@ -463,6 +514,22 @@ class NextDestinationSelectionTests(unittest.TestCase):
 
 
 class FrontendPureContractTests(unittest.TestCase):
+    def test_explained_trail_reconstructs_refresh_back_forward_and_prefix(self) -> None:
+        payload = {
+            "artists": [
+                {"mbid": "a", "name": "Source"},
+                {"mbid": "b", "name": "Middle"},
+                {"mbid": "c", "name": "Destination"},
+            ],
+            "explanations": [None, "Bandconnectie", "Via Bridge"],
+        }
+        expression = "({ full: subject.buildExplainedTrail(input.artists, input.explanations), refreshed: subject.buildExplainedTrail(input.artists, input.explanations), prefix: subject.trailPrefix(subject.buildExplainedTrail(input.artists, input.explanations), 1) })"
+        actual = run_typescript("lib/follow-the-groove/trail.ts", expression, payload)
+        self.assertEqual(actual["full"], actual["refreshed"])
+        self.assertEqual([row["name"] for row in actual["full"]], ["Source", "Middle", "Destination"])
+        self.assertEqual([row["explanation"] for row in actual["full"]], [None, "Bandconnectie", "Via Bridge"])
+        self.assertEqual([row["explanation"] for row in actual["prefix"]], [None, "Bandconnectie"])
+
     def test_search_source_resolution_order_and_safety(self) -> None:
         module = "lib/follow-the-groove/search-source.ts"
         resolve = "subject.resolveSearchGrooveSourceFromMatches(input)"
@@ -568,6 +635,7 @@ class FrontendSourceContractTests(unittest.TestCase):
         self.assertIn("Geen artiest gevonden", page)
         self.assertIn('src="/follow-the-groove/FTG.png"', page)
         self.assertIn("h-auto w-full", page)
+        self.assertIn("mx-auto max-w-3xl", page)
         self.assertIn("selectionOnly", form)
         self.assertIn("if (!selectionOnly)", form)
         self.assertIn("mode === \"follow-the-groove\"", route)
@@ -587,18 +655,24 @@ class FrontendSourceContractTests(unittest.TestCase):
         self.assertNotIn("musicbrainz.org", route.lower())
         self.assertNotIn("last.fm", route.lower())
 
-    def test_homepage_has_one_secondary_ftg_entry_without_global_nav_change(self) -> None:
+    def test_homepage_has_one_square_ftg_card_without_global_nav_change(self) -> None:
         homepage = (ROOT / "components/home/hero-search.tsx").read_text()
-        self.assertEqual(homepage.count('href="/follow-the-groove"'), 1)
-        self.assertIn("Start je groove", homepage)
+        cards = (ROOT / "components/home/home-action-cards.tsx").read_text()
+        self.assertEqual(cards.count('href: "/follow-the-groove"'), 1)
+        self.assertIn('imageSrc: "/follow-the-groove/ftg4.png"', cards)
+        self.assertIn("grid-cols-2", cards)
+        self.assertIn("md:grid-cols-4", cards)
         self.assertIn("GlobalSearchBar", homepage)
         self.assertNotIn("SiteHeader", homepage)
+        self.assertNotIn("Start je groove", homepage)
 
     def test_provided_ftg_visual_is_local_and_not_duplicated_on_homepage(self) -> None:
         asset = ROOT / "public/follow-the-groove/FTG.png"
+        home_asset = ROOT / "public/follow-the-groove/ftg4.png"
         start_page = (ROOT / "app/follow-the-groove/page.tsx").read_text()
         homepage = (ROOT / "components/home/hero-search.tsx").read_text()
         self.assertTrue(asset.is_file())
+        self.assertTrue(home_asset.is_file())
         self.assertIn("/follow-the-groove/FTG.png", start_page)
         self.assertNotIn("/follow-the-groove/FTG.png", homepage)
         self.assertNotIn("http://", start_page)
@@ -655,6 +729,22 @@ class FrontendSourceContractTests(unittest.TestCase):
         self.assertNotIn("fetch(", data)
         self.assertNotIn("musicbrainz.org", data.lower())
         self.assertNotIn("last.fm", data.lower())
+        self.assertIn('.from("artist_output_status")', data)
+        self.assertIn('=== "proven_output"', data)
+
+    def test_output_eligibility_and_explanations_are_generic_and_batched(self) -> None:
+        data = (ROOT / "lib/follow-the-groove/data.ts").read_text()
+        selector = (ROOT / "lib/follow-the-groove/destination-selection.ts").read_text()
+        trail = (ROOT / "components/follow-the-groove/groove-trail.tsx").read_text()
+        self.assertIn('destinationOutputStatus === "proven_output"', selector)
+        self.assertIn('.in("artist_id", destinationArtistIds)', data)
+        self.assertIn("loadTrailExplanations(orderedTrailArtists)", data)
+        self.assertIn("item.explanation", trail)
+        self.assertIn('"flex min-w-0 flex-1 flex-col"', trail)
+        self.assertIn("self-end px-3 text-right", trail)
+        combined = data + selector
+        for hardcoded in ("Foo Fighters", "Queens of the Stone Age", "Dave Grohl"):
+            self.assertNotIn(hardcoded, combined)
 
     def test_ftg_ui_has_no_prices_external_images_or_technical_reasons(self) -> None:
         files = list((ROOT / "components/follow-the-groove").glob("*.tsx"))

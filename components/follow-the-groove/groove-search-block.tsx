@@ -4,11 +4,9 @@ import { buildGrooveHref, formatEntityType } from "@/lib/follow-the-groove/prese
 import type { FtgCandidateView } from "@/lib/follow-the-groove/types";
 
 export function GrooveSearchBlock({
-  activeArtistName,
   activeArtistMbid,
   candidates,
 }: {
-  activeArtistName: string;
   activeArtistMbid: string;
   candidates: FtgCandidateView[];
 }) {
