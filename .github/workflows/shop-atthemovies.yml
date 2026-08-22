@@ -1,0 +1,59 @@
+name: Shop - At The Movies
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: vinylofy-atthemovies
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
+      VINYLOFY_SCRAPER_CMD_ATTHEMOVIES: >-
+        python scripts/scrapers/atthemovies.py
+        --detail-limit 0
+        --output data/raw/atthemovies/atthemovies_products.csv
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install beautifulsoup4 requests "psycopg[binary]" python-dotenv supabase
+
+      - name: Create runtime folders
+        shell: bash
+        run: |
+          mkdir -p data/raw/atthemovies
+          mkdir -p output
+
+      - name: Run At The Movies pipeline
+        shell: bash
+        run: |
+          python -u scripts/automation/run_vinylofy_pipeline.py --shop atthemovies
+
+      - name: Upload At The Movies artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: atthemovies-${{ github.run_id }}
+          path: |
+            data/raw/atthemovies/atthemovies_products.csv
+            output/atthemovies_rejects.csv
+            output/atthemovies_import_summary.json
+          if-no-files-found: warn
