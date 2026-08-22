@@ -133,6 +133,7 @@ class AtTheMoviesScraperTest(unittest.TestCase):
 
     def test_detail_enrichment_never_overwrites_listing_price_or_availability(self):
         rows, _has_next, _handles, _skips = parse_listing_page(listing_html())
+        rows[0]["ean"] = ""
 
         class Response:
             status_code = 200
@@ -160,6 +161,7 @@ class AtTheMoviesScraperTest(unittest.TestCase):
     def test_detail_limit_resumes_only_pending_rows(self):
         rows = [
             {"handle": "done", "detail_status": "ok", "product_url": "https://example/done", "variant_id": "1", "ean": "1", "sku": ""},
+            {"handle": "listing-ean", "detail_status": "listing", "product_url": "https://example/listing-ean", "variant_id": "3", "ean": "0602567988724", "sku": ""},
             {"handle": "pending", "detail_status": "listing", "product_url": "https://example/pending", "variant_id": "2", "ean": "", "sku": ""},
         ]
 
@@ -181,7 +183,8 @@ class AtTheMoviesScraperTest(unittest.TestCase):
         enrich_details(session, rows, 1)
         self.assertEqual(session.url, "https://example/pending.js")
         self.assertEqual(rows[0]["ean"], "1")
-        self.assertEqual(rows[1]["detail_status"], "ok")
+        self.assertEqual(rows[1]["detail_status"], "listing")
+        self.assertEqual(rows[2]["detail_status"], "ok")
 
     def test_cached_success_restores_detail_fields_without_listing_fields(self):
         with tempfile.TemporaryDirectory() as directory:

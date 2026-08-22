@@ -13,6 +13,9 @@ on:
           - "25"
           - "50"
           - "100"
+  schedule:
+    - cron: "0 3 * * *"
+      timezone: "Europe/Amsterdam"
 
 concurrency:
   group: vinylofy-atthemovies
@@ -29,7 +32,7 @@ jobs:
       SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
       VINYLOFY_SCRAPER_CMD_ATTHEMOVIES: >-
         python scripts/scrapers/atthemovies.py
-        --detail-limit ${{ inputs.detail_limit }}
+        --detail-limit ${{ inputs.detail_limit || '50' }}
         --output data/raw/atthemovies/atthemovies_products.csv
 
     steps:

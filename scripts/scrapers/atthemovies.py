@@ -241,7 +241,7 @@ def enrich_details(
     limit: int,
     checkpoint_path: Path | None = None,
 ) -> None:
-    pending_rows = [row for row in rows if row.get("detail_status") != "ok"]
+    pending_rows = [row for row in rows if not row.get("ean", "").strip()]
     detail_rows = pending_rows[:limit]
     for index, row in enumerate(detail_rows, start=1):
         detail_url = f"{row['product_url']}.js"
