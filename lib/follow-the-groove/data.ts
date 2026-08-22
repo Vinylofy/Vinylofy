@@ -479,7 +479,7 @@ export async function getFollowTheGroovePage(input: {
   }
   const selected = selectNextDestinations({
     sourceArtistId: activeArtist.id,
-    sourceArtistName: activeArtist.display_name,
+    visitedArtistNames: trailRows.map((artist) => artist.display_name),
     direct: ranked,
     onward: onwardRelations,
     excludedArtistIds: new Set(
