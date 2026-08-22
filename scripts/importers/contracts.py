@@ -31,6 +31,7 @@ class ShopImporterDefinition:
     optional_columns: tuple[str, ...] = field(default_factory=tuple)
     tags: tuple[str, ...] = field(default_factory=tuple)
     before_run: BeforeRunHook | None = None
+    include_in_all: bool = True
 
     @property
     def shop_name(self) -> str:

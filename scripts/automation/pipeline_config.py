@@ -26,6 +26,7 @@ class ShopPipelineConfig:
     rejects_path: str
     summary_path: str
     storage_prefix: str
+    include_in_all: bool
 
     @classmethod
     def from_importer_definition(cls, definition: ShopImporterDefinition) -> "ShopPipelineConfig":
@@ -39,6 +40,7 @@ class ShopPipelineConfig:
             rejects_path=definition.files.rejects_path,
             summary_path=definition.files.summary_path,
             storage_prefix=definition.storage_prefix,
+            include_in_all=definition.include_in_all,
         )
 
     @property

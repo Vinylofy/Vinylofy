@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import importlib.util
 import json
 import os
 import re
@@ -26,6 +27,22 @@ PRODUCT_IDENTITY_CONSTRAINTS = {
 }
 
 COMMON_IMPORTER_VERSION = "product-identity-v2-2026-06-03"
+
+
+_STRICT_GTIN_HELPER_PATH = Path(__file__).with_name("common") / "gtin.py"
+_STRICT_GTIN_SPEC = importlib.util.spec_from_file_location(
+    "vinylofy_importers_strict_gtin",
+    _STRICT_GTIN_HELPER_PATH,
+)
+if _STRICT_GTIN_SPEC is None or _STRICT_GTIN_SPEC.loader is None:
+    raise ImportError(f"Unable to load strict GTIN helper: {_STRICT_GTIN_HELPER_PATH}")
+_STRICT_GTIN_MODULE = importlib.util.module_from_spec(_STRICT_GTIN_SPEC)
+_STRICT_GTIN_SPEC.loader.exec_module(_STRICT_GTIN_MODULE)
+
+
+def strict_normalize_gtin(value: object) -> str | None:
+    """Expose the repository's checkdigit-validating GTIN authority."""
+    return _STRICT_GTIN_MODULE.normalize_gtin(value, validate=True)
 
 
 def log(message: str) -> None:
