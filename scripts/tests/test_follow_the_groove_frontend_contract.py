@@ -169,6 +169,72 @@ class V3TypescriptParityTests(unittest.TestCase):
 
 
 class NextDestinationSelectionTests(unittest.TestCase):
+    def select_family_destinations(
+        self, source_name: str, direct: list[dict[str, object]], limit: int = 5
+    ) -> list[str]:
+        return run_typescript(
+            "lib/follow-the-groove/destination-selection.ts",
+            "subject.selectNextDestinations({ sourceArtistId: 'source', sourceArtistName: input.sourceName, direct: input.direct, onward: new Map(), limit: input.limit }).map(row => row.displayName)",
+            {"sourceName": source_name, "direct": direct, "limit": limit},
+        )
+
+    def test_active_ella_ensemble_variants_are_suppressed(self) -> None:
+        direct = [
+            fixture_candidate("Ella Fitzgerald and Her Famous Orchestra", factual=True),
+            fixture_candidate("Ella Fitzgerald and Her Savoy Eight", factual=True),
+            fixture_candidate("Louis Armstrong", factual=True),
+        ]
+        self.assertEqual(
+            self.select_family_destinations("Ella Fitzgerald", direct),
+            ["Louis Armstrong"],
+        )
+
+    def test_canonical_candidate_wins_but_lone_ensemble_variant_remains(self) -> None:
+        variant = fixture_candidate("Billie Holiday and Her Orchestra", factual=True)
+        canonical = fixture_candidate("Billie Holiday", factual=True)
+        self.assertEqual(
+            self.select_family_destinations("Ella Fitzgerald", [variant, canonical]),
+            ["Billie Holiday"],
+        )
+        self.assertEqual(
+            self.select_family_destinations("Ella Fitzgerald", [variant]),
+            ["Billie Holiday and Her Orchestra"],
+        )
+
+    def test_named_band_and_collaboration_are_not_family_variants(self) -> None:
+        direct = [
+            fixture_candidate("Tom Petty", factual=True),
+            fixture_candidate("Tom Petty and the Heartbreakers", factual=True),
+            fixture_candidate("Ella Fitzgerald & Louis Armstrong", factual=True),
+        ]
+        self.assertEqual(
+            self.select_family_destinations("Ella Fitzgerald", direct),
+            [
+                "Ella Fitzgerald & Louis Armstrong",
+                "Tom Petty",
+                "Tom Petty and the Heartbreakers",
+            ],
+        )
+
+    def test_family_suppression_backfills_limit_without_reordering_survivors(self) -> None:
+        names = [
+            "Billie Holiday",
+            "Billie Holiday and Her Orchestra",
+            "Ella Fitzgerald and Her Famous Orchestra",
+            "Louis Armstrong",
+            "Sarah Vaughan",
+            "Duke Ellington",
+            "Count Basie",
+        ]
+        direct = [
+            fixture_candidate(name, similarity=True, position=index)
+            for index, name in enumerate(names, start=1)
+        ]
+        self.assertEqual(
+            self.select_family_destinations("Ella Fitzgerald", direct),
+            ["Billie Holiday", "Louis Armstrong", "Sarah Vaughan", "Duke Ellington", "Count Basie"],
+        )
+
     def test_search_selector_excludes_zero_product_direct_and_indirect_candidates(self) -> None:
         direct = [
             {**fixture_candidate("Zero Direct", factual=True, product_count=0), "searchEligible": False},

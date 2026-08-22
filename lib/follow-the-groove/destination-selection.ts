@@ -17,6 +17,42 @@ function compareStrings(left: string, right: string): number {
   return left < right ? -1 : 1;
 }
 
+function normalizeArtistFamilyName(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[‐‑‒–—]/g, "-")
+    .replace(/[^\p{L}\p{N}&]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const GENERIC_ENSEMBLE_SUFFIX = /^(?:(?:and|&) (?:his|her|their) )?(?:(?:famous|savoy) )?(?:orchestra|band|trio|quartet|quintet|sextet|septet|octet|eight)$/;
+
+function isEnsembleVariantOf(candidateName: string, baseName: string): boolean {
+  const candidate = normalizeArtistFamilyName(candidateName);
+  const base = normalizeArtistFamilyName(baseName);
+  if (!base || candidate === base || !candidate.startsWith(`${base} `)) return false;
+  return GENERIC_ENSEMBLE_SUFFIX.test(candidate.slice(base.length + 1));
+}
+
+function suppressArtistFamilyVariants(
+  candidates: FtgDestinationCandidate[],
+  sourceArtistName: string,
+): FtgDestinationCandidate[] {
+  const withoutSourceVariants = candidates.filter(
+    (candidate) =>
+      !sourceArtistName || !isEnsembleVariantOf(candidate.displayName, sourceArtistName),
+  );
+  return withoutSourceVariants.filter(
+    (candidate) => !withoutSourceVariants.some(
+      (possibleBase) =>
+        possibleBase.targetArtistId !== candidate.targetArtistId &&
+        isEnsembleVariantOf(candidate.displayName, possibleBase.displayName),
+    ),
+  );
+}
+
 function compareDestinationBase(left: FtgDestinationCandidate, right: FtgDestinationCandidate): number {
   const tierOrder = getCandidateTier(left) - getCandidateTier(right);
   if (tierOrder) return tierOrder;
@@ -52,6 +88,7 @@ function isBetterIndirect(
  */
 export function selectNextDestinations(input: {
   sourceArtistId: string;
+  sourceArtistName: string;
   direct: FtgRankingCandidate[];
   onward: Map<string, FtgOnwardRelation[]>;
   excludedArtistIds?: Set<string>;
@@ -131,5 +168,6 @@ export function selectNextDestinations(input: {
     values.splice(bridgeIndex, 1);
     values.splice(firstChildIndex, 0, bridge);
   }
-  return values.slice(0, Math.max(0, input.limit));
+  return suppressArtistFamilyVariants(values, input.sourceArtistName)
+    .slice(0, Math.max(0, input.limit));
 }
