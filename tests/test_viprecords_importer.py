@@ -70,6 +70,8 @@ class VipRecordsImporterTest(unittest.TestCase):
         self.assertEqual(rows["viprecords"]["shipping_cost_cents"], "695")
         self.assertEqual(rows["viprecords"]["free_shipping_threshold_cents"], "")
         self.assertEqual(rows["viprecords"]["shipping_logic"], "flat")
+        self.assertEqual(rows["viprecords"]["verified_at"], "2026-08-23")
+        self.assertEqual(rows["viprecords"]["active"], "true")
 
 
 if __name__ == "__main__":

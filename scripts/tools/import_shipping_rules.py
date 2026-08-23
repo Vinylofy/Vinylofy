@@ -47,6 +47,12 @@ def source_domain(source_url):
     return hostname.lower().rstrip(".") if hostname else None
 
 
+def domain_candidates(domain):
+    """Return safe candidates for a shop's www/non-www hostname variant."""
+    canonical = domain[4:] if domain.startswith("www.") else domain
+    return sorted({domain, canonical, f"www.{canonical}"})
+
+
 def resolve_shop_id(cur, row):
     domain = source_domain(row.get("source_url"))
     if not domain:
@@ -59,9 +65,9 @@ def resolve_shop_id(cur, row):
         """
         select id
         from public.shops
-        where domain = %s
+        where lower(domain) = any(%s)
         """,
-        (domain,),
+        (domain_candidates(domain),),
     )
     matches = cur.fetchall()
     if len(matches) != 1:
@@ -116,6 +122,18 @@ def main():
 
     if not rows:
         print("[ERROR] CSV is empty", file=sys.stderr)
+        return 1
+
+    malformed_rows = [
+        line_number
+        for line_number, row in enumerate(rows, start=2)
+        if None in row
+    ]
+    if malformed_rows:
+        print(
+            f"[ERROR] CSV bevat extra velden op regels: {malformed_rows}",
+            file=sys.stderr,
+        )
         return 1
 
     missing = [c for c in REQUIRED if c not in rows[0]]
