@@ -162,6 +162,7 @@ class RateLimitedClient:
         self.session = session
         self.delay_seconds = delay_seconds
         self._last_request_at: float | None = None
+        self.diagnostic_path: Path | None = None
 
     def get(self, url: str, timeout: int = 30) -> str:
         if self._last_request_at is not None:
@@ -174,6 +175,14 @@ class RateLimitedClient:
             raise RuntimeError(f"Groove Records rate limit reached (HTTP 429): {url}")
         if response.status_code >= 400:
             raise RuntimeError(f"Groove Records HTTP {response.status_code}: {url}")
+        if is_antibot_response(response.text):
+            if self.diagnostic_path is not None:
+                self.diagnostic_path.parent.mkdir(parents=True, exist_ok=True)
+                self.diagnostic_path.write_text(response.text, encoding="utf-8")
+            raise RuntimeError(
+                "Groove Records returned an anti-bot verification page instead of shop HTML; "
+                "normal HTTP scraping is blocked, so the scraper stopped safely"
+            )
         return response.text
 
 
@@ -195,6 +204,18 @@ def now_utc_iso() -> str:
 
 def normalize_space(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def is_antibot_response(html: str) -> bool:
+    """Recognise the shop's verification interstitial without bypassing it."""
+    lowered = normalize_space(html).casefold()
+    markers = (
+        "one moment, please",
+        "please wait while your request is being verified",
+        "window.location.reload",
+        "failedchecks",
+    )
+    return sum(marker in lowered for marker in markers) >= 2
 
 
 def normalize_url(value: str | None) -> str:
@@ -554,10 +575,12 @@ def main() -> int:
     args = build_parser().parse_args()
     if args.detail_limit < 0:
         raise SystemExit("detail-limit mag niet negatief zijn")
+    output_dir = args.output_dir
     try:
         client = RateLimitedClient(build_session(), args.delay_seconds)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    client.diagnostic_path = output_dir / "grooverecords_blocked_response.html"
 
     if args.discover_categories:
         categories = discover_categories(client.get(HOME_URL))
@@ -572,8 +595,8 @@ def main() -> int:
     else:
         categories = [Category("rock", "30", "Rock")]
 
-    listing_path = args.output_dir / "grooverecords_listing.csv"
-    master_path = args.output_dir / "grooverecords_master.csv"
+    listing_path = output_dir / "grooverecords_listing.csv"
+    master_path = output_dir / "grooverecords_master.csv"
     if args.mode in {"listing", "both"}:
         rows, skips, pages = scrape_listings(client, categories, args.max_pages)
         if not rows:
@@ -585,7 +608,7 @@ def main() -> int:
     else:
         rows = read_rows(master_path) or read_rows(listing_path)
         if not rows:
-            raise SystemExit(f"Geen listing/master CSV gevonden in {args.output_dir}")
+            raise SystemExit(f"Geen listing/master CSV gevonden in {output_dir}")
 
     if args.mode in {"detail", "both"}:
         attempted = enrich_details(client, rows, args.detail_limit)

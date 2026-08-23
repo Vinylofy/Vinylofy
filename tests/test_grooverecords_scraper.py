@@ -8,6 +8,7 @@ from scripts.scrapers.grooverecords import (
     RateLimitedClient,
     discover_categories,
     enrich_details,
+    is_antibot_response,
     normalize_url,
     parse_detail_page,
     parse_listing_page,
@@ -128,6 +129,15 @@ class GrooveRecordsScraperTest(unittest.TestCase):
     def test_rate_limiter_rejects_unsafe_delay(self):
         with self.assertRaises(ValueError):
             RateLimitedClient(object(), 29.99)
+
+    def test_antibot_interstitial_is_detected_without_bypass(self):
+        html = """
+        <title>One moment, please...</title>
+        <div>Please wait while your request is being verified...</div>
+        <script>window.location.reload();</script>
+        """
+        self.assertTrue(is_antibot_response(html))
+        self.assertFalse(is_antibot_response("<html><title>Groove Records</title></html>"))
 
 
 if __name__ == "__main__":
