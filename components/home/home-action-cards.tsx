@@ -43,7 +43,7 @@ export function HomeActionCards() {
           aria-label={label}
           className="group flex flex-col items-center justify-start text-center"
         >
-          <div className="flex h-[128px] items-center justify-center md:h-[144px]">
+          <div className="flex h-[148px] items-center justify-center md:h-[164px]">
             <Image
               src={imageSrc}
               alt=""
