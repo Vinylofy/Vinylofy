@@ -1,6 +1,9 @@
-name: Shop - VIP Records pilot
+name: Shop - VIP Records
 
 on:
+  schedule:
+    - cron: "20 3 * * *"
+      timezone: "Europe/Amsterdam"
   pull_request:
     paths:
       - ".github/workflows/shop-viprecords-pilot.yml"
@@ -30,6 +33,7 @@ on:
           - "0"
           - "3"
           - "10"
+          - "50"
           - "all"
       write:
         description: "Write accepted EAN-gated records to the database; default is dry-run"
@@ -41,7 +45,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: vinylofy-viprecords-pilot
+  group: vinylofy-viprecords
   cancel-in-progress: false
 
 jobs:
@@ -82,10 +86,10 @@ jobs:
             tests.test_viprecords_scraper \
             tests.test_viprecords_importer
 
-  pilot:
-    name: Run VIP Records manual scrape
+  run:
+    name: Run VIP Records listing and detail refresh
     needs: validate
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 240
     env:
@@ -111,29 +115,57 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "VIPRECORDS_OUTPUT_DIR=$RUNNER_TEMP/viprecords-pilot" >> "$GITHUB_ENV"
+          echo "VIPRECORDS_OUTPUT_DIR=$RUNNER_TEMP/viprecords-run" >> "$GITHUB_ENV"
 
-      - name: Run bounded listing and detail pilot
+      - name: Configure scheduled or manual run
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+            max_pages=0
+            detail_limit=50
+            write=true
+          else
+            max_pages="${{ inputs.max_pages }}"
+            detail_limit="${{ inputs.detail_limit }}"
+            write="${{ inputs.write }}"
+          fi
+          echo "VIPRECORDS_MAX_PAGES=$max_pages" >> "$GITHUB_ENV"
+          echo "VIPRECORDS_DETAIL_LIMIT=$detail_limit" >> "$GITHUB_ENV"
+          echo "VIPRECORDS_WRITE=$write" >> "$GITHUB_ENV"
+
+      - name: Restore VIP Records detail checkpoint
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/viprecords-run
+          key: viprecords-details-${{ github.run_id }}
+          restore-keys: |
+            viprecords-details-
+
+      - name: Run full listing and bounded detail refresh
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$VIPRECORDS_OUTPUT_DIR"
           python -u -m scripts.scrapers.viprecords \
             --mode both \
-            --max-pages "${{ inputs.max_pages }}" \
-            --detail-limit "${{ inputs.detail_limit }}" \
+            --max-pages "$VIPRECORDS_MAX_PAGES" \
+            --detail-limit "$VIPRECORDS_DETAIL_LIMIT" \
             --delay-seconds "$VIPRECORDS_DELAY_SECONDS" \
+            --state-file "$VIPRECORDS_OUTPUT_DIR/viprecords_detail_rotation_state.json" \
             --output-dir "$VIPRECORDS_OUTPUT_DIR"
 
       - name: Validate write selection
-        if: ${{ inputs.write }}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ inputs.detail_limit }}" = "0" ]; then
-            echo "Write-runs vereisen detail_limit 3, 10 of all zodat EAN-gating records kan accepteren." >&2
+          if [ "$VIPRECORDS_WRITE" != "true" ]; then
+            exit 0
+          fi
+          if [ "$VIPRECORDS_DETAIL_LIMIT" = "0" ]; then
+            echo "Write-runs vereisen een niet-nul detail_limit zodat EAN-gating records kan accepteren." >&2
             exit 1
           fi
           if [ -z "${DATABASE_URL:-}" ]; then
@@ -141,33 +173,36 @@ jobs:
             exit 1
           fi
 
-      - name: Run importer dry-run
-        if: ${{ !inputs.write }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -u -m scripts.importers.import_viprecords \
-            "$VIPRECORDS_OUTPUT_DIR/viprecords_master.csv" \
-            --dry-run \
-            --rejects "$VIPRECORDS_OUTPUT_DIR/rejects.csv" \
-            --summary "$VIPRECORDS_OUTPUT_DIR/summary.json"
-
-      - name: Run importer database write
-        if: ${{ inputs.write }}
+      - name: Run VIP Records importer
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         shell: bash
         run: |
           set -euo pipefail
-          python -u -m scripts.importers.import_viprecords \
-            "$VIPRECORDS_OUTPUT_DIR/viprecords_master.csv" \
-            --rejects "$VIPRECORDS_OUTPUT_DIR/rejects.csv" \
-            --summary "$VIPRECORDS_OUTPUT_DIR/summary.json"
+          if [ "$VIPRECORDS_WRITE" = "true" ]; then
+            python -u -m scripts.importers.import_viprecords \
+              "$VIPRECORDS_OUTPUT_DIR/viprecords_master.csv" \
+              --rejects "$VIPRECORDS_OUTPUT_DIR/rejects.csv" \
+              --summary "$VIPRECORDS_OUTPUT_DIR/summary.json"
+          else
+            python -u -m scripts.importers.import_viprecords \
+              "$VIPRECORDS_OUTPUT_DIR/viprecords_master.csv" \
+              --dry-run \
+              --rejects "$VIPRECORDS_OUTPUT_DIR/rejects.csv" \
+              --summary "$VIPRECORDS_OUTPUT_DIR/summary.json"
+          fi
 
-      - name: Upload VIP Records pilot artifacts
+      - name: Save VIP Records detail checkpoint
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/viprecords-run
+          key: viprecords-details-${{ github.run_id }}
+
+      - name: Upload VIP Records run artifacts
         if: always()
         uses: actions/upload-artifact@v6
         with:
           name: viprecords-run-${{ github.run_id }}
-          path: ${{ runner.temp }}/viprecords-pilot
+          path: ${{ runner.temp }}/viprecords-run
           if-no-files-found: warn

@@ -31,6 +31,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.importers.common import strict_normalize_gtin
+from scripts.scrapers._rotation import load_rotation_state, save_rotation_state, select_priority_then_round_robin
 
 
 BASE_URL = "https://www.viprecords.nl"
@@ -68,6 +69,8 @@ MASTER_FIELDS = LISTING_FIELDS + (
     "detail_error",
     "enriched_at",
 )
+
+DETAIL_FIELDS = MASTER_FIELDS[len(LISTING_FIELDS) :]
 
 SELECTORS = {
     "product_cards": (".cs-product",),
@@ -417,14 +420,61 @@ def parse_detail_page(html: str) -> dict[str, str]:
     }
 
 
-def enrich_details(client: RateLimitedClient, rows: list[dict[str, str]], limit: int | None) -> int:
+def merge_listing_rows_with_previous(
+    rows: list[dict[str, str]], previous_rows: Iterable[dict[str, str]]
+) -> list[dict[str, str]]:
+    """Keep detail enrichment while allowing the listing to remain authoritative."""
+    previous_by_id = {
+        row.get("product_id", ""): row
+        for row in previous_rows
+        if row.get("product_id")
+    }
+    for row in rows:
+        previous = previous_by_id.get(row.get("product_id", ""))
+        if not previous:
+            continue
+        for field in DETAIL_FIELDS:
+            if field in previous:
+                row[field] = previous[field]
+    return rows
+
+
+def _detail_candidates(rows: Iterable[dict[str, str]]) -> list[dict[str, str]]:
+    return [
+        row
+        for row in rows
+        if not strict_normalize_gtin(row.get("ean", "")) or row.get("detail_status") != "ok"
+    ]
+
+
+def select_detail_batch(
+    rows: list[dict[str, str]], limit: int | None, state: dict[str, object]
+) -> list[dict[str, str]]:
+    """Select unresolved detail records in a resumable, bounded round-robin order."""
+    return select_priority_then_round_robin(
+        _detail_candidates(rows),
+        [],
+        limit,
+        state,
+        "viprecords_detail_cursor",
+        "viprecords_detail_refresh_cursor",
+    )
+
+
+def enrich_details(
+    client: RateLimitedClient,
+    rows: list[dict[str, str]],
+    limit: int | None,
+    state: dict[str, object] | None = None,
+) -> int:
     if limit is not None and limit < 0:
         raise ValueError("detail limit must be >= 0")
     attempted = 0
-    for row in rows:
+    targets = select_detail_batch(rows, limit, state) if state is not None else rows
+    for row in targets:
         if limit is not None and attempted >= limit:
             break
-        if row.get("ean") and row.get("detail_status") == "ok":
+        if strict_normalize_gtin(row.get("ean", "")) and row.get("detail_status") == "ok":
             continue
         attempted += 1
         try:
@@ -473,6 +523,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--detail-limit", default="3", help="Detail limit; use 'all' for every discovered product")
     parser.add_argument("--delay-seconds", type=float, default=DEFAULT_DELAY_SECONDS)
     parser.add_argument("--output-dir", type=Path, default=Path("data/raw/viprecords"))
+    parser.add_argument(
+        "--state-file",
+        type=Path,
+        default=None,
+        help="Persistent detail rotation state; defaults to the output directory",
+    )
     return parser
 
 
@@ -487,10 +543,13 @@ def main() -> int:
     output_dir = args.output_dir
     listing_path = output_dir / "viprecords_listings.csv"
     master_path = output_dir / "viprecords_master.csv"
+    state_path = args.state_file or output_dir / "viprecords_detail_rotation_state.json"
     client = RateLimitedClient(build_session(), args.delay_seconds)
 
     if args.mode in {"listing", "both"}:
+        previous_rows = read_rows(master_path) if master_path.exists() else []
         rows, skips, pages = scrape_listings(client, args.max_pages)
+        merge_listing_rows_with_previous(rows, previous_rows)
         write_rows(listing_path, rows, LISTING_FIELDS)
         write_rows(master_path, rows, MASTER_FIELDS)
         print(f"[LISTING] pages={pages} unique_products={len(rows)} skips={dict(skips)}", flush=True)
@@ -500,8 +559,10 @@ def main() -> int:
         rows = read_rows(master_path)
 
     if args.mode in {"detail", "both"}:
-        attempted = enrich_details(client, rows, detail_limit)
+        rotation_state = load_rotation_state(state_path)
+        attempted = enrich_details(client, rows, detail_limit, rotation_state)
         write_rows(master_path, rows, MASTER_FIELDS)
+        save_rotation_state(state_path, rotation_state)
         print(f"[DETAIL] attempted={attempted} ean_hits={sum(bool(row.get('ean')) for row in rows)}", flush=True)
     print(f"[OUTPUT] listing={listing_path} master={master_path}", flush=True)
     return 0
