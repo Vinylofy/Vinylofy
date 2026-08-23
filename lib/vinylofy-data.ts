@@ -23,6 +23,9 @@ type BestPriceRow = {
   best_price_last_seen_at: string | null;
 };
 
+const DUTCH_VAT_RATE = 0.21;
+const DUTCH_VAT_MULTIPLIER = 1 + DUTCH_VAT_RATE;
+
 type ShopRelation =
   | {
       name: string;
@@ -196,6 +199,14 @@ function toNumber(value: number | string | null | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/** Public prices are stored net in the live price contract; display gross. */
+export function priceIncludingVat(value: number | string | null | undefined): number | null {
+  const price = toNumber(value);
+  if (price === null) return null;
+
+  return Math.round((price * DUTCH_VAT_MULTIPLIER + Number.EPSILON) * 100) / 100;
+}
+
 export function formatEuro(value: number | null | undefined): string {
   if (value === null || value === undefined) return "€--,--";
 
@@ -284,7 +295,10 @@ async function getBestPriceMap(productIds?: string[]) {
 
   const map = new Map<string, BestPriceRow>();
   for (const row of (data ?? []) as BestPriceRow[]) {
-    map.set(row.product_id, row);
+    map.set(row.product_id, {
+      ...row,
+      lowest_fresh_price: priceIncludingVat(row.lowest_fresh_price),
+    });
   }
 
   return map;
@@ -318,7 +332,7 @@ async function getOffersMap(productIds: string[]) {
       name: shop.name,
       domain: shop.domain,
       shopId: row.shop_id,
-      price: toNumber(row.price) ?? 0,
+      price: priceIncludingVat(row.price) ?? 0,
       productUrl: row.product_url,
       lastSeenAt: row.last_seen_at,
       availability: normalizeOfferAvailability(row.availability),
@@ -433,7 +447,7 @@ export async function getHomePageData(): Promise<{
         formatLabel: product.format_label,
         coverUrl: toPublicCoverUrl(product),
   coverStoragePath: product.cover_storage_path,
-        lowestPrice: toNumber(row.lowest_fresh_price),
+        lowestPrice: priceIncludingVat(row.lowest_fresh_price),
         freshShopCount: row.fresh_instock_shop_count ?? 0,
         totalShopCount: row.total_active_shop_count ?? 0,
         lastSeenAt: row.best_price_last_seen_at,
@@ -466,7 +480,7 @@ export async function getHomePageData(): Promise<{
         formatLabel: product.format_label,
         coverUrl: toPublicCoverUrl(product),
   coverStoragePath: product.cover_storage_path,
-        lowestPrice: toNumber(best?.lowest_fresh_price),
+        lowestPrice: priceIncludingVat(best?.lowest_fresh_price),
         freshShopCount: best?.fresh_instock_shop_count ?? 0,
         totalShopCount: best?.total_active_shop_count ?? 0,
         lastSeenAt: best?.best_price_last_seen_at ?? null,
@@ -678,7 +692,7 @@ export async function getProductPriceHistory(
   return ((data ?? []) as PriceHistoryDailyRow[])
     .filter((row) => row.day >= cutoffDay)
     .map((row) => {
-      const price = toNumber(row.min_instock_price);
+      const price = priceIncludingVat(row.min_instock_price);
       if (price === null) return null;
 
       return {
@@ -749,7 +763,7 @@ function normalizeSnapshotOffer(value: unknown): SearchShopOffer | null {
   if (!value || typeof value !== "object") return null;
 
   const raw = value as Record<string, unknown>;
-  const price = toNumber(raw.price as number | string | null | undefined);
+  const price = priceIncludingVat(raw.price as number | string | null | undefined);
   const availability = normalizeOfferAvailability(
     typeof raw.availability === "string" ? raw.availability : null,
   );
@@ -801,9 +815,12 @@ export async function getTopDeals(limit = 45): Promise<TopDealItem[]> {
   );
 
   return rows.flatMap((row) => {
-    const lowestPrice = toNumber(row.lowest_price);
-    const highestPrice = toNumber(row.highest_price);
-    const priceDifference = toNumber(row.price_difference);
+    const lowestPrice = priceIncludingVat(row.lowest_price);
+    const highestPrice = priceIncludingVat(row.highest_price);
+    const priceDifference =
+      lowestPrice !== null && highestPrice !== null
+        ? Math.round((highestPrice - lowestPrice + Number.EPSILON) * 100) / 100
+        : null;
     const lowestOffer = normalizeSnapshotOffer(row.lowest_offer);
     const highestOffer = normalizeSnapshotOffer(row.highest_offer);
     const offers = Array.isArray(row.offers)
@@ -985,7 +1002,7 @@ export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalen
         format: row.format,
         label: row.label,
         productId: row.product_id,
-        lowestPrice: toNumber(bestPrice?.lowest_fresh_price),
+        lowestPrice: priceIncludingVat(bestPrice?.lowest_fresh_price),
       };
     });
 }
