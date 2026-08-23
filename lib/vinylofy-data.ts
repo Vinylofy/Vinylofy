@@ -185,6 +185,39 @@ function isAllowedProduct(product: Pick<ProductRow, "format_label">): boolean {
   return !isBlacklistedFormat(product.format_label);
 }
 
+function preferProductIdentity(a: ProductRow, b: ProductRow): ProductRow {
+  const aHasCanonicalGtin = Boolean(a.gtin_normalized);
+  const bHasCanonicalGtin = Boolean(b.gtin_normalized);
+  if (aHasCanonicalGtin !== bHasCanonicalGtin) {
+    return aHasCanonicalGtin ? a : b;
+  }
+
+  const aHasFormat = Boolean(a.format_label?.trim());
+  const bHasFormat = Boolean(b.format_label?.trim());
+  if (aHasFormat !== bHasFormat) return aHasFormat ? a : b;
+
+  // Keep the older identity stable when two rows are otherwise equivalent.
+  return a.created_at <= b.created_at ? a : b;
+}
+
+function deduplicateProductIdentities(products: ProductRow[]): ProductRow[] {
+  const byIdentity = new Map<string, ProductRow>();
+  const withoutIdentity: ProductRow[] = [];
+
+  for (const product of products) {
+    const identity = normalizeGtinLookup(product.ean ?? "") ?? product.gtin_normalized;
+    if (!identity) {
+      withoutIdentity.push(product);
+      continue;
+    }
+
+    const existing = byIdentity.get(identity);
+    byIdentity.set(identity, existing ? preferProductIdentity(existing, product) : product);
+  }
+
+  return [...byIdentity.values(), ...withoutIdentity];
+}
+
 function toPublicCoverUrl(
   product: Pick<ProductRow, "cover_url" | "cover_storage_path">,
 ): string | null {
@@ -610,7 +643,9 @@ export async function searchProducts(
       .ilike("search_text", `%${normalizeQuery(normalizedQuery)}%`),
   );
 
-  const productList = Array.from(candidates.values()).filter(isAllowedProduct);
+  const productList = deduplicateProductIdentities(
+    Array.from(candidates.values()).filter(isAllowedProduct),
+  );
   if (productList.length === 0) return [];
 
   const ids = productList.map((row) => row.id);

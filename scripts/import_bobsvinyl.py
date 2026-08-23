@@ -6,6 +6,7 @@ import csv
 import json
 import os
 import re
+import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -14,6 +15,12 @@ from typing import Iterable
 
 from dotenv import load_dotenv
 import psycopg
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.importers.common import strict_normalize_gtin
 
 
 SHOP_NAME = "Bob's Vinyl"
@@ -260,6 +267,10 @@ def ensure_shop(cur) -> str:
 
 
 def upsert_product(cur, record: CanonicalRecord) -> str:
+    gtin_normalized = strict_normalize_gtin(record.ean)
+    if not gtin_normalized:
+        raise ValueError(f"Invalid GTIN for Bob's Vinyl product: {record.ean}")
+
     artist_norm = normalize_text(record.artist).lower()
     title_norm = normalize_text(record.title).lower()
     search_text = normalize_whitespace(f"{record.artist} {record.title} {record.ean}").lower()
@@ -268,11 +279,11 @@ def upsert_product(cur, record: CanonicalRecord) -> str:
     cur.execute(
         """
         insert into public.products (
-          ean, artist, title, format_label, cover_url, canonical_key,
+          ean, gtin_normalized, artist, title, format_label, cover_url, canonical_key,
           artist_normalized, title_normalized, search_text, created_at, updated_at
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
-        on conflict on constraint products_ean_unique do update
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
+        on conflict (gtin_normalized) do update
           set format_label = coalesce(public.products.format_label, excluded.format_label),
               cover_url = coalesce(public.products.cover_url, excluded.cover_url),
               canonical_key = coalesce(public.products.canonical_key, excluded.canonical_key),
@@ -281,6 +292,7 @@ def upsert_product(cur, record: CanonicalRecord) -> str:
         """,
         (
             record.ean,
+            gtin_normalized,
             record.artist,
             record.title,
             record.format_label,

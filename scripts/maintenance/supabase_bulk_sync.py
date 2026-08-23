@@ -775,6 +775,7 @@ def _sync_products(cur, batch_id: str) -> dict[str, int]:
             'artist_normalized': "nullif(lower(trim(coalesce(sp.artist, ''))), '')",
             'title_normalized': "nullif(lower(trim(coalesce(sp.title, ''))), '')",
             'search_text': "nullif(trim(concat_ws(' ', sp.artist, sp.title, sp.ean)), '')",
+            'gtin_normalized': "case when char_length(regexp_replace(coalesce(sp.ean, ''), '[^0-9]', '', 'g')) in (8, 12, 13, 14) then lpad(regexp_replace(sp.ean, '[^0-9]', '', 'g'), 14, '0') end",
         }
         return mapping[column]
 
@@ -790,8 +791,9 @@ def _sync_products(cur, batch_id: str) -> dict[str, int]:
             update public.products p
                set {', '.join(update_sets)}
               from public.staging_products_import sp
-             where p.ean = sp.ean
-               and sp.upload_batch_id = %s
+             where (p.ean = sp.ean
+                or p.gtin_normalized = {stage_expr('gtin_normalized')})
+                and sp.upload_batch_id = %s
                and char_length(coalesce(sp.ean, '')) in (12, 13)
             """,
             (batch_id,),
@@ -802,7 +804,7 @@ def _sync_products(cur, batch_id: str) -> dict[str, int]:
 
     insert_cols = ['ean']
     insert_select = ['sp.ean']
-    for column in ['artist', 'title', 'format_label', 'cover_url', 'canonical_key', 'artist_normalized', 'title_normalized', 'search_text']:
+    for column in ['gtin_normalized', 'artist', 'title', 'format_label', 'cover_url', 'canonical_key', 'artist_normalized', 'title_normalized', 'search_text']:
         if column in cols:
             insert_cols.append(column)
             insert_select.append(stage_expr(column))
@@ -811,7 +813,9 @@ def _sync_products(cur, batch_id: str) -> dict[str, int]:
         insert into public.products ({', '.join(insert_cols)})
         select {', '.join(insert_select)}
           from public.staging_products_import sp
-          left join public.products p on p.ean = sp.ean
+          left join public.products p
+            on p.ean = sp.ean
+            or p.gtin_normalized = {stage_expr('gtin_normalized')}
          where sp.upload_batch_id = %s
            and p.id is null
            and char_length(coalesce(sp.ean, '')) in (12, 13)
