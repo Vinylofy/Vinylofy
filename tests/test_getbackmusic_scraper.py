@@ -8,6 +8,7 @@ from scripts.scrapers.getbackmusic import (
     enrich_details,
     next_page_number,
     parse_detail_page,
+    parse_detail_limit,
     parse_listing_page,
     merge_listing_with_previous,
     scrape_listings,
@@ -142,6 +143,11 @@ class GetBackMusicScraperTest(unittest.TestCase):
         self.assertEqual(rows[0]["ean"], "8718521078584")
         self.assertEqual(rows[0]["detail_status"], "ok")
         self.assertEqual(rows[0]["detail_title"], "Stored detail")
+
+    def test_detail_limit_accepts_all_value(self):
+        self.assertIsNone(parse_detail_limit("all"))
+        self.assertIsNone(parse_detail_limit("0"))
+        self.assertEqual(parse_detail_limit("25"), 25)
 
 
 if __name__ == "__main__":

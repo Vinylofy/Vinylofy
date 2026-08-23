@@ -22,6 +22,11 @@ on:
         required: true
         default: "1"
         type: string
+      ean_limit:
+        description: "Number of new EAN/detail pages in ean mode; 0 or all means all unresolved"
+        required: true
+        default: "25"
+        type: string
       write:
         description: "Execute database writes"
         required: true
@@ -137,6 +142,7 @@ jobs:
           SCHEDULE: ${{ github.event.schedule || '' }}
           INPUT_MODE: ${{ inputs.mode || 'price' }}
           INPUT_LISTING_PAGES: ${{ inputs.listing_pages || '1' }}
+          INPUT_EAN_LIMIT: ${{ inputs.ean_limit || '25' }}
           INPUT_WRITE: ${{ inputs.write || false }}
         run: |
           set -euo pipefail
@@ -148,11 +154,13 @@ jobs:
           elif [ "$EVENT_NAME" = "schedule" ] && [ "$SCHEDULE" = "47 4 * * *" ]; then
             MODE="ean"
             LISTING_PAGES="all"
+            EAN_LIMIT="25"
             WRITE="true"
           else
             MODE="$INPUT_MODE"
             LISTING_PAGES="$INPUT_LISTING_PAGES"
             WRITE="$INPUT_WRITE"
+            EAN_LIMIT="$INPUT_EAN_LIMIT"
           fi
 
           case "$LISTING_PAGES" in
@@ -179,7 +187,22 @@ jobs:
               ;;
             ean)
               SCRAPER_MODE="both"
-              DETAIL_LIMIT="25"
+              case "$EAN_LIMIT" in
+                0|all)
+                  DETAIL_LIMIT="all"
+                  ;;
+                ''|*[!0-9]*)
+                  echo "ean_limit moet een positief geheel getal, 0 of all zijn"
+                  exit 1
+                  ;;
+                *)
+                  if [ "$EAN_LIMIT" -lt 1 ]; then
+                    echo "ean_limit moet minimaal 1 zijn, of 0/all voor alle unresolved EAN's"
+                    exit 1
+                  fi
+                  DETAIL_LIMIT="$EAN_LIMIT"
+                  ;;
+              esac
               ;;
             *)
               echo "Ongeldige mode: $MODE"

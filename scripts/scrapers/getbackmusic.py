@@ -417,11 +417,13 @@ def parse_detail_page(html: str) -> dict[str, str]:
     }
 
 
-def enrich_details(client: GetBackClient, rows: list[dict[str, str]], limit: int) -> int:
-    if limit < 0:
+def enrich_details(client: GetBackClient, rows: list[dict[str, str]], limit: int | None) -> int:
+    if limit is not None and limit < 0:
         raise ValueError("detail limit must be >= 0")
     attempted = 0
-    for row in [item for item in rows if not strict_normalize_gtin(item.get("ean", ""))][:limit]:
+    candidates = [item for item in rows if not strict_normalize_gtin(item.get("ean", ""))]
+    targets = candidates if limit is None else candidates[:limit]
+    for row in targets:
         attempted += 1
         try:
             row.update(parse_detail_page(client.get(row["product_url"])))
@@ -472,16 +474,33 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Bounded listing-first Get Back Music LP/Vinyl scraper")
     parser.add_argument("--mode", choices=("listing", "detail", "both"), default="both")
     parser.add_argument("--max-pages", type=int, default=1, help="Listing limit; 0 follows stop conditions")
-    parser.add_argument("--detail-limit", type=int, default=3)
+    parser.add_argument("--detail-limit", default="3", help="Aantal detailpagina's; 0 of all betekent alle unresolved EAN's")
     parser.add_argument("--delay-seconds", type=float, default=DEFAULT_DELAY_SECONDS)
     parser.add_argument("--output-dir", type=Path, default=Path("data/raw/getbackmusic"))
     return parser
 
 
+def parse_detail_limit(value: str) -> int | None:
+    normalized = str(value).strip().casefold()
+    if normalized in {"0", "all"}:
+        return None
+    try:
+        limit = int(normalized)
+    except ValueError as exc:
+        raise ValueError("detail-limit moet een positief geheel getal, 0 of all zijn") from exc
+    if limit < 0:
+        raise ValueError("detail-limit mag niet negatief zijn")
+    return limit
+
+
 def main() -> int:
     args = build_parser().parse_args()
-    if args.max_pages < 0 or args.detail_limit < 0:
-        raise SystemExit("--max-pages en --detail-limit mogen niet negatief zijn")
+    if args.max_pages < 0:
+        raise SystemExit("--max-pages mag niet negatief zijn")
+    try:
+        detail_limit = parse_detail_limit(args.detail_limit)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     output_dir = args.output_dir
     listing_path, master_path = output_dir / "getbackmusic_listings.csv", output_dir / "getbackmusic_master.csv"
     client = GetBackClient(build_session(), args.delay_seconds)
@@ -497,7 +516,7 @@ def main() -> int:
             raise SystemExit(f"Master CSV not found: {master_path}")
         rows = read_rows(master_path)
     if args.mode in {"detail", "both"}:
-        attempted = enrich_details(client, rows, args.detail_limit)
+        attempted = enrich_details(client, rows, detail_limit)
         write_rows(master_path, rows, MASTER_FIELDS)
         print(f"[DETAIL] attempted={attempted} variants={len(rows)} ean_hits={sum(bool(strict_normalize_gtin(r.get('ean', ''))) for r in rows)}", flush=True)
     print(f"[OUTPUT] listing={listing_path} master={master_path}", flush=True)
