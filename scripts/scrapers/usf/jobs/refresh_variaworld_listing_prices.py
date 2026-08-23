@@ -33,6 +33,15 @@ HEADERS = {
     "Accept-Language": "nl-NL,nl;q=0.9,en;q=0.8",
 }
 
+EMPTY_PAGE_RETRIES = 2
+BLOCK_PAGE_MARKERS = (
+    "captcha",
+    "cloudflare",
+    "access denied",
+    "verify you are human",
+    "robot",
+)
+
 
 def clean(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
@@ -105,6 +114,22 @@ def payload_score(payload: dict[str, object]) -> int:
         + 2 * bool(payload.get("artist_raw"))
         + 1 * bool(payload.get("availability"))
     )
+
+
+def response_diagnostics(response: requests.Response) -> dict[str, object]:
+    """Return safe, compact diagnostics for an unexpected empty listing page."""
+    soup = BeautifulSoup(response.text, "html.parser")
+    title = clean(soup.title.get_text(" ", strip=True)) if soup.title else ""
+    body_prefix = clean(soup.get_text(" ", strip=True))[:160].lower()
+    markers = [marker for marker in BLOCK_PAGE_MARKERS if marker in body_prefix or marker in response.text.lower()]
+    return {
+        "status_code": response.status_code,
+        "content_type": response.headers.get("Content-Type", ""),
+        "bytes": len(response.content),
+        "final_url": response.url,
+        "title": title[:160],
+        "possible_block_markers": markers,
+    }
 
 
 def parse_listing_page(
@@ -201,6 +226,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-pages", type=int, default=5, help="Aantal pagina's per seed; 0 = doorlopen tot stopconditie.")
     parser.add_argument("--sleep", type=float, default=1.5)
     parser.add_argument("--max-page-failures", type=int, default=3)
+    parser.add_argument(
+        "--empty-page-retries",
+        type=int,
+        default=EMPTY_PAGE_RETRIES,
+        help="Retries voor een HTTP 200-response zonder listinglinks.",
+    )
     parser.add_argument("--fast-price-sync", action="store_true")
     parser.add_argument("--write", action="store_true")
     return parser
@@ -217,6 +248,8 @@ def main() -> int:
         raise SystemExit("[ERROR] --sleep mag niet negatief zijn.")
     if args.max_page_failures < 1:
         raise SystemExit("[ERROR] --max-page-failures moet minimaal 1 zijn.")
+    if args.empty_page_retries < 0:
+        raise SystemExit("[ERROR] --empty-page-retries mag niet negatief zijn.")
 
     session = requests.Session()
     session.headers.update(HEADERS)
@@ -285,6 +318,52 @@ def main() -> int:
                 listing_url=listing_url,
                 seen_at=seen_at,
             )
+
+            for empty_page_attempt in range(1, args.empty_page_retries + 1):
+                if links:
+                    break
+                print("[LISTING-REFRESH][WARN] HTTP 200 zonder listinglinks; retrying.", {
+                    "seed": seed_key,
+                    "page": page,
+                    "attempt": empty_page_attempt,
+                    "max_retries": args.empty_page_retries,
+                    **response_diagnostics(response),
+                }, flush=True)
+                time.sleep(args.sleep * empty_page_attempt)
+                try:
+                    response = session.get(listing_url, timeout=30)
+                except requests.RequestException as exc:
+                    print("[LISTING-REFRESH][WARN] empty-page retry failed", {
+                        "seed": seed_key,
+                        "page": page,
+                        "attempt": empty_page_attempt,
+                        "error": str(exc),
+                    }, flush=True)
+                    break
+                if response.status_code == 429:
+                    print("[LISTING-REFRESH][WARN] HTTP 429 during empty-page retry; stopping safely.", {
+                        "seed": seed_key,
+                        "page": page,
+                        "attempt": empty_page_attempt,
+                    }, flush=True)
+                    break
+                if response.status_code >= 500:
+                    print("[LISTING-REFRESH][WARN] server error during empty-page retry", {
+                        "seed": seed_key,
+                        "page": page,
+                        "attempt": empty_page_attempt,
+                        "status_code": response.status_code,
+                    }, flush=True)
+                    break
+                response.raise_for_status()
+                response.encoding = response.apparent_encoding or response.encoding or "utf-8"
+                links, offers = parse_listing_page(
+                    response.text,
+                    seed_key=seed_key,
+                    page=page,
+                    listing_url=listing_url,
+                    seen_at=seen_at,
+                )
 
             page_signature = tuple(link.source_url for link in links)
             if page_signature and page_signature in seen_page_signatures:
