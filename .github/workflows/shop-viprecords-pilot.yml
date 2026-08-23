@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       max_pages:
-        description: "Listing pages for this bounded pilot"
+        description: "Listing pages; 0 = full catalog until server stop conditions"
         required: true
         default: "1"
         type: choice
@@ -20,8 +20,9 @@ on:
           - "1"
           - "2"
           - "3"
+          - "0"
       detail_limit:
-        description: "Detail pages for GTIN/EAN enrichment"
+        description: "Detail pages; all = every discovered product"
         required: true
         default: "3"
         type: choice
@@ -29,6 +30,7 @@ on:
           - "0"
           - "3"
           - "10"
+          - "all"
       write:
         description: "Write accepted EAN-gated records to the database; default is dry-run"
         required: true
@@ -81,11 +83,11 @@ jobs:
             tests.test_viprecords_importer
 
   pilot:
-    name: Run VIP Records bounded pilot
+    name: Run VIP Records manual scrape
     needs: validate
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 240
     env:
       VIPRECORDS_DELAY_SECONDS: "0.5"
 
@@ -131,7 +133,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ inputs.detail_limit }}" = "0" ]; then
-            echo "Write-runs vereisen detail_limit 3 of 10 zodat EAN-gating records kan accepteren." >&2
+            echo "Write-runs vereisen detail_limit 3, 10 of all zodat EAN-gating records kan accepteren." >&2
             exit 1
           fi
           if [ -z "${DATABASE_URL:-}" ]; then
@@ -166,6 +168,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: viprecords-pilot-${{ github.run_id }}
+          name: viprecords-run-${{ github.run_id }}
           path: ${{ runner.temp }}/viprecords-pilot
           if-no-files-found: warn

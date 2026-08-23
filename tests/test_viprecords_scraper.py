@@ -10,6 +10,7 @@ from scripts.scrapers.viprecords import (
     enrich_details,
     next_page_number,
     parse_detail_page,
+    parse_detail_limit,
     parse_listing_page,
     scrape_listings,
 )
@@ -57,6 +58,12 @@ def detail_html() -> str:
 
 
 class VipRecordsScraperTest(unittest.TestCase):
+    def test_detail_limit_supports_full_enrichment_explicitly(self):
+        self.assertIsNone(parse_detail_limit("all"))
+        self.assertEqual(parse_detail_limit("10"), 10)
+        with self.assertRaises(ValueError):
+            parse_detail_limit("-1")
+
     def test_listing_selectors_parse_sale_and_regular_prices(self):
         rows, next_page, skips = parse_listing_page(listing_html(), 1)
         self.assertEqual(len(rows), 2)
