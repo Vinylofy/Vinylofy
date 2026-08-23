@@ -176,3 +176,140 @@ export function selectNextDestinations(input: {
   return suppressArtistFamilyVariants(values, input.visitedArtistNames ?? [])
     .slice(0, Math.max(0, input.limit));
 }
+
+const RECORDING_EVIDENCE = new Set(["artist_credit", "instrument", "vocal"]);
+
+function isDedicatedDestination(candidate: FtgRankingCandidate): boolean {
+  if (candidate.destinationOutputStatus !== "proven_output") return false;
+  if (candidate.entityType === "group") return true;
+
+  // Membership alone turns a person into a bridge, not a destination. A
+  // person may be a destination when the data also proves participation in a
+  // recording, which is the narrowest available evidence of an own musical
+  // oeuvre and a concrete route to the destination.
+  return candidate.factual && candidate.factualMechanisms.some((mechanism) =>
+    RECORDING_EVIDENCE.has(mechanism),
+  );
+}
+
+function compareDedicatedDestinations(
+  left: FtgDestinationCandidate,
+  right: FtgDestinationCandidate,
+): number {
+  const factualOrder = Number(!left.factual) - Number(!right.factual);
+  if (factualOrder) return factualOrder;
+
+  const entityOrder = Number(left.entityType !== "group") - Number(right.entityType !== "group");
+  if (entityOrder) return entityOrder;
+
+  const directOrder = Number(!left.direct) - Number(!right.direct);
+  if (directOrder) return directOrder;
+
+  const onwardOrder = right.onwardCount - left.onwardCount;
+  if (onwardOrder) return onwardOrder;
+
+  if (left.v3Order !== right.v3Order) return left.v3Order - right.v3Order;
+  return (
+    compareStrings(left.displayName.toLowerCase(), right.displayName.toLowerCase()) ||
+    compareStrings(left.musicbrainzArtistMbid, right.musicbrainzArtistMbid)
+  );
+}
+
+/**
+ * Dedicated-route selection. The search surface intentionally continues to
+ * use selectNextDestinations: this selector changes only the five standalone
+ * destinations on /follow-the-groove/[...trail].
+ */
+export function selectDedicatedDestinations(input: {
+  sourceArtistId: string;
+  visitedArtistNames?: Iterable<string>;
+  direct: FtgRankingCandidate[];
+  onward: Map<string, FtgOnwardRelation[]>;
+  excludedArtistIds?: Set<string>;
+  limit: number;
+}): FtgDestinationCandidate[] {
+  const excluded = input.excludedArtistIds ?? new Set<string>();
+  const directIds = new Set(input.direct.map((candidate) => candidate.targetArtistId));
+  const byDestination = new Map<string, FtgDestinationCandidate>();
+
+  const onwardDestinations = (bridgeId: string): FtgOnwardRelation[] =>
+    (input.onward.get(bridgeId) ?? []).filter(isDedicatedDestination);
+
+  input.direct.forEach((candidate) => {
+    if (
+      candidate.targetArtistId === input.sourceArtistId ||
+      excluded.has(candidate.targetArtistId) ||
+      !isDedicatedDestination(candidate)
+    ) return;
+
+    byDestination.set(candidate.targetArtistId, {
+      ...candidate,
+      direct: true,
+      bridgeId: null,
+      bridgeName: null,
+      onwardCount: new Set(
+        onwardDestinations(candidate.targetArtistId)
+          .map((relation) => relation.targetArtistId)
+          .filter((targetId) => targetId !== input.sourceArtistId && !excluded.has(targetId)),
+      ).size,
+      v3Order: candidate.similarityPosition ?? 2 ** 31,
+    });
+  });
+
+  // Every direct relation may be a bridge, including an unknown or
+  // proven_bridge_only person. The bridge itself is never made visible here;
+  // only its proven musical destination can enter the card pool.
+  input.direct.forEach((bridge) => {
+    if (excluded.has(bridge.targetArtistId)) return;
+    const onward = onwardDestinations(bridge.targetArtistId);
+    const onwardIds = new Set(
+      onward
+        .map((relation) => relation.targetArtistId)
+        .filter(
+          (destinationId) =>
+            destinationId !== input.sourceArtistId &&
+            destinationId !== bridge.targetArtistId &&
+            !directIds.has(destinationId) &&
+            !excluded.has(destinationId),
+        ),
+    );
+
+    for (const relation of onward) {
+      const destinationId = relation.targetArtistId;
+      if (
+        destinationId === input.sourceArtistId ||
+        destinationId === bridge.targetArtistId ||
+        directIds.has(destinationId) ||
+        excluded.has(destinationId)
+      ) continue;
+
+      const indirect: FtgDestinationCandidate = {
+        ...relation,
+        sourceArtistId: input.sourceArtistId,
+        direct: false,
+        bridgeId: bridge.targetArtistId,
+        bridgeName: bridge.displayName,
+        onwardCount: onwardIds.size,
+        v3Order: bridge.similarityPosition ?? 2 ** 31,
+      };
+      const previous = byDestination.get(destinationId);
+      if (!previous || compareDedicatedDestinations(indirect, previous) < 0) {
+        byDestination.set(destinationId, indirect);
+      }
+    }
+  });
+
+  const ordered = suppressArtistFamilyVariants(
+    [...byDestination.values()].sort(compareDedicatedDestinations),
+    input.visitedArtistNames ?? [],
+  );
+  const boundedLimit = Math.max(0, input.limit);
+  const factual = ordered.filter((candidate) => candidate.factual);
+  const similarityOnly = ordered.filter((candidate) => !candidate.factual);
+  const availableSlots = Math.max(0, boundedLimit - factual.length);
+  const maxSimilarityOnly = factual.length >= Math.max(0, boundedLimit - 2)
+    ? Math.min(2, availableSlots)
+    : availableSlots;
+
+  return [...factual, ...similarityOnly.slice(0, maxSimilarityOnly)].slice(0, boundedLimit);
+}

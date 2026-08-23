@@ -1,8 +1,12 @@
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { getReasonCodes, rankCandidates, type FtgRankingCandidate } from "./ranking";
-import { selectNextDestinations, type FtgOnwardRelation } from "./destination-selection";
+import {
+  selectDedicatedDestinations,
+  selectNextDestinations,
+  type FtgOnwardRelation,
+} from "./destination-selection";
 import { resolveSearchGrooveSourceFromMatches } from "./search-source";
-import { mapReasonLabel, type AllowedEvidence } from "./reasons";
+import { mapDedicatedReasonLabel, mapReasonLabel, type AllowedEvidence } from "./reasons";
 import { isValidTrail } from "./presentation";
 import { buildExplainedTrail } from "./trail";
 import {
@@ -380,7 +384,7 @@ async function loadTrailExplanations(trailArtists: ArtistRow[]): Promise<(string
       });
       onward.set(bridge.targetArtistId, relations);
     }
-    const selected = selectNextDestinations({
+    const selected = selectDedicatedDestinations({
       sourceArtistId: source.id,
       visitedArtistNames: [source.display_name],
       direct,
@@ -391,12 +395,8 @@ async function loadTrailExplanations(trailArtists: ArtistRow[]): Promise<(string
       explanations.push(null);
       continue;
     }
-    if (selected.bridgeName) {
-      explanations.push(`Via ${selected.bridgeName}`);
-      continue;
-    }
     const reasonCode = getReasonCodes(selected)[0] ?? "similar_artist";
-    explanations.push(mapReasonLabel({
+    explanations.push(mapDedicatedReasonLabel({
       reasonCode,
       activeArtist: { id: source.id, name: source.display_name, entityType: source.entity_type },
       candidate: { id: destination.id, entityType: destination.entity_type },
@@ -406,6 +406,9 @@ async function loadTrailExplanations(trailArtists: ArtistRow[]): Promise<(string
         evidenceKind: row.evidence_kind,
         ended: row.ended,
       })),
+      bridgeName: selected.bridgeName,
+      bridgeMechanisms: selected.factualMechanisms,
+      destinationName: destination.display_name,
     }));
   }
   return explanations;
@@ -667,7 +670,21 @@ export async function getFollowTheGroovePage(input: {
     }
     onwardRelations.set(bridge.targetArtistId, relations);
   }
-  const selected = selectNextDestinations({
+  const selected = mode === "trail"
+    ? selectDedicatedDestinations({
+        sourceArtistId: activeArtist.id,
+        visitedArtistNames: trailRows.map((artist) => artist.display_name),
+        direct: ranked,
+        onward: onwardRelations,
+        excludedArtistIds: new Set(
+          resolvedTrailMbids
+            .slice(0, -1)
+            .map((mbid) => artistsByMbid.get(mbid.toLowerCase())?.id)
+            .filter((id): id is string => Boolean(id)),
+        ),
+        limit,
+      })
+    : selectNextDestinations({
     sourceArtistId: activeArtist.id,
     visitedArtistNames: trailRows.map((artist) => artist.display_name),
     direct: ranked,
@@ -708,21 +725,36 @@ export async function getFollowTheGroovePage(input: {
     if (!reasonCode) {
       throw new Error(`Candidate ${candidate.targetArtistId} has no supported V1 reason`);
     }
+    const reasonLabel = mode === "trail"
+      ? mapDedicatedReasonLabel({
+          reasonCode,
+          activeArtist: {
+            id: activeArtist.id,
+            name: activeArtist.display_name,
+            entityType: activeArtist.entity_type,
+          },
+          candidate: { id: view.id, entityType: view.entityType },
+          evidence: allowedEvidence,
+          bridgeName: candidate.bridgeName,
+          bridgeMechanisms: candidate.factualMechanisms,
+          destinationName: view.name,
+        })
+      : candidate.bridgeName ? `Via ${candidate.bridgeName}` : mapReasonLabel({
+          reasonCode,
+          activeArtist: {
+            id: activeArtist.id,
+            name: activeArtist.display_name,
+            entityType: activeArtist.entity_type,
+          },
+          candidate: { id: view.id, entityType: view.entityType },
+          evidence: allowedEvidence,
+        });
     return {
       ...view,
       rank: index + 1,
       reasonCode,
       bridgeName: candidate.bridgeName,
-      reasonLabel: candidate.bridgeName ? `Via ${candidate.bridgeName}` : mapReasonLabel({
-        reasonCode,
-        activeArtist: {
-          id: activeArtist.id,
-          name: activeArtist.display_name,
-          entityType: activeArtist.entity_type,
-        },
-        candidate: { id: view.id, entityType: view.entityType },
-        evidence: allowedEvidence,
-      }),
+      reasonLabel,
     };
   }).filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
   const orderedTrailArtists = resolvedTrailMbids.map(

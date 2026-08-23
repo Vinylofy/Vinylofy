@@ -513,6 +513,85 @@ class NextDestinationSelectionTests(unittest.TestCase):
         self.assertNotIn("Two Hop", actual)
 
 
+class DedicatedDestinationSelectionTests(unittest.TestCase):
+    def select(self, direct: list[dict[str, object]], onward: dict[str, list[dict[str, object]]] | None = None, limit: int = 5) -> list[dict[str, object]]:
+        return run_typescript(
+            "lib/follow-the-groove/destination-selection.ts",
+            "subject.selectDedicatedDestinations({ sourceArtistId: 'source', direct: input.direct, onward: new Map(Object.entries(input.onward)), limit: input.limit }).map(row => ({ name: row.displayName, bridge: row.bridgeName, entityType: row.entityType, factual: row.factual }))",
+            {"direct": direct, "onward": onward or {}, "limit": limit},
+        )
+
+    def test_members_are_bridges_not_unexplained_dedicated_destinations(self) -> None:
+        dave = fixture_candidate("Dave Grohl", factual=True, mechanisms=("membership",))
+        qotsa = {
+            **fixture_candidate("Queens of the Stone Age", factual=True, mechanisms=("artist_credit",)),
+            "entityType": "group",
+            "sourceArtistId": "dave-grohl",
+        }
+        chris = fixture_candidate("Chris Shiflett", factual=True, mechanisms=("membership",))
+        eddie = fixture_candidate("Eddie Vedder", similarity=True, position=1)
+        actual = self.select([dave, chris, eddie], {"dave-grohl": [qotsa]})
+        self.assertEqual(
+            actual,
+            [{"name": "Queens of the Stone Age", "bridge": "Dave Grohl", "entityType": "group", "factual": True}],
+        )
+
+    def test_bridge_only_person_can_reconstruct_a_route_without_being_visible(self) -> None:
+        bridge = fixture_candidate(
+            "Bridge Person", factual=True, mechanisms=("membership",), output_status="proven_bridge_only"
+        )
+        destination = {
+            **fixture_candidate("Destination Band", factual=True, mechanisms=("membership",)),
+            "entityType": "group",
+            "sourceArtistId": "bridge-person",
+        }
+        actual = self.select([bridge], {"bridge-person": [destination]})
+        self.assertEqual(actual[0]["name"], "Destination Band")
+        self.assertEqual(actual[0]["bridge"], "Bridge Person")
+        self.assertNotIn("Bridge Person", [row["name"] for row in actual])
+
+    def test_nirvana_route_uses_dave_grohl_without_showing_him(self) -> None:
+        bridge = fixture_candidate(
+            "Dave Grohl", factual=True, mechanisms=("membership",), output_status="proven_bridge_only"
+        )
+        destination = {
+            **fixture_candidate("Foo Fighters", factual=True, mechanisms=("membership",)),
+            "entityType": "group",
+            "sourceArtistId": "dave-grohl",
+        }
+        actual = self.select([bridge], {"dave-grohl": [destination]})
+        self.assertEqual(actual[0]["name"], "Foo Fighters")
+        self.assertEqual(actual[0]["bridge"], "Dave Grohl")
+        self.assertNotIn("Dave Grohl", [row["name"] for row in actual])
+
+    def test_proven_solo_artist_with_recording_evidence_remains_possible(self) -> None:
+        solo = fixture_candidate("Solo Artist", factual=True, mechanisms=("artist_credit",))
+        solo["entityType"] = "person"
+        actual = self.select([solo])
+        self.assertEqual(actual[0]["name"], "Solo Artist")
+
+    def test_factual_group_destinations_are_preferred_and_similarity_is_bounded(self) -> None:
+        factual_groups = [
+            {**fixture_candidate(f"Band {index}", factual=True), "entityType": "group"}
+            for index in range(1, 4)
+        ]
+        similarity_groups = [
+            {**fixture_candidate(f"Similar {index}", similarity=True, position=index), "entityType": "group"}
+            for index in range(1, 5)
+        ]
+        actual = self.select(factual_groups + similarity_groups)
+        self.assertEqual(len(actual), 5)
+        self.assertEqual(sum(not row["factual"] for row in actual), 2)
+        self.assertEqual([row["name"] for row in actual[:3]], ["Band 1", "Band 2", "Band 3"])
+
+    def test_dedicated_selection_is_bounded_at_five(self) -> None:
+        direct = [
+            {**fixture_candidate(f"Band {index}", factual=True), "entityType": "group"}
+            for index in range(1, 9)
+        ]
+        self.assertEqual(len(self.select(direct, limit=5)), 5)
+
+
 class FrontendPureContractTests(unittest.TestCase):
     def test_explained_trail_reconstructs_refresh_back_forward_and_prefix(self) -> None:
         payload = {
@@ -586,6 +665,23 @@ class FrontendPureContractTests(unittest.TestCase):
                     run_typescript("lib/follow-the-groove/reasons.ts", "subject.mapReasonLabel(input)", payload),
                     expected,
                 )
+
+    def test_dedicated_bridge_reason_uses_supported_plain_language(self) -> None:
+        payload = {
+            "reasonCode": "recording_collaboration",
+            "activeArtist": {"id": "source", "name": "Source", "entityType": "group"},
+            "candidate": {"id": "destination", "entityType": "group"},
+            "evidence": [],
+            "bridgeName": "Dave Grohl",
+            "bridgeMechanisms": ["artist_credit"],
+            "destinationName": "Queens of the Stone Age",
+        }
+        actual = run_typescript(
+            "lib/follow-the-groove/reasons.ts",
+            "subject.mapDedicatedReasonLabel(input)",
+            payload,
+        )
+        self.assertEqual(actual, "Via Dave Grohl, die opnam met Queens of the Stone Age")
 
     def test_cover_selection_is_exact_local_and_deterministic(self) -> None:
         payload = {
@@ -745,6 +841,13 @@ class FrontendSourceContractTests(unittest.TestCase):
         combined = data + selector
         for hardcoded in ("Foo Fighters", "Queens of the Stone Age", "Dave Grohl"):
             self.assertNotIn(hardcoded, combined)
+
+    def test_dedicated_mode_isolated_from_search_selector(self) -> None:
+        data = (ROOT / "lib/follow-the-groove/data.ts").read_text()
+        self.assertIn("mode === \"trail\"", data)
+        self.assertIn("selectDedicatedDestinations", data)
+        self.assertIn(": selectNextDestinations({", data)
+        self.assertIn('requireSearchEligible: mode === "search"', data)
 
     def test_ftg_ui_has_no_prices_external_images_or_technical_reasons(self) -> None:
         files = list((ROOT / "components/follow-the-groove").glob("*.tsx"))

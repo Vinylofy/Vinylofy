@@ -14,6 +14,8 @@ type ReasonInput = {
   evidence: AllowedEvidence[];
 };
 
+const RECORDING_EVIDENCE = new Set(["artist_credit", "instrument", "vocal"]);
+
 export function mapReasonLabel(input: ReasonInput): string {
   if (input.reasonCode === "factual_and_similarity") {
     return "Feitelijke én muzikale connectie";
@@ -44,4 +46,23 @@ export function mapReasonLabel(input: ReasonInput): string {
   }
 
   return "Bandconnectie";
+}
+
+export function mapDedicatedReasonLabel(
+  input: ReasonInput & {
+    bridgeName?: string | null;
+    bridgeMechanisms?: string[];
+    destinationName?: string;
+  },
+): string {
+  if (input.bridgeName) {
+    if (
+      input.destinationName &&
+      input.bridgeMechanisms?.some((mechanism) => RECORDING_EVIDENCE.has(mechanism))
+    ) {
+      return `Via ${input.bridgeName}, die opnam met ${input.destinationName}`;
+    }
+    return `Via ${input.bridgeName}`;
+  }
+  return mapReasonLabel(input);
 }
