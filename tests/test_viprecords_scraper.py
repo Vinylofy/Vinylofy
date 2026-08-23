@@ -8,11 +8,13 @@ from bs4 import BeautifulSoup
 from scripts.scrapers.viprecords import (
     RateLimitedClient,
     enrich_details,
+    merge_listing_rows_with_previous,
     next_page_number,
     parse_detail_page,
     parse_detail_limit,
     parse_listing_page,
     scrape_listings,
+    select_detail_batch,
 )
 
 
@@ -58,6 +60,43 @@ def detail_html() -> str:
 
 
 class VipRecordsScraperTest(unittest.TestCase):
+    def test_listing_refresh_keeps_detail_fields_but_replaces_listing_fields(self):
+        current = [{
+            "product_id": "1001",
+            "price": "22.49",
+            "availability": "in_stock",
+            "ean": "",
+            "detail_status": "pending",
+        }]
+        previous = [{
+            "product_id": "1001",
+            "price": "44.99",
+            "availability": "out_of_stock",
+            "ean": "8718521078584",
+            "detail_status": "ok",
+            "detail_title": "Stored metadata",
+        }]
+
+        merge_listing_rows_with_previous(current, previous)
+
+        self.assertEqual(current[0]["price"], "22.49")
+        self.assertEqual(current[0]["availability"], "in_stock")
+        self.assertEqual(current[0]["ean"], "8718521078584")
+        self.assertEqual(current[0]["detail_title"], "Stored metadata")
+
+    def test_detail_batch_rotates_between_runs(self):
+        rows = [
+            {"product_id": str(index), "ean": "", "detail_status": "pending"}
+            for index in range(1, 5)
+        ]
+        state = {}
+
+        first = select_detail_batch(rows, 2, state)
+        second = select_detail_batch(rows, 2, state)
+
+        self.assertEqual([row["product_id"] for row in first], ["1", "2"])
+        self.assertEqual([row["product_id"] for row in second], ["3", "4"])
+
     def test_detail_limit_supports_full_enrichment_explicitly(self):
         self.assertIsNone(parse_detail_limit("all"))
         self.assertEqual(parse_detail_limit("10"), 10)
