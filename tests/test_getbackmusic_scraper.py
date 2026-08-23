@@ -79,7 +79,7 @@ class GetBackMusicScraperTest(unittest.TestCase):
     def test_next_page_requires_immediate_server_pagination(self):
         soup = BeautifulSoup(listing_html(), "html.parser")
         self.assertEqual(next_page_number(soup, 1), 2)
-        self.assertIsNone(next_page_number(BeautifulSoup(listing_html(has_next=False), "html.parser"), 1))
+        self.assertEqual(next_page_number(BeautifulSoup(listing_html(has_next=False), "html.parser"), 1), 2)
 
     def test_detail_extracts_direct_ean_and_does_not_overwrite_listing_fields(self):
         rows, _next, _ids, _skips = parse_listing_page(listing_html(), 1)

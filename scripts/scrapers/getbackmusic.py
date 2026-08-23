@@ -234,7 +234,10 @@ def next_page_number(soup: BeautifulSoup, current_page: int) -> int | None:
             values = parse_qs(urlsplit(urljoin(LISTING_URL, href)).query).get("page", [])
             if values and values[0].isdigit() and int(values[0]) == current_page + 1:
                 return current_page + 1
-    return None
+    # The collection contract is sequential server-rendered pagination. A
+    # theme may omit the visible next link while ?page=N+1 remains valid, so
+    # confirm the next page by fetching it; empty/repeated pages stop the run.
+    return current_page + 1
 
 
 def parse_listing_page(html: str, page: int) -> tuple[list[dict[str, str]], int | None, set[str], Counter[str]]:
