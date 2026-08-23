@@ -1,0 +1,97 @@
+name: Shop - VIP Records pilot
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_pages:
+        description: "Listing pages for this bounded pilot"
+        required: true
+        default: "1"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+      detail_limit:
+        description: "Detail pages for GTIN/EAN enrichment"
+        required: true
+        default: "3"
+        type: choice
+        options:
+          - "0"
+          - "3"
+          - "10"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vinylofy-viprecords-pilot
+  cancel-in-progress: false
+
+jobs:
+  pilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      VIPRECORDS_DELAY_SECONDS: "0.5"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install scraper and importer dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install beautifulsoup4 requests "psycopg[binary]" python-dotenv
+
+      - name: Configure pilot output path
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "VIPRECORDS_OUTPUT_DIR=$RUNNER_TEMP/viprecords-pilot" >> "$GITHUB_ENV"
+
+      - name: Run focused VIP Records tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest \
+            tests.test_viprecords_scraper \
+            tests.test_viprecords_importer
+
+      - name: Run bounded listing and detail pilot
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$VIPRECORDS_OUTPUT_DIR"
+          python -u -m scripts.scrapers.viprecords \
+            --mode both \
+            --max-pages "${{ inputs.max_pages }}" \
+            --detail-limit "${{ inputs.detail_limit }}" \
+            --delay-seconds "$VIPRECORDS_DELAY_SECONDS" \
+            --output-dir "$VIPRECORDS_OUTPUT_DIR"
+
+      - name: Run importer dry-run
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u -m scripts.importers.import_viprecords \
+            "$VIPRECORDS_OUTPUT_DIR/viprecords_master.csv" \
+            --dry-run \
+            --rejects "$VIPRECORDS_OUTPUT_DIR/rejects.csv" \
+            --summary "$VIPRECORDS_OUTPUT_DIR/summary.json"
+
+      - name: Upload VIP Records pilot artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: viprecords-pilot-${{ github.run_id }}
+          path: ${{ runner.temp }}/viprecords-pilot
+          if-no-files-found: warn

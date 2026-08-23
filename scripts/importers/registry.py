@@ -13,6 +13,7 @@ from scripts.importers.import_soundshaarlem import SHOP_DEFINITION as SOUNDSHAAR
 from scripts.importers.import_soundsvenlo import SHOP_DEFINITION as SOUNDSVENLO_IMPORTER
 from scripts.importers.import_suburban import SHOP_DEFINITION as SUBURBAN_IMPORTER
 from scripts.importers.import_variaworld import SHOP_DEFINITION as VARIAWORLD_IMPORTER
+from scripts.importers.import_viprecords import SHOP_DEFINITION as VIPRECORDS_IMPORTER
 
 SHOP_IMPORTERS: dict[str, ShopImporterDefinition] = {
     definition.key: definition
@@ -29,6 +30,7 @@ SHOP_IMPORTERS: dict[str, ShopImporterDefinition] = {
         SOUNDSVENLO_IMPORTER,
         SUBURBAN_IMPORTER,
         VARIAWORLD_IMPORTER,
+        VIPRECORDS_IMPORTER,
     )
 }
 
