@@ -237,7 +237,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          export VINYLOFY_SCRAPER_CMD_GETBACKMUSIC="python -u scripts/scrapers/getbackmusic.py --mode ${SCRAPER_MODE} --max-pages ${MAX_PAGES} --detail-limit ${DETAIL_LIMIT} --delay-seconds 1 --output-dir data/raw/getbackmusic"
+          export VINYLOFY_SCRAPER_CMD_GETBACKMUSIC="python -u scripts/scrapers/getbackmusic.py --mode ${SCRAPER_MODE} --max-pages ${MAX_PAGES} --detail-limit ${DETAIL_LIMIT} --delay-seconds 2 --output-dir data/raw/getbackmusic"
 
           COMMAND=(
             python -u scripts/automation/run_vinylofy_pipeline.py

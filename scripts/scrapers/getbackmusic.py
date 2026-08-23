@@ -457,6 +457,20 @@ def merge_listing_with_previous(
     return rows
 
 
+def merge_partial_listing_with_previous(
+    rows: list[dict[str, str]], previous_rows: Iterable[dict[str, str]]
+) -> list[dict[str, str]]:
+    """Keep untouched prior records when a listing fetch stops mid-run."""
+    merged = list(rows)
+    seen_keys = {row.get("product_key", "") for row in merged if row.get("product_key")}
+    for previous in previous_rows:
+        key = previous.get("product_key", "")
+        if key and key not in seen_keys:
+            merged.append(dict(previous))
+            seen_keys.add(key)
+    return merged
+
+
 def read_rows(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8-sig", newline="") as handle:
         return list(csv.DictReader(handle))
@@ -508,8 +522,15 @@ def main() -> int:
         previous_rows = read_rows(output_dir / "getbackmusic_master.csv") if (output_dir / "getbackmusic_master.csv").exists() else []
         rows, skips, pages = scrape_listings(client, args.max_pages)
         merge_listing_with_previous(rows, previous_rows)
+        master_rows = rows
+        if skips.get("rate_limited") or skips.get("listing_fetch_error"):
+            master_rows = merge_partial_listing_with_previous(rows, previous_rows)
+            print(
+                f"[LISTING] partial run: retaining {len(master_rows) - len(rows)} previously known records",
+                flush=True,
+            )
         write_rows(listing_path, rows, LISTING_FIELDS)
-        write_rows(master_path, rows, MASTER_FIELDS)
+        write_rows(master_path, master_rows, MASTER_FIELDS)
         print(f"[LISTING] pages={pages} products={len({r['product_id'] for r in rows})} variants={len(rows)} sale={sum(r['is_sale'] == 'true' for r in rows)} skips={dict(skips)}", flush=True)
     else:
         if not master_path.exists():

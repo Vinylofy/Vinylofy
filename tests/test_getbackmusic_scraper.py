@@ -9,6 +9,7 @@ from scripts.scrapers.getbackmusic import (
     next_page_number,
     parse_detail_page,
     parse_detail_limit,
+    merge_partial_listing_with_previous,
     parse_listing_page,
     merge_listing_with_previous,
     scrape_listings,
@@ -148,6 +149,17 @@ class GetBackMusicScraperTest(unittest.TestCase):
         self.assertIsNone(parse_detail_limit("all"))
         self.assertIsNone(parse_detail_limit("0"))
         self.assertEqual(parse_detail_limit("25"), 25)
+
+    def test_partial_listing_retains_records_not_reached_before_rate_limit(self):
+        current = [{"product_key": "current", "price": "10.00"}]
+        previous = [
+            {"product_key": "current", "price": "9.00"},
+            {"product_key": "not-reached", "price": "20.00", "ean": "8718521078584"},
+        ]
+        merged = merge_partial_listing_with_previous(current, previous)
+        self.assertEqual([row["product_key"] for row in merged], ["current", "not-reached"])
+        self.assertEqual(merged[0]["price"], "10.00")
+        self.assertEqual(merged[1]["ean"], "8718521078584")
 
 
 if __name__ == "__main__":
