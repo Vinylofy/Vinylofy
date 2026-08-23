@@ -1,6 +1,14 @@
 name: Shop - VIP Records pilot
 
 on:
+  pull_request:
+    paths:
+      - ".github/workflows/shop-viprecords-pilot.yml"
+      - "scripts/scrapers/viprecords.py"
+      - "scripts/importers/import_viprecords.py"
+      - "scripts/importers/registry.py"
+      - "data/shipping/vinylofy_shipping_rules_nl.csv"
+      - "tests/test_viprecords_*.py"
   workflow_dispatch:
     inputs:
       max_pages:
@@ -21,6 +29,11 @@ on:
           - "0"
           - "3"
           - "10"
+      write:
+        description: "Write accepted EAN-gated records to the database; default is dry-run"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -30,7 +43,47 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    name: Validate VIP Records scraper and importer
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install scraper and importer dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install beautifulsoup4 requests "psycopg[binary]" python-dotenv
+
+      - name: Compile VIP Records modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/scrapers/viprecords.py \
+            scripts/importers/import_viprecords.py
+
+      - name: Run focused VIP Records tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest \
+            tests.test_viprecords_scraper \
+            tests.test_viprecords_importer
+
   pilot:
+    name: Run VIP Records bounded pilot
+    needs: validate
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -58,14 +111,6 @@ jobs:
           set -euo pipefail
           echo "VIPRECORDS_OUTPUT_DIR=$RUNNER_TEMP/viprecords-pilot" >> "$GITHUB_ENV"
 
-      - name: Run focused VIP Records tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m unittest \
-            tests.test_viprecords_scraper \
-            tests.test_viprecords_importer
-
       - name: Run bounded listing and detail pilot
         shell: bash
         run: |
@@ -78,13 +123,42 @@ jobs:
             --delay-seconds "$VIPRECORDS_DELAY_SECONDS" \
             --output-dir "$VIPRECORDS_OUTPUT_DIR"
 
+      - name: Validate write selection
+        if: ${{ inputs.write }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.detail_limit }}" = "0" ]; then
+            echo "Write-runs vereisen detail_limit 3 of 10 zodat EAN-gating records kan accepteren." >&2
+            exit 1
+          fi
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "DATABASE_URL secret ontbreekt voor een write-run." >&2
+            exit 1
+          fi
+
       - name: Run importer dry-run
+        if: ${{ !inputs.write }}
         shell: bash
         run: |
           set -euo pipefail
           python -u -m scripts.importers.import_viprecords \
             "$VIPRECORDS_OUTPUT_DIR/viprecords_master.csv" \
             --dry-run \
+            --rejects "$VIPRECORDS_OUTPUT_DIR/rejects.csv" \
+            --summary "$VIPRECORDS_OUTPUT_DIR/summary.json"
+
+      - name: Run importer database write
+        if: ${{ inputs.write }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u -m scripts.importers.import_viprecords \
+            "$VIPRECORDS_OUTPUT_DIR/viprecords_master.csv" \
             --rejects "$VIPRECORDS_OUTPUT_DIR/rejects.csv" \
             --summary "$VIPRECORDS_OUTPUT_DIR/summary.json"
 
