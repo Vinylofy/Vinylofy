@@ -25,7 +25,7 @@ type BestPriceRow = {
 
 const DUTCH_VAT_RATE = 0.21;
 const DUTCH_VAT_MULTIPLIER = 1 + DUTCH_VAT_RATE;
-const VAT_INCLUSIVE_SHOP_ID = "atthemovies";
+const VAT_INCLUSIVE_SHOP_DOMAIN = "atthemoviesshop.com";
 
 type ShopRelation =
   | {
@@ -126,6 +126,7 @@ type PriceHistoryRow = {
   price: number | string | null;
   availability: string | null;
   captured_at: string;
+  shops: ShopRelation;
 };
 
 type RankedSearchResult = SearchResultItem & {
@@ -202,11 +203,11 @@ function toNumber(value: number | string | null | undefined): number | null {
 /** At The Movies stores its public listing price net; other shops are already gross. */
 export function priceForDisplay(
   value: number | string | null | undefined,
-  shopId?: string | null,
+  shopDomain?: string | null,
 ): number | null {
   const price = toNumber(value);
   if (price === null) return null;
-  if (shopId !== VAT_INCLUSIVE_SHOP_ID) return price;
+  if (shopDomain !== VAT_INCLUSIVE_SHOP_DOMAIN) return price;
 
   return Math.round((price * DUTCH_VAT_MULTIPLIER + Number.EPSILON) * 100) / 100;
 }
@@ -342,7 +343,7 @@ async function getOffersMap(productIds: string[]) {
       name: shop.name,
       domain: shop.domain,
       shopId: row.shop_id,
-      price: priceForDisplay(row.price, row.shop_id) ?? 0,
+      price: priceForDisplay(row.price, shop.domain) ?? 0,
       productUrl: row.product_url,
       lastSeenAt: row.last_seen_at,
       availability: normalizeOfferAvailability(row.availability),
@@ -683,7 +684,7 @@ export async function getProductPriceHistory(
 
   const { data, error } = await supabase
     .from("price_history")
-    .select("shop_id, price, availability, captured_at")
+    .select("shop_id, price, availability, captured_at, shops(domain)")
     .eq("product_id", productId)
     .gte("captured_at", cutoff.toISOString())
     .order("captured_at", { ascending: false });
@@ -708,7 +709,8 @@ export async function getProductPriceHistory(
   for (const row of (data ?? []) as PriceHistoryRow[]) {
     if (row.availability !== "in_stock") continue;
 
-    const price = priceForDisplay(row.price, row.shop_id);
+    const shop = normalizeShopRelation(row.shops);
+    const price = priceForDisplay(row.price, shop?.domain);
     if (price === null) continue;
 
     const day = amsterdamDay(row.captured_at);
@@ -798,7 +800,8 @@ function normalizeSnapshotOffer(value: unknown): SearchShopOffer | null {
 
   const raw = value as Record<string, unknown>;
   const shopId = typeof raw.shopId === "string" ? raw.shopId : "";
-  const price = priceForDisplay(raw.price as number | string | null | undefined, shopId);
+  const shopDomain = typeof raw.domain === "string" ? raw.domain : null;
+  const price = priceForDisplay(raw.price as number | string | null | undefined, shopDomain);
   const availability = normalizeOfferAvailability(
     typeof raw.availability === "string" ? raw.availability : null,
   );
