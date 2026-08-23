@@ -2,7 +2,7 @@ name: Follow the Groove Collector
 
 on:
   schedule:
-    - cron: "0 6,10,14,18,22 * * *"
+    - cron: "0 0,2,4,6,8,10,12,14,16,18 * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -16,13 +16,14 @@ on:
       max_sources:
         description: "Hard-bounded number of source artists"
         required: true
-        default: "1"
+        default: "25"
         type: choice
         options:
           - "1"
           - "2"
           - "3"
           - "10"
+          - "25"
       source_mbids:
         description: "Comma-separated MBIDs; required only for refresh and count must equal max_sources"
         required: false
@@ -68,7 +69,7 @@ jobs:
         shell: bash
         env:
           MODE_INPUT: ${{ github.event_name == 'schedule' && 'frontier' || inputs.mode }}
-          MAX_SOURCES_INPUT: ${{ github.event_name == 'schedule' && '10' || inputs.max_sources }}
+          MAX_SOURCES_INPUT: ${{ github.event_name == 'schedule' && '25' || inputs.max_sources }}
           SOURCE_MBIDS_INPUT: ${{ github.event_name == 'schedule' && '' || inputs.source_mbids }}
           WRITE_INPUT: ${{ github.event_name == 'schedule' && 'true' || inputs.write }}
         run: |
@@ -77,8 +78,8 @@ jobs:
             echo "Required collector secrets are not configured."
             exit 1
           fi
-          if [[ ! "$MAX_SOURCES_INPUT" =~ ^(1|2|3|10)$ ]]; then
-            echo "max_sources must be one of 1, 2, 3, or 10."
+          if [[ ! "$MAX_SOURCES_INPUT" =~ ^(1|2|3|10|25)$ ]]; then
+            echo "max_sources must be one of 1, 2, 3, 10, or 25."
             exit 1
           fi
           if [[ "$MODE_INPUT" != "frontier" && "$MODE_INPUT" != "refresh" ]]; then

@@ -15,7 +15,7 @@ SOURCE=generic.Source("id","00000000-0000-0000-0000-000000000001","Source","pers
 class ConfigTests(unittest.TestCase):
     EXECUTION_ID="00000000-0000-0000-0000-000000000099"
     def test_safe_defaults(self):
-        cfg=generic.BoundedConfig(); self.assertEqual((cfg.max_sources,cfg.max_direct_targets,cfg.lastfm_limit,cfg.graph_depth),(10,25,5,1)); self.assertEqual(cfg.recording_release_seeds,())
+        cfg=generic.BoundedConfig(); self.assertEqual((cfg.max_sources,cfg.max_direct_targets,cfg.lastfm_limit,cfg.graph_depth),(25,25,5,1)); self.assertEqual(cfg.recording_release_seeds,())
 
     def test_invalid_limits_and_depth_rejected(self):
         for kwargs in ({"max_sources":0},{"max_direct_targets":0},{"lastfm_limit":0},{"lastfm_limit":26},{"graph_depth":2}):
@@ -29,8 +29,9 @@ class ConfigTests(unittest.TestCase):
     def test_frontier_write_is_explicit_and_hard_capped(self):
         generic.validate_write_scope(argparse.Namespace(write=True,frontier=True,refresh=False,max_sources=3,source_mbid=[],execution_id=self.EXECUTION_ID))
         generic.validate_write_scope(argparse.Namespace(write=True,frontier=True,refresh=False,max_sources=10,source_mbid=[],execution_id=self.EXECUTION_ID))
+        generic.validate_write_scope(argparse.Namespace(write=True,frontier=True,refresh=False,max_sources=25,source_mbid=[],execution_id=self.EXECUTION_ID))
         with self.assertRaises(persistence.PersistenceDisabled):
-            generic.validate_write_scope(argparse.Namespace(write=True,frontier=True,refresh=False,max_sources=11,source_mbid=[],execution_id=self.EXECUTION_ID))
+            generic.validate_write_scope(argparse.Namespace(write=True,frontier=True,refresh=False,max_sources=26,source_mbid=[],execution_id=self.EXECUTION_ID))
         with self.assertRaises(persistence.PersistenceDisabled):
             generic.validate_write_scope(argparse.Namespace(write=True,frontier=False,refresh=False,max_sources=1,source_mbid=[],execution_id=self.EXECUTION_ID))
 
@@ -39,7 +40,7 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(persistence.PersistenceDisabled):
             generic.validate_write_scope(argparse.Namespace(write=True,frontier=False,refresh=True,max_sources=1,source_mbid=[],execution_id=self.EXECUTION_ID))
         with self.assertRaises(persistence.PersistenceDisabled):
-            generic.validate_write_scope(argparse.Namespace(write=True,frontier=False,refresh=True,max_sources=11,source_mbid=[SOURCE.mbid]*11,execution_id=self.EXECUTION_ID))
+            generic.validate_write_scope(argparse.Namespace(write=True,frontier=False,refresh=True,max_sources=26,source_mbid=[SOURCE.mbid]*26,execution_id=self.EXECUTION_ID))
 
     def test_recording_seed_must_be_uuid(self):
         with self.assertRaises(ValueError): generic.BoundedConfig(recording_release_seeds=("all",))

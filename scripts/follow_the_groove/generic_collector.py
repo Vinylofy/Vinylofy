@@ -33,6 +33,7 @@ GENERIC_COLLECTOR = "GENERIC_BOUNDED_V1"
 BATCH_COLLECTOR = "GENERIC_BOUNDED_V1_BATCH"
 WRITE_LOCK_KEY = "follow-the-groove:generic-bounded-v1:write:v2"
 MAX_LASTFM_LIMIT = 25
+MAX_SOURCES = 25
 FAILURES = frozenset({
     "SOURCE_IDENTITY_CONFLICT", "MUSICBRAINZ_TRANSIENT", "MUSICBRAINZ_PERMANENT",
     "LASTFM_TRANSIENT", "LASTFM_PERMANENT", "LOCAL_RESOLUTION_CONFLICT",
@@ -46,7 +47,7 @@ def now() -> str:
 
 @dataclass(frozen=True)
 class BoundedConfig:
-    max_sources: int = 10
+    max_sources: int = MAX_SOURCES
     max_direct_targets: int = 25
     lastfm_limit: int = 5
     graph_depth: int = 1
@@ -537,7 +538,7 @@ def build_parser() -> argparse.ArgumentParser:
     source_mode=parser.add_mutually_exclusive_group()
     source_mode.add_argument("--frontier",action="store_true",help="select unprocessed bounded frontier sources")
     source_mode.add_argument("--refresh",action="store_true",help="allow explicit successful sources to be replayed")
-    parser.add_argument("--max-sources",type=int,default=10)
+    parser.add_argument("--max-sources",type=int,default=MAX_SOURCES)
     parser.add_argument("--max-direct-targets",type=int,default=25)
     parser.add_argument("--lastfm-limit",type=int,default=5)
     parser.add_argument("--graph-depth",type=int,default=1)
@@ -554,16 +555,16 @@ def validate_write_scope(args: argparse.Namespace) -> None:
     validate_execution_id(args)
     refresh=bool(getattr(args,"refresh",False)); frontier=bool(getattr(args,"frontier",False))
     if refresh:
-        if not 1 <= args.max_sources <= 10:
-            raise persistence.PersistenceDisabled("refresh write max_sources must be between 1 and 10")
+        if not 1 <= args.max_sources <= MAX_SOURCES:
+            raise persistence.PersistenceDisabled(f"refresh write max_sources must be between 1 and {MAX_SOURCES}")
         if not args.source_mbid or len(args.source_mbid)!=args.max_sources:
             raise persistence.PersistenceDisabled("refresh write requires one explicit --source-mbid per bounded source")
         return
     if frontier:
         if args.source_mbid:
             raise persistence.PersistenceDisabled("frontier write does not accept explicit source MBIDs")
-        if not 1 <= args.max_sources <= 10:
-            raise persistence.PersistenceDisabled("frontier write max_sources must be between 1 and 10")
+        if not 1 <= args.max_sources <= MAX_SOURCES:
+            raise persistence.PersistenceDisabled(f"frontier write max_sources must be between 1 and {MAX_SOURCES}")
         return
     raise persistence.PersistenceDisabled("write requires explicit --frontier or --refresh mode")
 

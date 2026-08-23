@@ -20,16 +20,17 @@ class WorkflowSafetyTests(unittest.TestCase):
     def test_scheduled_and_manual_bounded_workflow(self):
         self.assertIn("workflow_dispatch:",self.text)
         self.assertIn("schedule:",self.text)
-        self.assertEqual(self.text.count('cron: "0 6,10,14,18,22 * * *"'),1)
+        self.assertEqual(self.text.count('cron: "0 0,2,4,6,8,10,12,14,16,18 * * *"'),1)
         self.assertIn('          - "1"',self.text)
         self.assertIn('          - "2"',self.text)
         self.assertIn('          - "3"',self.text)
         self.assertIn('          - "10"',self.text)
-        self.assertIn('^(1|2|3|10)$',self.text)
+        self.assertIn('          - "25"',self.text)
+        self.assertIn('^(1|2|3|10|25)$',self.text)
 
-    def test_schedule_is_write_frontier_ten_and_manual_inputs_remain_available(self):
+    def test_schedule_is_write_frontier_twenty_five_and_manual_inputs_remain_available(self):
         self.assertIn("github.event_name == 'schedule' && 'frontier' || inputs.mode",self.text)
-        self.assertIn("github.event_name == 'schedule' && '10' || inputs.max_sources",self.text)
+        self.assertIn("github.event_name == 'schedule' && '25' || inputs.max_sources",self.text)
         self.assertIn("github.event_name == 'schedule' && 'true' || inputs.write",self.text)
         self.assertIn('args+=(--write --execution-id "$execution_id")',self.text)
 
