@@ -10,6 +10,7 @@ from scripts.importers.import_platenzaak import SHOP_DEFINITION as PLATENZAAK_IM
 from scripts.importers.import_recordsonvinyl import SHOP_DEFINITION as RECORDSONVINYL_IMPORTER
 from scripts.importers.import_soundshaarlem import SHOP_DEFINITION as SOUNDSHAARLEM_IMPORTER
 from scripts.importers.import_soundsvenlo import SHOP_DEFINITION as SOUNDSVENLO_IMPORTER
+from scripts.importers.import_suburban import SHOP_DEFINITION as SUBURBAN_IMPORTER
 from scripts.importers.import_variaworld import SHOP_DEFINITION as VARIAWORLD_IMPORTER
 
 SHOP_IMPORTERS: dict[str, ShopImporterDefinition] = {
@@ -24,6 +25,7 @@ SHOP_IMPORTERS: dict[str, ShopImporterDefinition] = {
         RECORDSONVINYL_IMPORTER,
         SOUNDSHAARLEM_IMPORTER,
         SOUNDSVENLO_IMPORTER,
+        SUBURBAN_IMPORTER,
         VARIAWORLD_IMPORTER,
     )
 }
