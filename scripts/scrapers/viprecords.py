@@ -417,12 +417,12 @@ def parse_detail_page(html: str) -> dict[str, str]:
     }
 
 
-def enrich_details(client: RateLimitedClient, rows: list[dict[str, str]], limit: int) -> int:
-    if limit < 0:
+def enrich_details(client: RateLimitedClient, rows: list[dict[str, str]], limit: int | None) -> int:
+    if limit is not None and limit < 0:
         raise ValueError("detail limit must be >= 0")
     attempted = 0
     for row in rows:
-        if attempted >= limit:
+        if limit is not None and attempted >= limit:
             break
         if row.get("ean") and row.get("detail_status") == "ok":
             continue
@@ -438,6 +438,19 @@ def enrich_details(client: RateLimitedClient, rows: list[dict[str, str]], limit:
             row["enriched_at"] = now_utc_iso()
         print(f"[DETAIL {attempted}] id={row.get('product_id')} status={row.get('detail_status')}", flush=True)
     return attempted
+
+
+def parse_detail_limit(value: str) -> int | None:
+    normalized = clean_text(value).casefold()
+    if normalized in {"all", "full"}:
+        return None
+    try:
+        limit = int(normalized)
+    except ValueError as exc:
+        raise ValueError("detail-limit must be a non-negative integer or 'all'") from exc
+    if limit < 0:
+        raise ValueError("detail-limit must be >= 0")
+    return limit
 
 
 def read_rows(path: Path) -> list[dict[str, str]]:
@@ -457,7 +470,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Bounded listing-first VIP Records vinyl scraper")
     parser.add_argument("--mode", choices=("listing", "detail", "both"), default="both")
     parser.add_argument("--max-pages", type=int, default=1, help="Listing page limit; 0 uses stop conditions")
-    parser.add_argument("--detail-limit", type=int, default=3)
+    parser.add_argument("--detail-limit", default="3", help="Detail limit; use 'all' for every discovered product")
     parser.add_argument("--delay-seconds", type=float, default=DEFAULT_DELAY_SECONDS)
     parser.add_argument("--output-dir", type=Path, default=Path("data/raw/viprecords"))
     return parser
@@ -465,8 +478,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    if args.max_pages < 0 or args.detail_limit < 0:
-        raise SystemExit("max-pages en detail-limit mogen niet negatief zijn")
+    if args.max_pages < 0:
+        raise SystemExit("max-pages mag niet negatief zijn")
+    try:
+        detail_limit = parse_detail_limit(args.detail_limit)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     output_dir = args.output_dir
     listing_path = output_dir / "viprecords_listings.csv"
     master_path = output_dir / "viprecords_master.csv"
@@ -483,7 +500,7 @@ def main() -> int:
         rows = read_rows(master_path)
 
     if args.mode in {"detail", "both"}:
-        attempted = enrich_details(client, rows, args.detail_limit)
+        attempted = enrich_details(client, rows, detail_limit)
         write_rows(master_path, rows, MASTER_FIELDS)
         print(f"[DETAIL] attempted={attempted} ean_hits={sum(bool(row.get('ean')) for row in rows)}", flush=True)
     print(f"[OUTPUT] listing={listing_path} master={master_path}", flush=True)
