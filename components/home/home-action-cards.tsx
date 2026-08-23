@@ -11,22 +11,22 @@ const links: QuickLink[] = [
   {
     href: "/nieuwe-releases",
     label: "Nieuwe releases",
-    imageSrc: "/home-cards/nieuwe-releases-white.png",
+    imageSrc: "/home-cards/blok1.png",
   },
   {
     href: "/top-33",
     label: "Top 33",
-    imageSrc: "/home-cards/Top33.png",
+    imageSrc: "/home-cards/blok2.png",
   },
   {
     href: "/topdeals",
     label: "Best Deals",
-    imageSrc: "/home-cards/Top45v2.png",
+    imageSrc: "/home-cards/blok3.png",
   },
   {
     href: "/follow-the-groove",
     label: "Follow the Groove",
-    imageSrc: "/follow-the-groove/ftg4.png",
+    imageSrc: "/home-cards/blok4.png",
   },
 ];
 
