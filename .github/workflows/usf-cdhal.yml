@@ -128,7 +128,9 @@ jobs:
   pipeline:
     name: Run CD Hal Ruinen USF
     needs: validate
-    runs-on: ubuntu-latest
+    # CD Hal blokkeert verkeer vanaf GitHub-hosted runner-IP's.
+    # Gebruik dezelfde NL/EU self-hosted runner als Variaworld.
+    runs-on: [self-hosted, linux, x64]
     timeout-minutes: 360
 
     env:
