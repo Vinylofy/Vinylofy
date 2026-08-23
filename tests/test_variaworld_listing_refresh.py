@@ -44,6 +44,15 @@ VALID_LISTING = """
 """
 
 
+def test_listing_seeds_use_encoded_catalog_filter_path() -> None:
+    assert set(scraper.SEEDS) == {"lp_nieuw", "12inch_nieuw"}
+    for url_template in scraper.SEEDS.values():
+        assert "%3D" in url_template
+        assert "%26" in url_template
+        assert "m_ge=[" not in url_template
+        assert "&sp=1&" not in url_template
+
+
 def test_empty_listing_retries_are_bounded_and_later_listing_succeeds() -> None:
     empty = FakeResponse("<html><title>Access denied</title><body>verify you are human</body></html>")
     session = FakeSession([empty, empty, FakeResponse(VALID_LISTING)])

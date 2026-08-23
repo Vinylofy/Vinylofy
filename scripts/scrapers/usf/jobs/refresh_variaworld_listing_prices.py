@@ -24,8 +24,11 @@ SHOP_COUNTRY = "NL"
 BASE_URL = "https://www.variaworld.nl"
 
 SEEDS = {
-    "lp_nieuw": "https://www.variaworld.nl/vinyl/lp-nieuw/m_ge=[j;m]&sp=1&m_so=2&m_su=1&startpagina={page}",
-    "12inch_nieuw": "https://www.variaworld.nl/vinyl/12-inch-nieuw/m_ge=[j;m]&sp=1&m_so=2&m_su=7&startpagina={page}",
+    # Variaworld's catalog router expects the filter expression as an encoded
+    # path segment. Sending these values as a normal query string returns a
+    # short HTTP 200 response without catalog HTML on the Actions runners.
+    "lp_nieuw": "https://www.variaworld.nl/vinyl/lp-nieuw/m_ge%3D%5Bj%3Bm%5D%26m_so%3D2%26m_su%3D1%26startpagina%3D{page}",
+    "12inch_nieuw": "https://www.variaworld.nl/vinyl/12-inch-nieuw/m_ge%3D%5Bj%3Bm%5D%26m_so%3D2%26m_su%3D7%26startpagina%3D{page}",
 }
 
 HEADERS = {
