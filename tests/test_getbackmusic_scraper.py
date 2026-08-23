@@ -10,6 +10,7 @@ from scripts.scrapers.getbackmusic import (
     parse_detail_page,
     parse_detail_limit,
     merge_partial_listing_with_previous,
+    prepare_master_rows,
     parse_listing_page,
     merge_listing_with_previous,
     scrape_listings,
@@ -160,6 +161,18 @@ class GetBackMusicScraperTest(unittest.TestCase):
         self.assertEqual([row["product_key"] for row in merged], ["current", "not-reached"])
         self.assertEqual(merged[0]["price"], "10.00")
         self.assertEqual(merged[1]["ean"], "8718521078584")
+
+    def test_bounded_listing_retains_records_outside_current_page(self):
+        current = [{"product_key": "current", "price": "10.00"}]
+        previous = [
+            {"product_key": "current", "price": "9.00", "ean": "8718521078584"},
+            {"product_key": "not-reached", "price": "20.00", "ean": "8718521078585"},
+        ]
+        master = prepare_master_rows(current, previous, preserve_previous=True)
+        self.assertEqual([row["product_key"] for row in master], ["current", "not-reached"])
+        self.assertEqual(master[0]["price"], "10.00")
+        self.assertEqual(master[0]["ean"], "8718521078584")
+        self.assertEqual(master[1]["ean"], "8718521078585")
 
 
 if __name__ == "__main__":

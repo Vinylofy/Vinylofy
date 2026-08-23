@@ -474,6 +474,18 @@ def merge_partial_listing_with_previous(
     return merged
 
 
+def prepare_master_rows(
+    rows: list[dict[str, str]],
+    previous_rows: Iterable[dict[str, str]],
+    *,
+    preserve_previous: bool,
+) -> list[dict[str, str]]:
+    """Build master state without dropping records outside a bounded run."""
+    previous_rows = list(previous_rows)
+    merge_listing_with_previous(rows, previous_rows)
+    return merge_partial_listing_with_previous(rows, previous_rows) if preserve_previous else rows
+
+
 def read_rows(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8-sig", newline="") as handle:
         return list(csv.DictReader(handle))
@@ -524,10 +536,14 @@ def main() -> int:
     if args.mode in {"listing", "both"}:
         previous_rows = read_rows(output_dir / "getbackmusic_master.csv") if (output_dir / "getbackmusic_master.csv").exists() else []
         rows, skips, pages = scrape_listings(client, args.max_pages)
-        merge_listing_with_previous(rows, previous_rows)
-        master_rows = rows
-        if skips.get("rate_limited") or skips.get("listing_fetch_error"):
-            master_rows = merge_partial_listing_with_previous(rows, previous_rows)
+        preserve_previous = args.max_pages > 0 or skips.get("rate_limited") or skips.get("listing_fetch_error")
+        master_rows = prepare_master_rows(rows, previous_rows, preserve_previous=bool(preserve_previous))
+        if args.max_pages > 0 and previous_rows and not skips.get("rate_limited") and not skips.get("listing_fetch_error"):
+            print(
+                f"[LISTING] bounded run: retaining {len(master_rows) - len(rows)} previously known records",
+                flush=True,
+            )
+        elif skips.get("rate_limited") or skips.get("listing_fetch_error"):
             print(
                 f"[LISTING] partial run: retaining {len(master_rows) - len(rows)} previously known records",
                 flush=True,
@@ -538,11 +554,11 @@ def main() -> int:
     else:
         if not master_path.exists():
             raise SystemExit(f"Master CSV not found: {master_path}")
-        rows = read_rows(master_path)
+        master_rows = read_rows(master_path)
     if args.mode in {"detail", "both"}:
-        attempted = enrich_details(client, rows, detail_limit)
-        write_rows(master_path, rows, MASTER_FIELDS)
-        print(f"[DETAIL] attempted={attempted} variants={len(rows)} ean_hits={sum(bool(strict_normalize_gtin(r.get('ean', ''))) for r in rows)}", flush=True)
+        attempted = enrich_details(client, master_rows, detail_limit)
+        write_rows(master_path, master_rows, MASTER_FIELDS)
+        print(f"[DETAIL] attempted={attempted} variants={len(master_rows)} ean_hits={sum(bool(strict_normalize_gtin(r.get('ean', ''))) for r in master_rows)}", flush=True)
     print(f"[OUTPUT] listing={listing_path} master={master_path}", flush=True)
     return 0
 
