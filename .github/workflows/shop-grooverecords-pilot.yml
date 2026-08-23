@@ -1,0 +1,103 @@
+name: Shop - Groove Records pilot
+
+on:
+  workflow_dispatch:
+    inputs:
+      category_slug:
+        description: "Groove category slug"
+        required: true
+        default: "rock"
+        type: string
+      group_id:
+        description: "Groove category group id"
+        required: true
+        default: "30"
+        type: string
+      max_pages:
+        description: "Listing pages for this bounded pilot"
+        required: true
+        default: "1"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+      detail_limit:
+        description: "Detail pages for EAN enrichment"
+        required: true
+        default: "3"
+        type: choice
+        options:
+          - "0"
+          - "1"
+          - "3"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vinylofy-grooverecords-pilot
+  cancel-in-progress: false
+
+jobs:
+  pilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GROOVE_OUTPUT_DIR: ${{ runner.temp }}/grooverecords-pilot
+      GROOVE_DELAY_SECONDS: "30"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install scraper and importer dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install beautifulsoup4 requests "psycopg[binary]" python-dotenv
+
+      - name: Run focused Groove tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest \
+            tests.test_grooverecords_scraper \
+            tests.test_grooverecords_importer
+
+      - name: Run bounded listing and detail pilot
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GROOVE_OUTPUT_DIR"
+          python -u -m scripts.scrapers.grooverecords \
+            --mode both \
+            --category "${{ inputs.category_slug }}:${{ inputs.group_id }}" \
+            --max-pages "${{ inputs.max_pages }}" \
+            --detail-limit "${{ inputs.detail_limit }}" \
+            --delay-seconds "$GROOVE_DELAY_SECONDS" \
+            --output-dir "$GROOVE_OUTPUT_DIR"
+
+      - name: Run importer dry-run
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u -m scripts.importers.import_grooverecords \
+            "$GROOVE_OUTPUT_DIR/grooverecords_master.csv" \
+            --dry-run \
+            --rejects "$GROOVE_OUTPUT_DIR/rejects.csv" \
+            --summary "$GROOVE_OUTPUT_DIR/summary.json"
+
+      - name: Upload Groove pilot artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: grooverecords-pilot-${{ github.run_id }}
+          path: ${{ runner.temp }}/grooverecords-pilot
+          if-no-files-found: warn
