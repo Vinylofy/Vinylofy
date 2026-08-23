@@ -1,0 +1,247 @@
+name: Shop - Get Back Music
+
+on:
+  schedule:
+    # Daily listing-first price refresh.
+    - cron: "17 2 * * *"
+    # Daily listing refresh plus at most 25 unresolved EAN/detail pages.
+    - cron: "47 4 * * *"
+
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run type"
+        required: true
+        default: price
+        type: choice
+        options:
+          - price
+          - ean
+      listing_pages:
+        description: "Number of listing pages, or all"
+        required: true
+        default: "1"
+        type: string
+      write:
+        description: "Execute database writes"
+        required: true
+        default: false
+        type: boolean
+
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/shop-getbackmusic.yml"
+      - "scripts/scrapers/getbackmusic.py"
+      - "scripts/importers/import_getbackmusic.py"
+      - "scripts/importers/registry.py"
+      - "scripts/importers/common.py"
+      - "tests/test_getbackmusic_*.py"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: vinylofy-getbackmusic
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate Get Back Music scraper and importer
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then python -m pip install -r requirements-scrapers.txt; fi
+          python -m pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+
+      - name: Compile modules and run focused tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/scrapers/getbackmusic.py \
+            scripts/importers/import_getbackmusic.py
+          python -m unittest \
+            tests.test_getbackmusic_scraper \
+            tests.test_getbackmusic_importer -v
+
+  run:
+    name: Run Get Back Music ${{ github.event_name == 'schedule' && 'scheduled' || 'manual' }} pipeline
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then python -m pip install -r requirements-scrapers.txt; fi
+          python -m pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+
+      - name: Create runtime folders
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data/raw/getbackmusic output
+
+      - name: Restore latest Get Back Music state
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python -u scripts/automation/restore_latest_state_artifact.py \
+            --repo "${{ github.repository }}" \
+            --target-dir data/raw/getbackmusic \
+            --artifact-prefix getbackmusic-state- \
+            --workflow-name "Shop - Get Back Music"
+
+      - name: Resolve run configuration
+        id: config
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule || '' }}
+          INPUT_MODE: ${{ inputs.mode || 'price' }}
+          INPUT_LISTING_PAGES: ${{ inputs.listing_pages || '1' }}
+          INPUT_WRITE: ${{ inputs.write || false }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "schedule" ] && [ "$SCHEDULE" = "17 2 * * *" ]; then
+            MODE="price"
+            LISTING_PAGES="all"
+            WRITE="true"
+          elif [ "$EVENT_NAME" = "schedule" ] && [ "$SCHEDULE" = "47 4 * * *" ]; then
+            MODE="ean"
+            LISTING_PAGES="all"
+            WRITE="true"
+          else
+            MODE="$INPUT_MODE"
+            LISTING_PAGES="$INPUT_LISTING_PAGES"
+            WRITE="$INPUT_WRITE"
+          fi
+
+          case "$LISTING_PAGES" in
+            all|0)
+              MAX_PAGES="0"
+              ;;
+            ''|*[!0-9]*)
+              echo "listing_pages moet een positief geheel getal of all zijn"
+              exit 1
+              ;;
+            *)
+              if [ "$LISTING_PAGES" -lt 1 ]; then
+                echo "listing_pages moet minimaal 1 zijn"
+                exit 1
+              fi
+              MAX_PAGES="$LISTING_PAGES"
+              ;;
+          esac
+
+          case "$MODE" in
+            price)
+              SCRAPER_MODE="listing"
+              DETAIL_LIMIT="0"
+              ;;
+            ean)
+              SCRAPER_MODE="both"
+              DETAIL_LIMIT="25"
+              ;;
+            *)
+              echo "Ongeldige mode: $MODE"
+              exit 1
+              ;;
+          esac
+
+          case "$WRITE" in
+            true|false) ;;
+            *) echo "write moet true of false zijn"; exit 1 ;;
+          esac
+
+          if [ "$WRITE" = "true" ] && [ -z "${DATABASE_URL:-}" ]; then
+            echo "DATABASE_URL secret ontbreekt terwijl databasewrites zijn aangezet"
+            exit 1
+          fi
+
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "scraper_mode=$SCRAPER_MODE" >> "$GITHUB_OUTPUT"
+          echo "max_pages=$MAX_PAGES" >> "$GITHUB_OUTPUT"
+          echo "detail_limit=$DETAIL_LIMIT" >> "$GITHUB_OUTPUT"
+          echo "write=$WRITE" >> "$GITHUB_OUTPUT"
+          echo "[CONFIG] mode=$MODE pages=$LISTING_PAGES max_pages=$MAX_PAGES detail_limit=$DETAIL_LIMIT write=$WRITE"
+
+      - name: Run scraper and importer pipeline
+        shell: bash
+        env:
+          SCRAPER_MODE: ${{ steps.config.outputs.scraper_mode }}
+          MAX_PAGES: ${{ steps.config.outputs.max_pages }}
+          DETAIL_LIMIT: ${{ steps.config.outputs.detail_limit }}
+          WRITE: ${{ steps.config.outputs.write }}
+        run: |
+          set -euo pipefail
+
+          export VINYLOFY_SCRAPER_CMD_GETBACKMUSIC="python -u scripts/scrapers/getbackmusic.py --mode ${SCRAPER_MODE} --max-pages ${MAX_PAGES} --detail-limit ${DETAIL_LIMIT} --delay-seconds 1 --output-dir data/raw/getbackmusic"
+
+          COMMAND=(
+            python -u scripts/automation/run_vinylofy_pipeline.py
+            --shop getbackmusic
+            --skip-upload
+            --summary-out output/getbackmusic_pipeline_summary.json
+          )
+
+          if [ "$WRITE" != "true" ]; then
+            COMMAND+=(--dry-run-import)
+          fi
+
+          printf '[WORKFLOW] Command:'
+          printf ' %q' "${COMMAND[@]}"
+          printf '\n[WORKFLOW] Scraper command: %s\n' "$VINYLOFY_SCRAPER_CMD_GETBACKMUSIC"
+
+          "${COMMAND[@]}" 2>&1 | tee output/getbackmusic_pipeline.log
+
+      - name: Upload Get Back Music state and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: getbackmusic-state-${{ github.run_id }}
+          path: |
+            data/raw/getbackmusic/*.csv
+            output/getbackmusic_*.json
+            output/getbackmusic_*.csv
+            output/getbackmusic_*.log
+          if-no-files-found: warn
+          retention-days: 14
