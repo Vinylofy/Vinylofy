@@ -25,6 +25,7 @@ type BestPriceRow = {
 
 const DUTCH_VAT_RATE = 0.21;
 const DUTCH_VAT_MULTIPLIER = 1 + DUTCH_VAT_RATE;
+const VAT_INCLUSIVE_SHOP_ID = "atthemovies";
 
 type ShopRelation =
   | {
@@ -120,12 +121,11 @@ export type ProductPriceHistoryPoint = {
   lastCapturedAt: string | null;
 };
 
-type PriceHistoryDailyRow = {
-  product_id: string;
-  day: string;
-  min_instock_price: number | string | null;
-  instock_shop_count: number | null;
-  last_captured_at: string | null;
+type PriceHistoryRow = {
+  shop_id: string;
+  price: number | string | null;
+  availability: string | null;
+  captured_at: string;
 };
 
 type RankedSearchResult = SearchResultItem & {
@@ -199,10 +199,14 @@ function toNumber(value: number | string | null | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** Public prices are stored net in the live price contract; display gross. */
-export function priceIncludingVat(value: number | string | null | undefined): number | null {
+/** At The Movies stores its public listing price net; other shops are already gross. */
+export function priceForDisplay(
+  value: number | string | null | undefined,
+  shopId?: string | null,
+): number | null {
   const price = toNumber(value);
   if (price === null) return null;
+  if (shopId !== VAT_INCLUSIVE_SHOP_ID) return price;
 
   return Math.round((price * DUTCH_VAT_MULTIPLIER + Number.EPSILON) * 100) / 100;
 }
@@ -240,6 +244,15 @@ export function getFreshnessLabel(iso: string | null | undefined): string | null
   if (diffHours < 48) return "1 dag oud";
   if (diffHours < 72) return "2 dagen oud";
   return "mogelijk niet actueel";
+}
+
+function amsterdamDay(iso: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Amsterdam",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(iso));
 }
 
 function normalizeShopRelation(shops: ShopRelation): { name: string; domain: string } | null {
@@ -295,10 +308,7 @@ async function getBestPriceMap(productIds?: string[]) {
 
   const map = new Map<string, BestPriceRow>();
   for (const row of (data ?? []) as BestPriceRow[]) {
-    map.set(row.product_id, {
-      ...row,
-      lowest_fresh_price: priceIncludingVat(row.lowest_fresh_price),
-    });
+    map.set(row.product_id, row);
   }
 
   return map;
@@ -332,7 +342,7 @@ async function getOffersMap(productIds: string[]) {
       name: shop.name,
       domain: shop.domain,
       shopId: row.shop_id,
-      price: priceIncludingVat(row.price) ?? 0,
+      price: priceForDisplay(row.price, row.shop_id) ?? 0,
       productUrl: row.product_url,
       lastSeenAt: row.last_seen_at,
       availability: normalizeOfferAvailability(row.availability),
@@ -433,6 +443,7 @@ export async function getHomePageData(): Promise<{
   const topIds = topBestRows.map((row) => row.product_id);
   const topProducts = (await getProductsByIds(topIds)).filter(isAllowedProduct);
   const topProductsMap = new Map(topProducts.map((row) => [row.id, row]));
+  const topOffersMap = await getOffersMap(topIds);
 
   const top25: HomeProduct[] = topBestRows
     .map((row) => {
@@ -447,7 +458,7 @@ export async function getHomePageData(): Promise<{
         formatLabel: product.format_label,
         coverUrl: toPublicCoverUrl(product),
   coverStoragePath: product.cover_storage_path,
-        lowestPrice: priceIncludingVat(row.lowest_fresh_price),
+        lowestPrice: topOffersMap.get(row.product_id)?.[0]?.price ?? toNumber(row.lowest_fresh_price),
         freshShopCount: row.fresh_instock_shop_count ?? 0,
         totalShopCount: row.total_active_shop_count ?? 0,
         lastSeenAt: row.best_price_last_seen_at,
@@ -467,6 +478,7 @@ export async function getHomePageData(): Promise<{
   const latestProducts = ((latestProductsData ?? []) as ProductRow[]).filter(isAllowedProduct);
   const latestIds = latestProducts.map((row) => row.id);
   const latestBestMap = await getBestPriceMap(latestIds);
+  const latestOffersMap = await getOffersMap(latestIds);
 
   const newReleases: HomeProduct[] = latestProducts
     .map((product) => {
@@ -480,7 +492,7 @@ export async function getHomePageData(): Promise<{
         formatLabel: product.format_label,
         coverUrl: toPublicCoverUrl(product),
   coverStoragePath: product.cover_storage_path,
-        lowestPrice: priceIncludingVat(best?.lowest_fresh_price),
+        lowestPrice: latestOffersMap.get(product.id)?.[0]?.price ?? toNumber(best?.lowest_fresh_price),
         freshShopCount: best?.fresh_instock_shop_count ?? 0,
         totalShopCount: best?.total_active_shop_count ?? 0,
         lastSeenAt: best?.best_price_last_seen_at ?? null,
@@ -669,14 +681,12 @@ export async function getProductPriceHistory(
   cutoff.setUTCDate(cutoff.getUTCDate() - Math.max(1, maxDays - 1));
   const cutoffDay = cutoff.toISOString().slice(0, 10);
 
-  const rowLimit = Math.max(90, maxDays * 4);
-
   const { data, error } = await supabase
-    .from("product_price_history_daily_v1")
-    .select("product_id, day, min_instock_price, instock_shop_count, last_captured_at")
+    .from("price_history")
+    .select("shop_id, price, availability, captured_at")
     .eq("product_id", productId)
-    .order("day", { ascending: false })
-    .limit(rowLimit);
+    .gte("captured_at", cutoff.toISOString())
+    .order("captured_at", { ascending: false });
 
   if (error) {
     console.warn("[vinylofy] product price history unavailable", {
@@ -689,20 +699,44 @@ export async function getProductPriceHistory(
     return [];
   }
 
-  return ((data ?? []) as PriceHistoryDailyRow[])
-    .filter((row) => row.day >= cutoffDay)
-    .map((row) => {
-      const price = priceIncludingVat(row.min_instock_price);
-      if (price === null) return null;
+  const daily = new Map<string, {
+    price: number;
+    shopIds: Set<string>;
+    lastCapturedAt: string;
+  }>();
 
-      return {
-        day: row.day,
+  for (const row of (data ?? []) as PriceHistoryRow[]) {
+    if (row.availability !== "in_stock") continue;
+
+    const price = priceForDisplay(row.price, row.shop_id);
+    if (price === null) continue;
+
+    const day = amsterdamDay(row.captured_at);
+    const existing = daily.get(day);
+    if (!existing) {
+      daily.set(day, {
         price,
-        shopCount: row.instock_shop_count ?? 0,
-        lastCapturedAt: row.last_captured_at ?? null,
-      } satisfies ProductPriceHistoryPoint;
-    })
-    .filter((row): row is ProductPriceHistoryPoint => Boolean(row))
+        shopIds: new Set([row.shop_id]),
+        lastCapturedAt: row.captured_at,
+      });
+      continue;
+    }
+
+    existing.price = Math.min(existing.price, price);
+    existing.shopIds.add(row.shop_id);
+    if (row.captured_at > existing.lastCapturedAt) {
+      existing.lastCapturedAt = row.captured_at;
+    }
+  }
+
+  return Array.from(daily.entries())
+    .filter(([day]) => day >= cutoffDay)
+    .map(([day, value]) => ({
+      day,
+      price: value.price,
+      shopCount: value.shopIds.size,
+      lastCapturedAt: value.lastCapturedAt,
+    }))
     .sort((a, b) => a.day.localeCompare(b.day));
 }
 
@@ -763,7 +797,8 @@ function normalizeSnapshotOffer(value: unknown): SearchShopOffer | null {
   if (!value || typeof value !== "object") return null;
 
   const raw = value as Record<string, unknown>;
-  const price = priceIncludingVat(raw.price as number | string | null | undefined);
+  const shopId = typeof raw.shopId === "string" ? raw.shopId : "";
+  const price = priceForDisplay(raw.price as number | string | null | undefined, shopId);
   const availability = normalizeOfferAvailability(
     typeof raw.availability === "string" ? raw.availability : null,
   );
@@ -771,7 +806,7 @@ function normalizeSnapshotOffer(value: unknown): SearchShopOffer | null {
   const offer: SearchShopOffer = {
     name: typeof raw.name === "string" ? raw.name : "",
     domain: typeof raw.domain === "string" ? raw.domain : "",
-    shopId: typeof raw.shopId === "string" ? raw.shopId : "",
+    shopId,
     price: price ?? 0,
     productUrl: typeof raw.productUrl === "string" ? raw.productUrl : "",
     lastSeenAt: typeof raw.lastSeenAt === "string" ? raw.lastSeenAt : "",
@@ -815,20 +850,26 @@ export async function getTopDeals(limit = 45): Promise<TopDealItem[]> {
   );
 
   return rows.flatMap((row) => {
-    const lowestPrice = priceIncludingVat(row.lowest_price);
-    const highestPrice = priceIncludingVat(row.highest_price);
-    const priceDifference =
-      lowestPrice !== null && highestPrice !== null
-        ? Math.round((highestPrice - lowestPrice + Number.EPSILON) * 100) / 100
-        : null;
-    const lowestOffer = normalizeSnapshotOffer(row.lowest_offer);
-    const highestOffer = normalizeSnapshotOffer(row.highest_offer);
     const offers = Array.isArray(row.offers)
       ? row.offers.flatMap((offer) => {
           const normalized = normalizeSnapshotOffer(offer);
           return normalized ? [normalized] : [];
         })
       : [];
+    const lowestOffer = offers.reduce<SearchShopOffer | null>(
+      (current, offer) => (current === null || offer.price < current.price ? offer : current),
+      null,
+    );
+    const highestOffer = offers.reduce<SearchShopOffer | null>(
+      (current, offer) => (current === null || offer.price > current.price ? offer : current),
+      null,
+    );
+    const lowestPrice = lowestOffer?.price ?? null;
+    const highestPrice = highestOffer?.price ?? null;
+    const priceDifference =
+      lowestPrice !== null && highestPrice !== null
+        ? Math.round((highestPrice - lowestPrice + Number.EPSILON) * 100) / 100
+        : null;
 
     if (
       lowestPrice === null ||
@@ -964,6 +1005,8 @@ export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalen
     }
   }
 
+  const releaseOffersMap = await getOffersMap(Array.from(productIds));
+
   const seenProductIds = new Set<string>();
   const safeLimit = Math.max(0, Math.floor(limit));
 
@@ -1002,7 +1045,9 @@ export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalen
         format: row.format,
         label: row.label,
         productId: row.product_id,
-        lowestPrice: priceIncludingVat(bestPrice?.lowest_fresh_price),
+        lowestPrice:
+          releaseOffersMap.get(row.product_id ?? "")?.[0]?.price ??
+          toNumber(bestPrice?.lowest_fresh_price),
       };
     });
 }
