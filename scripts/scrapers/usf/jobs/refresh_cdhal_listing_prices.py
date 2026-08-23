@@ -628,6 +628,85 @@ def parse_listing_page(
     )
 
 
+def fetch_html_with_playwright(
+    url: str,
+    *,
+    referer: str | None = None,
+    timeout_ms: int = 45_000,
+) -> str:
+    """Fetch CD Hal listing HTML through a normal Chromium context.
+
+    CD Hal currently returns HTTP 403 to the Python requests transport from
+    GitHub-hosted runners, while the public page remains reachable through a
+    browser-like client. This is a transport fallback only: no CAPTCHA or
+    authentication bypass is attempted.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(
+                    user_agent=HEADERS["User-Agent"],
+                    locale="nl-NL",
+                    extra_http_headers={
+                        "Accept-Language": HEADERS["Accept-Language"],
+                        **({"Referer": referer} if referer else {}),
+                    },
+                )
+                response = page.goto(
+                    url,
+                    wait_until="domcontentloaded",
+                    timeout=timeout_ms,
+                )
+                status = response.status if response else None
+                html = page.content()
+                if status is not None and status >= 400:
+                    raise RuntimeError(
+                        f"Playwright fetch failed status={status} url={url}"
+                    )
+                return html
+            finally:
+                browser.close()
+    except Exception as exc:
+        raise RuntimeError(
+            f"CD Hal browser fallback failed for {url}: {exc}"
+        ) from exc
+
+
+def fetch_listing_html(
+    session: requests.Session,
+    url: str,
+    *,
+    referer: str | None = None,
+) -> tuple[str, int, str]:
+    """Use requests first and Chromium only for 403/transport failures."""
+    try:
+        response = session.get(
+            url,
+            timeout=45,
+            headers={"Referer": referer} if referer else None,
+        )
+        if response.status_code != 403:
+            response.raise_for_status()
+            return response.text, response.status_code, "requests"
+
+        print(
+            "[CDHAL-LISTING-WARN] requests returned 403; using Playwright",
+            {"url": url},
+            flush=True,
+        )
+    except requests.RequestException as exc:
+        print(
+            "[CDHAL-LISTING-WARN] requests failed; using Playwright",
+            {"url": url, "error": str(exc)},
+            flush=True,
+        )
+
+    return fetch_html_with_playwright(url, referer=referer), 200, "playwright"
+
+
 def load_registry_offers() -> list[ListingOffer]:
     with db_connection() as conn:
         with conn.cursor(row_factory=dict_row) as cursor:
@@ -837,12 +916,16 @@ def main() -> int:
         )
 
         try:
-            response = session.get(
+            html, http_status, transport = fetch_listing_html(
+                session,
                 current_url,
-                timeout=45,
+                referer=(
+                    listing_url(current_page - 1)
+                    if current_page > args.start_page
+                    else None
+                ),
             )
-            response.raise_for_status()
-        except requests.RequestException as exc:
+        except (requests.RequestException, RuntimeError) as exc:
             failures += 1
 
             print(
@@ -864,10 +947,7 @@ def main() -> int:
 
         failures = 0
 
-        response_soup = BeautifulSoup(
-            response.text,
-            "html.parser",
-        )
+        response_soup = BeautifulSoup(html, "html.parser")
 
         product_structure_present = bool(
             response_soup.select_one(
@@ -881,7 +961,7 @@ def main() -> int:
             )
         )
 
-        lowered = response.text.lower()
+        lowered = html.lower()
 
         hard_block_markers = [
             marker
@@ -909,7 +989,7 @@ def main() -> int:
             break
 
         links, offers, diagnostics = parse_listing_page(
-            response.text,
+            html,
             page=current_page,
             source_listing_url=current_url,
             seen_at=run_started_at,
@@ -934,7 +1014,8 @@ def main() -> int:
             "[CDHAL-LISTING-PAGE]",
             {
                 **diagnostics,
-                "http_status": response.status_code,
+                "http_status": http_status,
+                "transport": transport,
                 "new_links": new_link_count,
                 "total_before": len(all_links),
             },

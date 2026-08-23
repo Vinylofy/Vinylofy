@@ -92,6 +92,12 @@ jobs:
             scripts/scrapers/usf/jobs/quarantine_cdhal.py \
             scripts/scrapers/usf/jobs/run_cdhal_pipeline.py
 
+      - name: Run focused CD Hal tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest tests.test_cdhal_listing
+
       - name: Verify CD Hal Ruinen HTML-only price authority
         shell: bash
         run: |
@@ -156,7 +162,14 @@ jobs:
             requests \
             beautifulsoup4 \
             "psycopg[binary]" \
-            python-dotenv
+            python-dotenv \
+            playwright
+
+      - name: Install Playwright Chromium
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m playwright install --with-deps chromium
 
       - name: Validate database secret
         shell: bash
