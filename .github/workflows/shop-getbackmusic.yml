@@ -42,7 +42,9 @@ on:
       - "scripts/importers/import_getbackmusic.py"
       - "scripts/importers/registry.py"
       - "scripts/importers/common.py"
+      - "scripts/automation/restore_latest_state_artifact.py"
       - "tests/test_getbackmusic_*.py"
+      - "tests/test_restore_latest_state_artifact.py"
 
 permissions:
   contents: read
@@ -82,10 +84,12 @@ jobs:
           set -euo pipefail
           python -m py_compile \
             scripts/scrapers/getbackmusic.py \
-            scripts/importers/import_getbackmusic.py
+            scripts/importers/import_getbackmusic.py \
+            scripts/automation/restore_latest_state_artifact.py
           python -m unittest \
             tests.test_getbackmusic_scraper \
-            tests.test_getbackmusic_importer -v
+            tests.test_getbackmusic_importer \
+            tests.test_restore_latest_state_artifact -v
 
   run:
     name: Run Get Back Music ${{ github.event_name == 'schedule' && 'scheduled' || 'manual' }} pipeline
@@ -132,7 +136,8 @@ jobs:
             --repo "${{ github.repository }}" \
             --target-dir data/raw/getbackmusic \
             --artifact-prefix getbackmusic-state- \
-            --workflow-name "Shop - Get Back Music"
+            --workflow-name "Shop - Get Back Music" \
+            --fail-on-missing
 
       - name: Resolve run configuration
         id: config

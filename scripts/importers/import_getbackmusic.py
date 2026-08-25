@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import csv
+import os
 import sys
 from pathlib import Path
+
+import psycopg
 
 CURRENT_FILE = Path(__file__).resolve()
 PROJECT_ROOT = CURRENT_FILE.parents[2]
@@ -17,6 +21,7 @@ from scripts.importers.common import (  # noqa: E402
     parse_price,
     parse_timestamp,
     strict_normalize_gtin,
+    load_env,
 )
 from scripts.importers.contracts import ImportFileLayout, ShopImporterDefinition  # noqa: E402
 from scripts.importers.runner import run_registered_importer  # noqa: E402
@@ -28,6 +33,105 @@ CONFIG = ImportConfig(
     shop_country="NL",
     currency="EUR",
 )
+
+
+def apply_existing_offer_ean_matches(
+    rows: list[dict[str, str]],
+    candidates_by_url: dict[str, tuple[tuple[str, str], ...]],
+) -> int:
+    """Reuse EAN evidence only for an unambiguous existing shop offer.
+
+    This is deliberately narrower than product matching: a URL may refresh an
+    already-published offer, but it may never create a new public product. URLs
+    shared by multiple canonical products remain unresolved and still require
+    detail-page EAN evidence.
+    """
+    resolved = 0
+    for row in rows:
+        if strict_normalize_gtin(row.get("ean")):
+            continue
+        product_url = normalize_text(row.get("product_url"))
+        candidates = candidates_by_url.get(product_url, ())
+        if len(candidates) != 1:
+            continue
+        _product_id, ean = candidates[0]
+        if not strict_normalize_gtin(ean):
+            continue
+        row["ean"] = ean
+        row["detail_status"] = "existing_offer_ean_reused"
+        row["detail_error"] = ""
+        resolved += 1
+    return resolved
+
+
+def resolve_existing_offer_eans(csv_path: str) -> int:
+    """Recover EANs for existing Get Back offers after state loss.
+
+    The lookup is exact on the shop's product URL and only accepts one existing
+    product candidate. It is read-only and preserves the EAN gate for new
+    products.
+    """
+    load_env()
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        print("[GETBACK] DATABASE_URL ontbreekt; bestaande offer-EAN-resolutie overgeslagen", flush=True)
+        return 0
+
+    path = Path(csv_path)
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = tuple(reader.fieldnames or ())
+        rows = list(reader)
+
+    urls = sorted({
+        normalize_text(row.get("product_url"))
+        for row in rows
+        if not strict_normalize_gtin(row.get("ean")) and normalize_text(row.get("product_url"))
+    })
+    if not urls:
+        return 0
+
+    candidates_by_url: dict[str, set[tuple[str, str]]] = {}
+    with psycopg.connect(database_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select pr.product_url, p.id::text, p.ean
+                from public.prices pr
+                join public.shops s on s.id = pr.shop_id
+                join public.products p on p.id = pr.product_id
+                where s.domain = %s
+                  and pr.product_url = any(%s)
+                  and p.ean is not null
+                """,
+                (CONFIG.shop_domain, urls),
+            )
+            for product_url, product_id, ean in cur.fetchall():
+                candidates_by_url.setdefault(str(product_url), set()).add((str(product_id), str(ean)))
+
+    normalized_candidates = {
+        url: tuple(sorted(candidates))
+        for url, candidates in candidates_by_url.items()
+    }
+    resolved = apply_existing_offer_ean_matches(rows, normalized_candidates)
+    if not resolved:
+        print(
+            f"[GETBACK] bestaande offer-EAN-resolutie=0 urls={len(urls)}",
+            flush=True,
+        )
+        return 0
+
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+    ambiguous = sum(1 for candidates in normalized_candidates.values() if len(candidates) > 1)
+    print(
+        f"[GETBACK] bestaande offer-EAN-resolutie={resolved} urls={len(urls)} ambiguous_urls={ambiguous}",
+        flush=True,
+    )
+    return resolved
 
 
 def resolve_ean_rejection(row: dict) -> str:
@@ -106,6 +210,7 @@ SHOP_DEFINITION = ShopImporterDefinition(
         summary_path="output/getbackmusic_import_summary.json",
     ),
     row_mapper=map_getbackmusic_row,
+    before_run=resolve_existing_offer_eans,
     description="Import Get Back Music listing-first LP/Vinyl CSV into Supabase/Postgres",
     required_columns=("scraped_at", "product_url", "product_id", "variant_id", "ean", "artist", "title", "price", "availability"),
     optional_columns=(

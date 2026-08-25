@@ -6,7 +6,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from scripts.automation.pipeline_config import get_shop_config
-from scripts.importers.import_getbackmusic import SHOP_DEFINITION, map_getbackmusic_row
+from scripts.importers.import_getbackmusic import (
+    SHOP_DEFINITION,
+    apply_existing_offer_ean_matches,
+    map_getbackmusic_row,
+)
 from scripts.importers.registry import get_shop_importer
 
 
@@ -51,6 +55,26 @@ class GetBackMusicImporterTest(unittest.TestCase):
         rejected, error = map_getbackmusic_row(source_row(ean="", detail_status="pending"), 3)
         self.assertIsNone(rejected)
         self.assertEqual(error, "detail_not_attempted")
+
+    def test_existing_offer_url_can_reuse_ean_without_creating_new_product(self):
+        rows = [source_row(ean="", detail_status="listing")]
+        candidates = {
+            rows[0]["product_url"]: (("existing-product", "8718521078584"),),
+        }
+        self.assertEqual(apply_existing_offer_ean_matches(rows, candidates), 1)
+        self.assertEqual(rows[0]["ean"], "8718521078584")
+        self.assertEqual(rows[0]["detail_status"], "existing_offer_ean_reused")
+
+    def test_ambiguous_existing_offer_url_stays_ean_gated(self):
+        rows = [source_row(ean="", detail_status="listing")]
+        candidates = {
+            rows[0]["product_url"]: (
+                ("product-a", "8718521078584"),
+                ("product-b", "0601234567895"),
+            ),
+        }
+        self.assertEqual(apply_existing_offer_ean_matches(rows, candidates), 0)
+        self.assertEqual(rows[0]["ean"], "")
 
     def test_registry_headers_pipeline_and_shipping_contract(self):
         self.assertIs(get_shop_importer("getbackmusic"), SHOP_DEFINITION)

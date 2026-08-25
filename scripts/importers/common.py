@@ -1012,10 +1012,12 @@ def upsert_price(
             first_seen_at,
             last_seen_at,
             is_active,
+            ean_raw,
+            gtin_normalized,
             created_at,
             updated_at
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, true, now(), now())
+        values (%s, %s, %s, %s, %s, %s, %s, %s, true, %s, %s, now(), now())
         on conflict (product_id, shop_id)
         do update set
             price = excluded.price,
@@ -1024,6 +1026,8 @@ def upsert_price(
             availability = excluded.availability,
             last_seen_at = excluded.last_seen_at,
             is_active = true,
+            ean_raw = excluded.ean_raw,
+            gtin_normalized = excluded.gtin_normalized,
             updated_at = now()
         """,
         (
@@ -1035,6 +1039,8 @@ def upsert_price(
             record.availability,
             imported_at,
             imported_at,
+            record.ean,
+            record.gtin_normalized,
         ),
     )
 

@@ -34,16 +34,46 @@ def get_json(session: requests.Session, url: str) -> dict:
     return response.json()
 
 
-def iter_successful_runs(session: requests.Session, repo: str, workflow_name: str, per_page: int = 25) -> Iterable[dict]:
-    url = f"{API_ROOT}/repos/{repo}/actions/runs?status=completed&per_page={per_page}"
-    payload = get_json(session, url)
-    runs = payload.get("workflow_runs", [])
-    for run in runs:
-        if run.get("name") != workflow_name:
-            continue
-        if run.get("conclusion") != "success":
-            continue
-        yield run
+def find_workflow_id(session: requests.Session, repo: str, workflow_name: str, per_page: int = 100) -> int | None:
+    """Resolve the exact workflow before listing its runs.
+
+    The previous implementation fetched the latest 25 runs across the entire
+    repository and filtered by name afterwards. Busy repositories can therefore
+    hide the most recent state artifact for a shop completely.
+    """
+    page = 1
+    while True:
+        url = f"{API_ROOT}/repos/{repo}/actions/workflows?per_page={per_page}&page={page}"
+        payload = get_json(session, url)
+        workflows = payload.get("workflows", [])
+        for workflow in workflows:
+            if workflow.get("name") == workflow_name:
+                workflow_id = workflow.get("id")
+                return int(workflow_id) if workflow_id else None
+        if len(workflows) < per_page:
+            return None
+        page += 1
+
+
+def iter_successful_runs(session: requests.Session, repo: str, workflow_name: str, per_page: int = 100) -> Iterable[dict]:
+    workflow_id = find_workflow_id(session, repo, workflow_name, per_page=per_page)
+    if workflow_id is None:
+        return
+
+    page = 1
+    while True:
+        url = (
+            f"{API_ROOT}/repos/{repo}/actions/workflows/{workflow_id}/runs"
+            f"?status=completed&per_page={per_page}&page={page}"
+        )
+        payload = get_json(session, url)
+        runs = payload.get("workflow_runs", [])
+        for run in runs:
+            if run.get("conclusion") == "success":
+                yield run
+        if len(runs) < per_page:
+            return
+        page += 1
 
 
 def find_artifact(session: requests.Session, repo: str, run_id: int, prefix: str) -> dict | None:
@@ -90,12 +120,18 @@ def main() -> int:
     parser.add_argument("--target-dir", required=True)
     parser.add_argument("--artifact-prefix", required=True)
     parser.add_argument("--workflow-name", action="append", required=True)
+    parser.add_argument(
+        "--fail-on-missing",
+        action="store_true",
+        help="Fail instead of silently starting without restored state",
+    )
     args = parser.parse_args()
 
     token = os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN")
     if not token:
-        log("[restore] GH_TOKEN / GITHUB_TOKEN ontbreekt; restore wordt overgeslagen.")
-        return 0
+        message = "[restore] GH_TOKEN / GITHUB_TOKEN ontbreekt; restore wordt overgeslagen."
+        log(message)
+        return 1 if args.fail_on_missing else 0
 
     session = requests.Session()
     session.headers.update(github_headers(token))
@@ -115,8 +151,8 @@ def main() -> int:
             log(f"[restore] Herstelde bestanden: {copied}")
             return 0
 
-    log("[restore] Geen bruikbaar artifact gevonden; ga door zonder restore.")
-    return 0
+    log("[restore] Geen bruikbaar artifact gevonden.")
+    return 1 if args.fail_on_missing else 0
 
 
 if __name__ == "__main__":
