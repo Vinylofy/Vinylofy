@@ -201,7 +201,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
   const visibleResults = sortSearchResults(
     filteredResults,
     activeSort,
-  ).slice(0, 24);
+  );
   const grooveSource = visibleResults.length > 0
     ? await resolveSearchGrooveSource({
         query,

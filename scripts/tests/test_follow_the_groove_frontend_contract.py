@@ -514,11 +514,17 @@ class NextDestinationSelectionTests(unittest.TestCase):
 
 
 class DedicatedDestinationSelectionTests(unittest.TestCase):
-    def select(self, direct: list[dict[str, object]], onward: dict[str, list[dict[str, object]]] | None = None, limit: int = 5) -> list[dict[str, object]]:
+    def select(
+        self,
+        direct: list[dict[str, object]],
+        onward: dict[str, list[dict[str, object]]] | None = None,
+        limit: int = 5,
+        visited_names: list[str] | None = None,
+    ) -> list[dict[str, object]]:
         return run_typescript(
             "lib/follow-the-groove/destination-selection.ts",
-            "subject.selectDedicatedDestinations({ sourceArtistId: 'source', direct: input.direct, onward: new Map(Object.entries(input.onward)), limit: input.limit }).map(row => ({ name: row.displayName, bridge: row.bridgeName, entityType: row.entityType, factual: row.factual }))",
-            {"direct": direct, "onward": onward or {}, "limit": limit},
+            "subject.selectDedicatedDestinations({ sourceArtistId: 'source', visitedArtistNames: input.visitedNames, direct: input.direct, onward: new Map(Object.entries(input.onward)), limit: input.limit }).map(row => ({ name: row.displayName, bridge: row.bridgeName, entityType: row.entityType, factual: row.factual }))",
+            {"direct": direct, "onward": onward or {}, "limit": limit, "visitedNames": visited_names or []},
         )
 
     def test_members_are_bridges_not_unexplained_dedicated_destinations(self) -> None:
@@ -570,6 +576,32 @@ class DedicatedDestinationSelectionTests(unittest.TestCase):
         actual = self.select([solo])
         self.assertEqual(actual[0]["name"], "Solo Artist")
 
+    def test_productless_destination_is_not_visible(self) -> None:
+        productless = {
+            **fixture_candidate("Productless Band", factual=True, product_count=0),
+            "entityType": "group",
+        }
+        available = {
+            **fixture_candidate("Available Band", factual=True, product_count=2),
+            "entityType": "group",
+        }
+        actual = self.select([productless, available])
+        self.assertEqual([row["name"] for row in actual], ["Available Band"])
+
+    def test_productless_bridge_can_still_reach_productful_destination(self) -> None:
+        bridge = fixture_candidate("Productless Bridge", factual=True, mechanisms=("membership",), product_count=0)
+        destination = {
+            **fixture_candidate("Available Destination", factual=True, mechanisms=("membership",), product_count=3),
+            "entityType": "group",
+            "sourceArtistId": "productless-bridge",
+        }
+        actual = self.select([bridge], {"productless-bridge": [destination]})
+        self.assertEqual(
+            actual[0]["name"],
+            "Available Destination",
+        )
+        self.assertEqual(actual[0]["bridge"], "Productless Bridge")
+
     def test_factual_group_destinations_are_preferred_and_similarity_is_bounded(self) -> None:
         factual_groups = [
             {**fixture_candidate(f"Band {index}", factual=True), "entityType": "group"}
@@ -590,6 +622,166 @@ class DedicatedDestinationSelectionTests(unittest.TestCase):
             for index in range(1, 9)
         ]
         self.assertEqual(len(self.select(direct, limit=5)), 5)
+
+    def test_direct_groups_survive_one_person_bridge_fanout(self) -> None:
+        nick = fixture_candidate("Nick Oliveri", factual=True, mechanisms=("membership",))
+        dave = fixture_candidate("Dave Grohl", factual=True, mechanisms=("membership",))
+        direct_groups = [
+            {**fixture_candidate("Them Crooked Vultures", similarity=True, position=1), "entityType": "group"},
+            {**fixture_candidate("Kyuss", similarity=True, position=4), "entityType": "group"},
+        ]
+        nick_children = [
+            {
+                **fixture_candidate(name, factual=True, mechanisms=("membership",)),
+                "entityType": "group",
+                "sourceArtistId": "nick-oliveri",
+            }
+            for name in ("Bloodclot", "Dwarves", "Mondo Generator", "Dead End America")
+        ]
+        dave_child = {
+            **fixture_candidate("Foo Fighters", factual=True, mechanisms=("membership",)),
+            "entityType": "group",
+            "sourceArtistId": "dave-grohl",
+        }
+        actual = self.select(
+            [nick, dave, *direct_groups],
+            {"nick-oliveri": nick_children, "dave-grohl": [dave_child]},
+        )
+        self.assertEqual([row["name"] for row in actual[:2]], ["Them Crooked Vultures", "Kyuss"])
+        self.assertIn("Foo Fighters", [row["name"] for row in actual])
+        self.assertLessEqual(
+            sum(row["bridge"] == "Nick Oliveri" for row in actual),
+            2,
+        )
+
+    def test_bridge_diversity_fills_other_bridges_before_second_child(self) -> None:
+        bridge_a = fixture_candidate("Bridge A", factual=True, mechanisms=("membership",))
+        bridge_b = fixture_candidate("Bridge B", factual=True, mechanisms=("membership",))
+        children_a = [
+            {
+                **fixture_candidate(f"A Destination {index}", factual=True, mechanisms=("membership",)),
+                "entityType": "group",
+                "sourceArtistId": "bridge-a",
+            }
+            for index in range(1, 4)
+        ]
+        children_b = [
+            {
+                **fixture_candidate(f"B Destination {index}", factual=True, mechanisms=("membership",)),
+                "entityType": "group",
+                "sourceArtistId": "bridge-b",
+            }
+            for index in range(1, 3)
+        ]
+        actual = self.select(
+            [bridge_a, bridge_b],
+            {"bridge-a": children_a, "bridge-b": children_b},
+            limit=4,
+        )
+        self.assertEqual(
+            [row["name"] for row in actual],
+            ["A Destination 1", "B Destination 1", "A Destination 2", "B Destination 2"],
+        )
+
+    def test_single_bridge_fallback_still_fills_available_slots(self) -> None:
+        bridge = fixture_candidate("Only Bridge", factual=True, mechanisms=("membership",))
+        children = [
+            {
+                **fixture_candidate(f"Destination {index}", factual=True, mechanisms=("membership",)),
+                "entityType": "group",
+                "sourceArtistId": "only-bridge",
+            }
+            for index in range(1, 6)
+        ]
+        actual = self.select([bridge], {"only-bridge": children})
+        self.assertEqual(len(actual), 5)
+
+    def test_dedicated_miles_family_is_removed_and_other_name_families_collapse(self) -> None:
+        direct = [
+            {**fixture_candidate("Miles Davis Quintet", factual=True, mechanisms=("membership",), similarity=True, position=2), "entityType": "group"},
+            {**fixture_candidate("Miles Davis All Stars", factual=True, mechanisms=("membership",)), "entityType": "group"},
+            {**fixture_candidate("Miles Davis and His Band", factual=True, mechanisms=("membership",)), "entityType": "group"},
+            {**fixture_candidate("The Miles Davis Nonet", factual=True, mechanisms=("membership",)), "entityType": "group"},
+            {**fixture_candidate("Charlie Parker Quintet", factual=True, mechanisms=("membership",)), "entityType": "group"},
+            {**fixture_candidate("Charlie Parker Septet", factual=True, mechanisms=("membership",)), "entityType": "group"},
+        ]
+        actual = self.select(direct, visited_names=["Miles Davis"])
+        self.assertEqual(
+            [row["name"] for row in actual],
+            ["Charlie Parker Quintet"],
+        )
+
+    def test_dedicated_named_projects_with_the_same_artist_are_collapsed(self) -> None:
+        direct = [
+            {**fixture_candidate("Art Blakey & The Jazz Messengers", factual=True), "entityType": "group"},
+            {**fixture_candidate("Art Blakey Big Band", factual=True), "entityType": "group"},
+            {**fixture_candidate("Thelonious Monk", factual=True, mechanisms=("artist_credit",)), "entityType": "person"},
+        ]
+        actual = self.select(direct)
+        self.assertEqual(
+            [row["name"] for row in actual],
+            ["Art Blakey & The Jazz Messengers", "Thelonious Monk"],
+        )
+
+    def test_dedicated_miles_family_fills_with_proven_solo_similarity(self) -> None:
+        direct = [
+            {**fixture_candidate("Miles Davis Quintet", factual=True, mechanisms=("membership",), similarity=True, position=2), "entityType": "group"},
+            {**fixture_candidate("Miles Davis All Stars", factual=True, mechanisms=("membership",)), "entityType": "group"},
+            {**fixture_candidate("Miles Davis and His Band", factual=True, mechanisms=("membership",)), "entityType": "group"},
+            {**fixture_candidate("The Miles Davis Nonet", factual=True, mechanisms=("membership",)), "entityType": "group"},
+            {**fixture_candidate("Charlie Parker Quintet", factual=True, mechanisms=("membership",)), "entityType": "group"},
+            {**fixture_candidate("Charlie Parker Septet", factual=True, mechanisms=("membership",)), "entityType": "group"},
+            fixture_candidate("John Coltrane", similarity=True, position=1, product_count=114),
+            fixture_candidate("Wayne Shorter", similarity=True, position=3, product_count=18),
+            fixture_candidate("Charles Mingus", similarity=True, position=4, product_count=54),
+        ]
+        onward = {
+            "miles-davis-quintet": [
+                {
+                    **fixture_candidate("John Coltrane", factual=True, mechanisms=("membership",)),
+                    "sourceArtistId": "miles-davis-quintet",
+                },
+                {
+                    **fixture_candidate("Wayne Shorter", factual=True, mechanisms=("membership",)),
+                    "sourceArtistId": "miles-davis-quintet",
+                },
+                {
+                    **fixture_candidate("Charles Mingus", factual=True, mechanisms=("membership",)),
+                    "sourceArtistId": "miles-davis-quintet",
+                },
+            ],
+        }
+        actual = self.select(direct, onward, visited_names=["Miles Davis"])
+        self.assertEqual(
+            [row["name"] for row in actual],
+            [
+                "Charlie Parker Quintet",
+                "John Coltrane",
+                "Wayne Shorter",
+                "Charles Mingus",
+            ],
+        )
+
+    def test_destination_reached_via_multiple_bridges_gets_independent_bridge_count(self) -> None:
+        bridge_a = fixture_candidate("Bridge A", factual=True, mechanisms=("membership",))
+        bridge_b = fixture_candidate("Bridge B", factual=True, mechanisms=("membership",))
+        destination_a = {
+            **fixture_candidate("Shared Destination", factual=True, mechanisms=("membership",)),
+            "entityType": "group",
+            "sourceArtistId": "bridge-a",
+        }
+        destination_b = {**destination_a, "sourceArtistId": "bridge-b"}
+        actual = run_typescript(
+            "lib/follow-the-groove/destination-selection.ts",
+            "subject.selectDedicatedDestinations({ sourceArtistId: 'source', direct: [input.bridgeA, input.bridgeB], onward: new Map([['bridge-a', [input.destinationA]], ['bridge-b', [input.destinationB]]]), limit: 5 }).map(row => ({ name: row.displayName, bridgeCount: row.bridgeCount }))",
+            {
+                "bridgeA": bridge_a,
+                "bridgeB": bridge_b,
+                "destinationA": destination_a,
+                "destinationB": destination_b,
+            },
+        )
+        self.assertEqual(actual, [{"name": "Shared Destination", "bridgeCount": 2}])
 
 
 class FrontendPureContractTests(unittest.TestCase):
@@ -776,8 +968,8 @@ class FrontendSourceContractTests(unittest.TestCase):
 
     def test_search_service_requires_availability_and_search_href_before_ranking(self) -> None:
         data = (ROOT / "lib/follow-the-groove/data.ts").read_text()
-        self.assertIn("searchPresentation?.get(candidate.id)?.searchHref !== null", data)
-        self.assertIn("searchPresentation?.get(target.id)?.searchHref !== null", data)
+        self.assertIn("presentation.get(candidate.id)?.searchHref !== null", data)
+        self.assertIn("presentation.get(target.id)?.searchHref !== null", data)
         self.assertIn("FTG_SEARCH_RANKING_POOL_LIMIT = 24", data)
         self.assertIn("requireSearchEligible: mode === \"search\"", data)
 

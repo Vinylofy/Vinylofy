@@ -561,9 +561,14 @@ export async function getFollowTheGroovePage(input: {
     outputStatuses.map((row) => [row.artist_id, row.status]),
   );
   const candidatesById = new Map(candidateArtists.map((artist) => [artist.id, artist]));
-  const searchPresentation = mode === "search"
-    ? await loadPresentationData([activeArtist, ...candidateArtists, ...onwardArtists])
-    : null;
+  // Dedicated trail selection is product-aware too. Keep the bridge pool
+  // broad, but give the selector the same current, available product counts
+  // that the cards will render after selection.
+  const presentation = await loadPresentationData([
+    activeArtist,
+    ...candidateArtists,
+    ...onwardArtists,
+  ]);
   const similaritiesByTarget = new Map(similarities.map((row) => [row.target_artist_id, row]));
   const edgeTargetIds = new Set(edges.map((edge) => getFactualTarget(edge, activeArtist.id)));
 
@@ -594,9 +599,9 @@ export async function getFollowTheGroovePage(input: {
       similarityMatchScore: similarity ? Number(similarity.match_score) : null,
       searchEligible: mode === "search" &&
         outputStatusByArtistId.get(candidate.id) === "proven_output" &&
-        (searchPresentation?.get(candidate.id)?.productCount ?? 0) > 0 &&
-        searchPresentation?.get(candidate.id)?.searchHref !== null,
-      productCount: searchPresentation?.get(candidate.id)?.productCount ?? 0,
+        (presentation.get(candidate.id)?.productCount ?? 0) > 0 &&
+        presentation.get(candidate.id)?.searchHref !== null,
+      productCount: presentation.get(candidate.id)?.productCount ?? 0,
       destinationOutputStatus: outputStatusByArtistId.get(candidate.id) ?? "unknown",
     }];
   });
@@ -662,9 +667,9 @@ export async function getFollowTheGroovePage(input: {
         similarityMatchScore: similarity ? Number(similarity.match_score) : null,
         searchEligible: mode === "search" &&
           outputStatusByArtistId.get(target.id) === "proven_output" &&
-          (searchPresentation?.get(target.id)?.productCount ?? 0) > 0 &&
-          searchPresentation?.get(target.id)?.searchHref !== null,
-        productCount: searchPresentation?.get(target.id)?.productCount ?? 0,
+          (presentation.get(target.id)?.productCount ?? 0) > 0 &&
+          presentation.get(target.id)?.searchHref !== null,
+        productCount: presentation.get(target.id)?.productCount ?? 0,
         destinationOutputStatus: outputStatusByArtistId.get(target.id) ?? "unknown",
       });
     }
@@ -698,11 +703,7 @@ export async function getFollowTheGroovePage(input: {
     requireSearchEligible: mode === "search",
     limit,
   });
-  const selectedArtists = selected.flatMap((candidate) => {
-    const artist = candidatesById.get(candidate.targetArtistId) ?? onwardArtistsById.get(candidate.targetArtistId);
-    return artist ? [artist] : [];
-  });
-  const views = await loadPresentationData([activeArtist, ...selectedArtists]);
+  const views = presentation;
   const activeView = views.get(activeArtist.id);
   if (!activeView) return null;
 
