@@ -32,6 +32,7 @@ const BLACKLISTED_FORMAT_LABELS = new Set([
   "BLURAY",
 ]);
 const FTG_SEARCH_RANKING_POOL_LIMIT = 24;
+const FTG_QUERY_ID_BATCH_SIZE = 50;
 
 type ArtistRow = {
   id: string;
@@ -95,6 +96,18 @@ function chunks<T>(values: T[], size: number): T[][] {
   const result: T[][] = [];
   for (let index = 0; index < values.length; index += size) {
     result.push(values.slice(index, index + size));
+  }
+  return result;
+}
+
+async function loadInBatches<T>(
+  values: string[],
+  load: (batch: string[]) => Promise<T[]>,
+): Promise<T[]> {
+  const uniqueValues = [...new Set(values)];
+  const result: T[] = [];
+  for (const batch of chunks(uniqueValues, FTG_QUERY_ID_BATCH_SIZE)) {
+    result.push(...(await load(batch)));
   }
   return result;
 }
@@ -250,19 +263,23 @@ async function loadTrailExplanations(trailArtists: ArtistRow[]): Promise<(string
   const supabase = createSupabaseAdminClient();
   const sourceIds = trailArtists.slice(0, -1).map((artist) => artist.id);
   const [directEdges, directSimilarities] = await Promise.all([
-    unwrap<EdgeRow>(
-      supabase
-        .from("artist_edges")
-        .select("id, artist_low_id, artist_high_id")
-        .or(`artist_low_id.in.(${sourceIds.join(",")}),artist_high_id.in.(${sourceIds.join(",")})`),
+    loadInBatches(sourceIds, (batch) =>
+      unwrap<EdgeRow>(
+        supabase
+          .from("artist_edges")
+          .select("id, artist_low_id, artist_high_id")
+          .or(`artist_low_id.in.(${batch.join(",")}),artist_high_id.in.(${batch.join(",")})`),
+      ),
     ),
-    unwrap<SimilarityWithSourceRow>(
-      supabase
-        .from("artist_similarity")
-        .select("source_artist_id, target_artist_id, position, match_score")
-        .in("source_artist_id", sourceIds)
-        .eq("resolution_status", "resolved")
-        .not("target_artist_id", "is", null),
+    loadInBatches(sourceIds, (batch) =>
+      unwrap<SimilarityWithSourceRow>(
+        supabase
+          .from("artist_similarity")
+          .select("source_artist_id, target_artist_id, position, match_score")
+          .in("source_artist_id", batch)
+          .eq("resolution_status", "resolved")
+          .not("target_artist_id", "is", null),
+      ),
     ),
   ]);
   const bridgeIds = [...new Set([
@@ -271,19 +288,23 @@ async function loadTrailExplanations(trailArtists: ArtistRow[]): Promise<(string
   ].filter((id) => !sourceIds.includes(id)))];
   const [onwardEdges, onwardSimilarities] = bridgeIds.length
     ? await Promise.all([
-        unwrap<EdgeRow>(
-          supabase
-            .from("artist_edges")
-            .select("id, artist_low_id, artist_high_id")
-            .or(`artist_low_id.in.(${bridgeIds.join(",")}),artist_high_id.in.(${bridgeIds.join(",")})`),
+        loadInBatches(bridgeIds, (batch) =>
+          unwrap<EdgeRow>(
+            supabase
+              .from("artist_edges")
+              .select("id, artist_low_id, artist_high_id")
+              .or(`artist_low_id.in.(${batch.join(",")}),artist_high_id.in.(${batch.join(",")})`),
+          ),
         ),
-        unwrap<SimilarityWithSourceRow>(
-          supabase
-            .from("artist_similarity")
-            .select("source_artist_id, target_artist_id, position, match_score")
-            .in("source_artist_id", bridgeIds)
-            .eq("resolution_status", "resolved")
-            .not("target_artist_id", "is", null),
+        loadInBatches(bridgeIds, (batch) =>
+          unwrap<SimilarityWithSourceRow>(
+            supabase
+              .from("artist_similarity")
+              .select("source_artist_id, target_artist_id, position, match_score")
+              .in("source_artist_id", batch)
+              .eq("resolution_status", "resolved")
+              .not("target_artist_id", "is", null),
+          ),
         ),
       ])
     : [[], []] as [EdgeRow[], SimilarityWithSourceRow[]];
@@ -293,12 +314,14 @@ async function loadTrailExplanations(trailArtists: ArtistRow[]): Promise<(string
   const allEdges = [...edgeById.values()];
   const allSimilarities = [...directSimilarities, ...onwardSimilarities];
   const evidence = allEdges.length
-    ? await unwrap<EvidenceRow>(
-        supabase
-          .from("artist_relation_evidence")
-          .select("edge_id, source_artist_id, target_artist_id, evidence_kind, classification, ended, recording_mbid")
-          .in("edge_id", allEdges.map((edge) => edge.id))
-          .eq("classification", "allowed"),
+    ? await loadInBatches(allEdges.map((edge) => edge.id), (batch) =>
+        unwrap<EvidenceRow>(
+          supabase
+            .from("artist_relation_evidence")
+            .select("edge_id, source_artist_id, target_artist_id, evidence_kind, classification, ended, recording_mbid")
+            .in("edge_id", batch)
+            .eq("classification", "allowed"),
+        ),
       )
     : [];
   const artistIds = [...new Set([
@@ -307,17 +330,21 @@ async function loadTrailExplanations(trailArtists: ArtistRow[]): Promise<(string
     ...allSimilarities.flatMap((row) => [row.source_artist_id, row.target_artist_id]),
   ])];
   const [artists, statuses] = await Promise.all([
-    unwrap<ArtistRow>(
-      supabase
-        .from("artists")
-        .select("id, musicbrainz_artist_mbid, display_name, entity_type")
-        .in("id", artistIds),
+    loadInBatches(artistIds, (batch) =>
+      unwrap<ArtistRow>(
+        supabase
+          .from("artists")
+          .select("id, musicbrainz_artist_mbid, display_name, entity_type")
+          .in("id", batch),
+      ),
     ),
-    unwrap<OutputStatusRow>(
-      supabase
-        .from("artist_output_status")
-        .select("artist_id, status")
-        .in("artist_id", artistIds),
+    loadInBatches(artistIds, (batch) =>
+      unwrap<OutputStatusRow>(
+        supabase
+          .from("artist_output_status")
+          .select("artist_id, status")
+          .in("artist_id", batch),
+      ),
     ),
   ]);
   const artistsById = new Map(artists.map((artist) => [artist.id, artist]));
@@ -384,7 +411,7 @@ async function loadTrailExplanations(trailArtists: ArtistRow[]): Promise<(string
       });
       onward.set(bridge.targetArtistId, relations);
     }
-    const selected = selectDedicatedDestinations({
+    const selected = selectNextDestinations({
       sourceArtistId: source.id,
       visitedArtistNames: [source.display_name],
       direct,
@@ -761,9 +788,17 @@ export async function getFollowTheGroovePage(input: {
   const orderedTrailArtists = resolvedTrailMbids.map(
     (mbid) => artistsByMbid.get(mbid.toLowerCase())!,
   );
-  const trailExplanations = mode === "trail"
-    ? await loadTrailExplanations(orderedTrailArtists)
-    : orderedTrailArtists.map(() => null);
+  let trailExplanations: (string | null)[] = orderedTrailArtists.map(() => null);
+  if (mode === "trail") {
+    try {
+      trailExplanations = await loadTrailExplanations(orderedTrailArtists);
+    } catch (error) {
+      console.warn("[vinylofy] Follow the Groove breadcrumb explanations unavailable", {
+        trailLength: orderedTrailArtists.length,
+        error,
+      });
+    }
+  }
 
   return {
     artist: activeView,
