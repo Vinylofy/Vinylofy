@@ -26,6 +26,7 @@ def source_row(**overrides: str) -> dict[str, str]:
         "title": "Example Record",
         "format": "LP",
         "price": "19,95",
+        "currency": "EUR",
         "standard_price": "29,95",
         "is_sale": "true",
         "availability": "in_stock",
@@ -41,6 +42,7 @@ class GetBackMusicImporterTest(unittest.TestCase):
         record, error = map_getbackmusic_row(source_row(), 2)
         self.assertIsNone(error)
         self.assertEqual(record.price, 19.95)
+        self.assertEqual(record.currency, "EUR")
         self.assertEqual(record.ean, "8718521078584")
         self.assertEqual(record.gtin_normalized, "08718521078584")
         self.assertEqual(record.product_handle, "101:1001")
@@ -50,6 +52,12 @@ class GetBackMusicImporterTest(unittest.TestCase):
         rejected, error = map_getbackmusic_row(source_row(ean=""), 3)
         self.assertIsNone(rejected)
         self.assertEqual(error, "missing_or_invalid_ean")
+
+    def test_mapper_rejects_rows_without_explicit_eur_currency(self):
+        for value in ("", "USD"):
+            rejected, error = map_getbackmusic_row(source_row(currency=value), 3)
+            self.assertIsNone(rejected)
+            self.assertEqual(error, "missing_or_unsupported_currency")
 
     def test_pending_detail_is_rejected_without_publishing_listing_only_row(self):
         rejected, error = map_getbackmusic_row(source_row(ean="", detail_status="pending"), 3)

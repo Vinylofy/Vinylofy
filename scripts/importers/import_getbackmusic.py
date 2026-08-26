@@ -154,6 +154,7 @@ def map_getbackmusic_row(row: dict, line_number: int) -> tuple[CanonicalRecord |
     artist, title = infer_artist_title(row.get("artist"), row.get("title"))
     product_url = normalize_text(row.get("product_url"))
     price = parse_price(row.get("price"))
+    currency = normalize_text(row.get("currency")).upper()
     product_id = normalize_text(row.get("product_id"))
     variant_id = normalize_text(row.get("variant_id"))
 
@@ -165,6 +166,8 @@ def map_getbackmusic_row(row: dict, line_number: int) -> tuple[CanonicalRecord |
         return None, "missing_product_or_variant_id"
     if price is None:
         return None, "invalid_price"
+    if currency != CONFIG.currency:
+        return None, "missing_or_unsupported_currency"
     if not artist:
         return None, "missing_artist_after_inference"
     if not title:
@@ -183,7 +186,7 @@ def map_getbackmusic_row(row: dict, line_number: int) -> tuple[CanonicalRecord |
         cover_url=None,
         product_url=product_url,
         price=price,
-        currency=CONFIG.currency,
+        currency=currency,
         availability=resolve_availability(row.get("availability")),
         captured_at=parse_timestamp(row.get("scraped_at")),
         product_handle=f"{product_id}:{variant_id}",
@@ -212,9 +215,9 @@ SHOP_DEFINITION = ShopImporterDefinition(
     row_mapper=map_getbackmusic_row,
     before_run=resolve_existing_offer_eans,
     description="Import Get Back Music listing-first LP/Vinyl CSV into Supabase/Postgres",
-    required_columns=("scraped_at", "product_url", "product_id", "variant_id", "ean", "artist", "title", "price", "availability"),
+    required_columns=("scraped_at", "product_url", "product_id", "variant_id", "ean", "artist", "title", "price", "currency", "availability"),
     optional_columns=(
-        "source_shop", "product_key", "standard_price", "is_sale", "currency", "format", "image_url", "page_found",
+        "source_shop", "product_key", "standard_price", "is_sale", "format", "image_url", "page_found",
         "detail_title", "detail_description", "release_date", "label", "catalogue_number", "detail_status", "detail_error", "enriched_at",
     ),
     tags=("vinyl", "shopify", "listing-first", "barcode-gated", "variant-safe"),

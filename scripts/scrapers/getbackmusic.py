@@ -13,7 +13,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import parse_qs, urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 import sys
 
 import requests
@@ -29,12 +29,14 @@ from scripts.importers.common import strict_normalize_gtin
 BASE_URL = "https://www.getbackmusic.nl"
 LISTING_URL = f"{BASE_URL}/collections/lp-vinyl"
 SHOP_NAME = "Get Back Music"
+MARKET_COUNTRY = "NL"
+MARKET_CURRENCY = "EUR"
 DEFAULT_DELAY_SECONDS = 0.5
 REQUEST_TIMEOUT = 30
 
 LISTING_FIELDS = (
     "scraped_at", "source_shop", "product_id", "variant_id", "product_key",
-    "artist", "title", "format", "price", "standard_price", "is_sale",
+    "artist", "title", "format", "price", "standard_price", "currency", "is_sale",
     "availability", "product_url", "image_url", "page_found",
 )
 MASTER_FIELDS = LISTING_FIELDS + (
@@ -106,11 +108,43 @@ def normalize_image_url(value: str | None) -> str:
     return urlunsplit(("https", "www.getbackmusic.nl", parsed.path, parsed.query, ""))
 
 
-def parse_money(value: str | None) -> str:
-    text = clean_text(value).replace("€", "").replace("EUR", "")
-    text = re.sub(r"[^0-9,.]", "", text).replace(".", "").replace(",", ".")
+def market_url(url: str, **params: str | int) -> str:
+    parsed = urlsplit(url)
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    query["country"] = [MARKET_COUNTRY]
+    for key, value in params.items():
+        query[key] = [str(value)]
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query, doseq=True), parsed.fragment))
+
+
+def listing_page_url(page: int) -> str:
+    return market_url(LISTING_URL, **({"page": page} if page > 1 else {}))
+
+
+def detect_currency(value: str | None) -> str:
+    text = clean_text(value).casefold()
+    if "$" in text or re.search(r"\busd\b", text, re.I):
+        return "USD"
+    if "€" in text or re.search(r"\beur\b", text, re.I):
+        return "EUR"
+    return ""
+
+
+def parse_money(value: str | None, *, expected_currency: str = MARKET_CURRENCY) -> str:
+    text = clean_text(value)
+    currency = detect_currency(text)
+    if currency and currency != expected_currency:
+        return ""
+    text = re.sub(r"\bEUR\b", "", text, flags=re.I).replace("€", "")
+    if detect_currency(text):
+        return ""
+    text = re.sub(r"[^0-9,.]", "", text)
     if not text:
         return ""
+    if "," in text:
+        text = text.replace(".", "").replace(",", ".")
+    elif not re.search(r"\.\d{1,2}$", text):
+        text = text.replace(".", "")
     try:
         return f"{float(text):.2f}"
     except ValueError:
@@ -121,7 +155,7 @@ def _price_values(node: Tag | None) -> list[str]:
     if node is None:
         return []
     matches = re.findall(
-        r"(?:€|EUR)?\s*(\d{1,3}(?:[.\s]\d{3})*(?:,\d{1,2})?|\d+(?:[.,]\d{1,2})?)",
+        r"(?:€|EUR|USD|\$)?\s*\d{1,3}(?:[.\s]\d{3})*(?:[,.]\d{1,2})?|\d+(?:[.,]\d{1,2})?\s*(?:€|EUR|USD|\$)?",
         node.get_text(" ", strip=True),
         re.I,
     )
@@ -286,6 +320,7 @@ def parse_listing_page(html: str, page: int) -> tuple[list[dict[str, str]], int 
             "artist": artist, "title": title,
             "format": _format_label(format_raw),
             "price": price, "standard_price": standard_price,
+            "currency": MARKET_CURRENCY,
             "is_sale": "true" if standard_price or sale_marker else "false",
             "availability": extract_availability(card), "product_url": product_url,
             "image_url": _image_url(card), "page_found": str(page),
@@ -331,6 +366,8 @@ def build_session() -> requests.Session:
         "Accept-Language": "nl-NL,nl;q=0.9,en;q=0.8",
         "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
     })
+    session.cookies.set("localization", MARKET_COUNTRY, domain=".getbackmusic.nl")
+    session.cookies.set("cart_currency", MARKET_CURRENCY, domain=".getbackmusic.nl")
     return session
 
 
@@ -343,7 +380,7 @@ def scrape_listings(client: GetBackClient, max_pages: int = 1) -> tuple[list[dic
     skips: Counter[str] = Counter()
     page, pages = 1, 0
     while max_pages == 0 or pages < max_pages:
-        url = LISTING_URL if page == 1 else f"{LISTING_URL}?page={page}"
+        url = listing_page_url(page)
         try:
             html = client.get(url)
         except RateLimitedError:

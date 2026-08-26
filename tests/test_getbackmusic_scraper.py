@@ -6,6 +6,7 @@ from unittest.mock import patch
 from scripts.scrapers.getbackmusic import (
     GetBackClient,
     enrich_details,
+    listing_page_url,
     next_page_number,
     parse_detail_page,
     parse_detail_limit,
@@ -69,10 +70,12 @@ class GetBackMusicScraperTest(unittest.TestCase):
         self.assertEqual(rows[0]["variant_id"], "1001")
         self.assertEqual(rows[0]["price"], "19.95")
         self.assertEqual(rows[0]["standard_price"], "29.95")
+        self.assertEqual(rows[0]["currency"], "EUR")
         self.assertEqual(rows[0]["is_sale"], "true")
         self.assertEqual(rows[0]["availability"], "in_stock")
         self.assertEqual(rows[1]["price"], "24.95")
         self.assertEqual(rows[1]["standard_price"], "")
+        self.assertEqual(rows[1]["currency"], "EUR")
         self.assertEqual(rows[1]["availability"], "out_of_stock")
         self.assertEqual(next_page, 2)
         self.assertFalse(skips)
@@ -112,9 +115,19 @@ class GetBackMusicScraperTest(unittest.TestCase):
         self.assertEqual(pages, 1)
         self.assertEqual(skips["repeated_product_variant_set"], 1)
         self.assertEqual(client.calls, [
-            "https://www.getbackmusic.nl/collections/lp-vinyl",
-            "https://www.getbackmusic.nl/collections/lp-vinyl?page=2",
+            "https://www.getbackmusic.nl/collections/lp-vinyl?country=NL",
+            "https://www.getbackmusic.nl/collections/lp-vinyl?country=NL&page=2",
         ])
+
+    def test_listing_page_url_pins_nl_market_without_fixed_page(self):
+        self.assertEqual(listing_page_url(1), "https://www.getbackmusic.nl/collections/lp-vinyl?country=NL")
+        self.assertEqual(listing_page_url(15), "https://www.getbackmusic.nl/collections/lp-vinyl?country=NL&page=15")
+
+    def test_us_market_price_is_rejected_before_import(self):
+        html = card().replace("€ 24,95", "$190.00")
+        rows, _next, _ids, skips = parse_listing_page(html, 1)
+        self.assertEqual(rows, [])
+        self.assertEqual(skips["missing_listing_price"], 1)
 
     def test_missing_or_disabled_cart_action_is_not_available(self):
         html = card().replace('<button type="submit">Toevoegen</button>', "").replace('class="cardmnsy__price"', 'class="cardmnsy__price">')
