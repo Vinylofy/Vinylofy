@@ -1,4 +1,4 @@
-name: Release Calendar - Bob's Vinyl
+name: Release Calendar - Bob's Vinyl + iMusic
 
 on:
   workflow_dispatch:
@@ -23,6 +23,14 @@ on:
         description: "Max detail pages per release date"
         required: true
         default: "80"
+      imusic_max_pages:
+        description: "Max iMusic release-listing pages"
+        required: true
+        default: "30"
+      imusic_delay_seconds:
+        description: "Wachttijd tussen iMusic release-listingpagina's"
+        required: true
+        default: "1.0"
 
   schedule:
     - cron: "20 6 * * 1"
@@ -51,7 +59,8 @@ jobs:
         run: |
           python -m py_compile \
             scripts/release_discovery/core/release_weeks.py \
-            scripts/release_discovery/jobs/discover_bobsvinyl.py
+            scripts/release_discovery/jobs/discover_bobsvinyl.py \
+            scripts/release_discovery/jobs/discover_imusic.py
 
       - name: Discover Bob's Vinyl releases
         run: |
@@ -65,4 +74,16 @@ jobs:
             --future-weeks "${{ inputs.future_weeks || '4' }}" \
             --max-details-per-date "${{ inputs.max_details_per_date || '80' }}" \
             --sleep 0.5 \
+            $WRITE_FLAG
+
+      - name: Discover iMusic releases
+        run: |
+          WRITE_FLAG=""
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.write }}" = "true" ]; then
+            WRITE_FLAG="--write"
+          fi
+
+          python -m scripts.release_discovery.jobs.discover_imusic \
+            --max-pages "${{ inputs.imusic_max_pages || '30' }}" \
+            --delay "${{ inputs.imusic_delay_seconds || '1.0' }}" \
             $WRITE_FLAG
