@@ -6,6 +6,12 @@ type SiteHeaderProps = {
   searchSlot?: ReactNode;
 };
 
+const headerLinkClassName =
+  "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-600";
+
+const navLinkClassName =
+  "hover:text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-600";
+
 export function SiteHeader({ searchSlot }: SiteHeaderProps) {
   if (searchSlot) {
     return (
@@ -13,7 +19,7 @@ export function SiteHeader({ searchSlot }: SiteHeaderProps) {
         <div className="mx-auto max-w-7xl px-6 py-3 md:py-4">
           <div className="flex flex-col gap-3 lg:grid lg:grid-cols-[220px_minmax(0,1fr)] lg:items-center lg:gap-6">
             <div className="flex items-center">
-              <Link href="/" className="inline-flex items-center" aria-label="Ga naar home">
+              <Link href="/" className={`inline-flex items-center ${headerLinkClassName}`} aria-label="Ga naar home">
                 <Image
                   src="/vinylofy-header-logo.png"
                   alt="Vinylofy"
@@ -39,7 +45,7 @@ export function SiteHeader({ searchSlot }: SiteHeaderProps) {
   return (
     <header className="sticky top-0 z-30 border-b border-neutral-200 bg-white/95 backdrop-blur">
       <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-        <Link href="/" className="inline-flex items-center" aria-label="Ga naar home">
+        <Link href="/" className={`inline-flex items-center ${headerLinkClassName}`} aria-label="Ga naar home">
           <Image
             src="/vinylofy-header-logo.png"
             alt="Vinylofy"
@@ -51,10 +57,10 @@ export function SiteHeader({ searchSlot }: SiteHeaderProps) {
         </Link>
 
         <nav className="flex items-center gap-6 text-sm text-neutral-500">
-          <Link href="/shops" className="hover:text-neutral-900">
+          <Link href="/shops" className={navLinkClassName}>
             Shops
           </Link>
-          <Link href="/over" className="hover:text-neutral-900">
+          <Link href="/over" className={navLinkClassName}>
             Over
           </Link>
         </nav>

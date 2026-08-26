@@ -7,6 +7,9 @@ export const metadata: Metadata = {
     template: "%s | Vinylofy",
   },
   description: "Vinyl offers for you — prijsvergelijker voor vinylplaten.",
+  other: {
+    "tdm-reservation": "1",
+  },
 };
 
 export default function RootLayout({
