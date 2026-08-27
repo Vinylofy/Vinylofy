@@ -4,7 +4,6 @@ import { GrooveArtistHero } from "@/components/follow-the-groove/groove-artist-h
 import { GrooveCandidateCard } from "@/components/follow-the-groove/groove-candidate-card";
 import { GrooveEmptyState } from "@/components/follow-the-groove/groove-empty-state";
 import { GrooveTrail } from "@/components/follow-the-groove/groove-trail";
-import { SearchControls } from "@/components/search/search-controls";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { getFollowTheGroovePage } from "@/lib/follow-the-groove/data";
@@ -27,7 +26,7 @@ export default async function FollowTheGroovePage({ params }: FollowTheGroovePag
 
   return (
     <div className="min-h-screen bg-[#f8f7f4] text-neutral-900">
-      <SiteHeader searchSlot={<SearchControls initialQuery="" />} />
+      <SiteHeader />
       <main className="mx-auto max-w-7xl px-4 py-6 md:px-6 md:py-10">
         <div className="grid gap-8 lg:grid-cols-[220px_minmax(0,1fr)] lg:gap-10">
           <aside className="space-y-5 lg:sticky lg:top-28 lg:self-start">
