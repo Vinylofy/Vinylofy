@@ -149,7 +149,7 @@ def create_execution_state(database_url: str, execution_id: str, config: Bounded
 def update_execution_state(database_url: str, execution_id: str, *, status: str, counters: dict[str, Any]) -> None:
     with psycopg.connect(database_url, autocommit=False) as conn:
         changed = conn.execute(
-            "update follow_the_groove_collection_runs set status=%s,counters=%s::jsonb,finished_at=case when %s in ('succeeded','failed','recovery_required') then now() else finished_at end where id=%s and collector=%s",
+            "update follow_the_groove_collection_runs set status=%s,counters=%s::jsonb,finished_at=case when %s <> 'running' then now() else finished_at end where id=%s and collector=%s",
             (status, json.dumps(counters, default=str), status, execution_id, BATCH_COLLECTOR),
         )
         if changed.rowcount != 1:
@@ -327,6 +327,8 @@ def resolve_lastfm_rows(conn: psycopg.Connection[Any], source: Source, returned:
             except ValueError:
                 status = "conflict"
             else:
+                if mbid == source.mbid:
+                    continue
                 known = existing.get(mbid)
                 local = bridge.get(mbid)
                 if known and collector.normalize_name(name) == collector.normalize_name(known["display_name"]):
@@ -627,7 +629,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             with psycopg.connect(os.environ["DATABASE_URL"],autocommit=False) as check:
                 count=check.execute("select count(*) from follow_the_groove_collection_runs where counters->>'execution_id'=%s and collector=%s",(execution_id,GENERIC_COLLECTOR)).fetchone()[0]
                 check.rollback()
-            update_execution_state(os.environ["DATABASE_URL"], execution_id, status="recovery_required" if count else "failed", counters={"execution_id":execution_id,"source_run_count":count})
+            update_execution_state(os.environ["DATABASE_URL"], execution_id, status="partial" if count else "failed", counters={"execution_id":execution_id,"source_run_count":count,"recovery_required":bool(count)})
         raise
     finally:
         if lock_conn is not None:

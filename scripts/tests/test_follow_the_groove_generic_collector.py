@@ -51,6 +51,12 @@ class ConfigTests(unittest.TestCase):
         args.execution_id=self.EXECUTION_ID
         generic.validate_write_scope(args)
 
+    def test_recovery_transition_uses_database_status_contract(self):
+        self.assertIn("%s <> 'running'", inspect.getsource(generic.update_execution_state))
+        source=inspect.getsource(generic.run)
+        self.assertIn('status="partial" if count else "failed"',source)
+        self.assertNotIn('status="recovery_required" if count else "failed"',source)
+
     def test_execution_safety_is_database_global_and_durable(self):
         source=inspect.getsource(generic)
         self.assertIn("pg_try_advisory_xact_lock",source)
@@ -129,6 +135,18 @@ class LocalResolutionTests(unittest.TestCase):
     def test_composite_conflict_and_no_match_are_protected(self):
         for category in ("COMPOSITE_TARGET","MBID_CONFLICT","NO_VINYLOFY_CATALOG_MATCH"):
             self.assertEqual(local_resolution.classify_category({"classification":category}),"SKIP")
+
+    def test_lastfm_self_similarity_is_not_collected(self):
+        original=generic.load_local_bridge
+        generic.load_local_bridge=lambda _conn,_mbids: {}
+        try:
+            similarities,targets,links=generic.resolve_lastfm_rows(
+                object(),SOURCE,[{"name":"Source","mbid":SOURCE.mbid,"match":"1"}],
+                [{"id":"artist-id","musicbrainz_artist_mbid":SOURCE.mbid,"display_name":"Source"}],
+            )
+        finally:
+            generic.load_local_bridge=original
+        self.assertEqual((similarities,targets,links),([],[],[]))
 
 
 class OrchestrationTests(unittest.TestCase):
