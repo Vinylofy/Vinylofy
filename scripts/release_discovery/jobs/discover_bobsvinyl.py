@@ -12,6 +12,12 @@ from urllib.parse import quote, urljoin
 import requests
 from bs4 import BeautifulSoup
 
+from scripts.importers.common import (
+    identifier_candidates,
+    normalize_ean,
+    normalize_gtin14,
+    strict_normalize_gtin,
+)
 from scripts.scrapers.usf.core.db import db_connection
 from scripts.release_discovery.core.release_weeks import nl_release_query, release_fridays
 
@@ -167,9 +173,14 @@ def find_ean(text: str) -> str | None:
     if not matches:
         return None
     for m in matches:
-        if len(m) in (12, 13):
-            return m
-    return matches[0]
+        ean = normalize_ean(m)
+        if ean and len(ean) in (12, 13) and strict_normalize_gtin(ean):
+            return ean
+    for m in matches:
+        ean = normalize_ean(m)
+        if ean and strict_normalize_gtin(ean):
+            return ean
+    return None
 
 
 def parse_detail(html: str, source_url: str, release_date: date) -> ReleaseItem | None:
@@ -207,7 +218,34 @@ def parse_detail(html: str, source_url: str, release_date: date) -> ReleaseItem 
     )
 
 
+def find_unique_product_id(cur, item: ReleaseItem) -> str | None:
+    gtin_normalized = normalize_gtin14(item.ean)
+    candidates = identifier_candidates(item.ean, gtin_normalized)
+    if not candidates:
+        return None
+
+    cur.execute(
+        """
+        select id
+        from public.products
+        where ean = any(%s)
+           or gtin_normalized = any(%s)
+        order by id
+        """,
+        (candidates, candidates),
+    )
+    product_ids = [str(row[0]) for row in cur.fetchall()]
+    unique_product_ids = sorted(set(product_ids))
+    if len(unique_product_ids) == 1:
+        return unique_product_ids[0]
+    return None
+
+
 def upsert_release(item: ReleaseItem) -> None:
+    source_payload = dict(item.source_payload or {})
+    source_payload["gtin_normalized"] = normalize_gtin14(item.ean)
+    source_payload["product_match"] = "pending"
+
     params = {
         "ean": item.ean,
         "artist": item.artist,
@@ -218,7 +256,8 @@ def upsert_release(item: ReleaseItem) -> None:
         "image_source_url": item.image_source_url,
         "format": item.format,
         "label": item.label,
-        "source_payload": json.dumps(item.source_payload or {}),
+        "product_id": None,
+        "source_payload": json.dumps(source_payload, ensure_ascii=False),
     }
 
     select_sql = """
@@ -273,6 +312,10 @@ def upsert_release(item: ReleaseItem) -> None:
                 public.release_calendar.label,
                 %(label)s
             ),
+            product_id = coalesce(
+                public.release_calendar.product_id,
+                %(product_id)s
+            ),
             status = 'active',
             confidence = greatest(
                 public.release_calendar.confidence,
@@ -298,6 +341,7 @@ def upsert_release(item: ReleaseItem) -> None:
             image_source_url,
             format,
             label,
+            product_id,
             status,
             confidence,
             source_payload,
@@ -316,6 +360,7 @@ def upsert_release(item: ReleaseItem) -> None:
             %(image_source_url)s,
             %(format)s,
             %(label)s,
+            %(product_id)s,
             'active',
             100,
             %(source_payload)s::jsonb,
@@ -328,6 +373,11 @@ def upsert_release(item: ReleaseItem) -> None:
 
     with db_connection() as conn:
         with conn.cursor() as cur:
+            product_id = find_unique_product_id(cur, item)
+            params["product_id"] = product_id
+            source_payload["product_match"] = "unique" if product_id else "missing_or_ambiguous"
+            params["source_payload"] = json.dumps(source_payload, ensure_ascii=False)
+
             cur.execute(select_sql, params)
             existing_rows = cur.fetchall()
 
@@ -416,7 +466,7 @@ def run(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--past-weeks", type=int, default=1)
+    parser.add_argument("--past-weeks", type=int, default=2)
     parser.add_argument("--future-weeks", type=int, default=4)
     parser.add_argument("--max-details-per-date", type=int, default=80)
     parser.add_argument("--sleep", type=float, default=0.5)

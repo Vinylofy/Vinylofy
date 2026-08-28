@@ -48,6 +48,11 @@ type PriceRow = {
   shops: ShopRelation;
 };
 
+type FreshInstockShopRow = {
+  product_id: string;
+  shop_id: string;
+};
+
 export type HomeProduct = {
   id: string;
   ean: string | null;
@@ -406,6 +411,41 @@ async function getOffersMap(productIds: string[]) {
   }
 
   return grouped;
+}
+
+async function getFreshInstockShopCountMap(productIds: string[]) {
+  const counts = new Map<string, Set<string>>();
+  if (productIds.length === 0) return new Map<string, number>();
+
+  const supabase = createSupabaseServerClient();
+  const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+  const batchSize = 200;
+
+  for (let offset = 0; offset < productIds.length; offset += batchSize) {
+    const batchProductIds = productIds.slice(offset, offset + batchSize);
+    const { data, error } = await supabase
+      .from("prices")
+      .select("product_id, shop_id")
+      .in("product_id", batchProductIds)
+      .eq("is_active", true)
+      .eq("availability", "in_stock")
+      .gte("last_seen_at", cutoff);
+
+    if (error) throw error;
+
+    for (const row of (data ?? []) as FreshInstockShopRow[]) {
+      const shopIds = counts.get(row.product_id) ?? new Set<string>();
+      shopIds.add(row.shop_id);
+      counts.set(row.product_id, shopIds);
+    }
+  }
+
+  return new Map(
+    Array.from(counts.entries()).map(([productId, shopIds]) => [
+      productId,
+      shopIds.size,
+    ]),
+  );
 }
 
 function scoreProductMatch(product: ProductRow, query: string, best: BestPriceRow | undefined): number {
@@ -971,16 +1011,18 @@ type ReleaseCalendarRow = {
   product_id: string | null;
 };
 
+function isoDateDaysFromToday(days: number): string {
+  const value = new Date();
+  value.setUTCHours(0, 0, 0, 0);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
 export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalendarItem[]> {
   const supabase = createSupabaseServerClient();
 
-  const minDateValue = new Date();
-  minDateValue.setUTCDate(minDateValue.getUTCDate() - 14);
-  const minDate = minDateValue.toISOString().slice(0, 10);
-
-  const maxDateValue = new Date();
-  maxDateValue.setUTCDate(maxDateValue.getUTCDate() + 14);
-  const maxDate = maxDateValue.toISOString().slice(0, 10);
+  const minDate = isoDateDaysFromToday(-14);
+  const maxDate = isoDateDaysFromToday(0);
 
   /*
    * Haal eerst alle actieve releasevermeldingen binnen het datumvenster op.
@@ -1044,6 +1086,9 @@ export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalen
   }
 
   const releaseOffersMap = await getOffersMap(Array.from(productIds));
+  const freshInstockShopCountMap = await getFreshInstockShopCountMap(
+    Array.from(productIds),
+  );
 
   const seenProductIds = new Set<string>();
   const safeLimit = Math.max(0, Math.floor(limit));
@@ -1053,10 +1098,9 @@ export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalen
       if (!row.product_id) return false;
       if (seenProductIds.has(row.product_id)) return false;
 
-      const bestPrice = bestPriceMap.get(row.product_id);
-      const freshShopCount = bestPrice?.fresh_instock_shop_count ?? 0;
+      const freshShopCount = freshInstockShopCountMap.get(row.product_id) ?? 0;
 
-      if (freshShopCount < 2) return false;
+      if (freshShopCount < 1) return false;
 
       seenProductIds.add(row.product_id);
       return true;
@@ -1088,4 +1132,73 @@ export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalen
           toNumber(bestPrice?.lowest_fresh_price),
       };
     });
+}
+
+export async function getUpcomingReleaseCalendarItems(limit = 120): Promise<ReleaseCalendarItem[]> {
+  const supabase = createSupabaseServerClient();
+
+  const minDate = isoDateDaysFromToday(1);
+  const maxDate = isoDateDaysFromToday(14);
+  const safeLimit = Math.max(0, Math.floor(limit));
+  if (safeLimit === 0) return [];
+
+  const pageSize = 1000;
+  const rows: ReleaseCalendarRow[] = [];
+
+  for (let offset = 0; rows.length < safeLimit; offset += pageSize) {
+    const { data, error } = await supabase
+      .from("release_calendar")
+      .select(
+        "id, ean, artist, title, release_date, source_shop, source_url, format, label, product_id",
+      )
+      .eq("status", "active")
+      .gt("release_date", isoDateDaysFromToday(0))
+      .gte("release_date", minDate)
+      .lte("release_date", maxDate)
+      .order("release_date", { ascending: true })
+      .order("artist", { ascending: true })
+      .range(offset, offset + pageSize - 1);
+
+    if (error) throw error;
+
+    const batch = (data ?? []) as ReleaseCalendarRow[];
+    rows.push(...batch);
+
+    if (batch.length < pageSize) break;
+  }
+
+  const productIds = new Set<string>();
+  const eans = new Set<string>();
+  const sourceUrls = new Set<string>();
+
+  return rows
+    .filter((row) => {
+      const eanKey = row.ean?.trim() ?? "";
+      const sourceUrlKey = row.source_url.trim();
+
+      if (row.product_id && productIds.has(row.product_id)) return false;
+      if (eanKey && eans.has(eanKey)) return false;
+      if (!row.product_id && !eanKey && sourceUrls.has(sourceUrlKey)) return false;
+
+      if (row.product_id) productIds.add(row.product_id);
+      if (eanKey) eans.add(eanKey);
+      if (!row.product_id && !eanKey) sourceUrls.add(sourceUrlKey);
+      return true;
+    })
+    .slice(0, safeLimit)
+    .map((row) => ({
+      id: row.id,
+      ean: row.ean,
+      artist: row.artist,
+      title: row.title,
+      releaseDate: row.release_date,
+      sourceShop: row.source_shop,
+      sourceUrl: row.source_url,
+      imageUrl: null,
+      imageStoragePath: null,
+      format: row.format,
+      label: row.label,
+      productId: row.product_id,
+      lowestPrice: null,
+    }));
 }

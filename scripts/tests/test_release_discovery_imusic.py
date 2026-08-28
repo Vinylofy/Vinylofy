@@ -239,11 +239,13 @@ class IMusicReleaseDiscoveryTests(unittest.TestCase):
 
     def test_new_releases_query_keeps_existing_publication_window_and_filters(self) -> None:
         data_source = source("lib/vinylofy-data.ts")
-        self.assertIn("minDateValue.setUTCDate(minDateValue.getUTCDate() - 14);", data_source)
-        self.assertIn("maxDateValue.setUTCDate(maxDateValue.getUTCDate() + 14);", data_source)
+        self.assertIn("const minDate = isoDateDaysFromToday(-14);", data_source)
+        self.assertIn("const maxDate = isoDateDaysFromToday(0);", data_source)
+        self.assertIn("export async function getUpcomingReleaseCalendarItems", data_source)
+        self.assertIn("const maxDate = isoDateDaysFromToday(14);", data_source)
         self.assertIn('.eq("status", "active")', data_source)
         self.assertIn("if (!row.product_id) return false;", data_source)
-        self.assertIn("if (freshShopCount < 2) return false;", data_source)
+        self.assertIn("if (freshShopCount < 1) return false;", data_source)
 
 
 if __name__ == "__main__":

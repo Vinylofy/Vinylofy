@@ -14,7 +14,7 @@ on:
       past_weeks:
         description: "Past release weeks"
         required: true
-        default: "1"
+        default: "2"
       future_weeks:
         description: "Future release weeks"
         required: true
@@ -58,7 +58,9 @@ jobs:
       - name: Compile release discovery
         run: |
           python -m py_compile \
+            scripts/release_discovery/core/candidates.py \
             scripts/release_discovery/core/release_weeks.py \
+            scripts/release_discovery/jobs/backfill_musicbrainz.py \
             scripts/release_discovery/jobs/discover_bobsvinyl.py \
             scripts/release_discovery/jobs/discover_imusic.py
 
@@ -70,7 +72,7 @@ jobs:
           fi
 
           python -m scripts.release_discovery.jobs.discover_bobsvinyl \
-            --past-weeks "${{ inputs.past_weeks || '1' }}" \
+            --past-weeks "${{ inputs.past_weeks || '2' }}" \
             --future-weeks "${{ inputs.future_weeks || '4' }}" \
             --max-details-per-date "${{ inputs.max_details_per_date || '80' }}" \
             --sleep 0.5 \

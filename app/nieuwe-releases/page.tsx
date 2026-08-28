@@ -5,7 +5,12 @@ import { CoverImage } from "@/components/cover-image";
 
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
-import { formatEuro, getReleaseCalendarItems, type ReleaseCalendarItem } from "@/lib/vinylofy-data";
+import {
+  formatEuro,
+  getReleaseCalendarItems,
+  getUpcomingReleaseCalendarItems,
+  type ReleaseCalendarItem,
+} from "@/lib/vinylofy-data";
 
 export const dynamic = "force-dynamic";
 
@@ -22,7 +27,13 @@ function formatReleaseDate(value: string): string {
   }).format(new Date(`${value}T00:00:00Z`));
 }
 
-
+function formatCompactReleaseDate(value: string): string {
+  return new Intl.DateTimeFormat("nl-NL", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(new Date(`${value}T00:00:00Z`));
+}
 
 function formatVanafPrice(value: number | null | undefined): string | null {
   if (value === null || value === undefined) return null;
@@ -48,6 +59,32 @@ function cleanReleaseTitle(value: string): string {
     .replace(/\s+\|\s*Bob'?s Vinyl\s*$/i, "")
     .replace(/\s+\|\s*Bobsvinyl\s*$/i, "")
     .trim();
+}
+
+function ReleaseTitleLink({ release }: { release: ReleaseCalendarItem }) {
+  const displayTitle = cleanReleaseTitle(release.title);
+
+  if (release.productId) {
+    return (
+      <Link
+        href={`/product/${release.productId}`}
+        className="font-medium text-neutral-950 transition hover:text-orange-600"
+      >
+        {displayTitle}
+      </Link>
+    );
+  }
+
+  return (
+    <a
+      href={release.sourceUrl}
+      target="_blank"
+      rel="noreferrer"
+      className="font-medium text-neutral-950 transition hover:text-orange-600"
+    >
+      {displayTitle}
+    </a>
+  );
 }
 
 function ReleaseCard({ release }: { release: ReleaseCalendarItem }) {
@@ -120,7 +157,10 @@ function ReleaseCard({ release }: { release: ReleaseCalendarItem }) {
   );
 }
 export default async function NieuweReleasesPage() {
-  const releases = await getReleaseCalendarItems(180);
+  const [releases, upcomingReleases] = await Promise.all([
+    getReleaseCalendarItems(180),
+    getUpcomingReleaseCalendarItems(500),
+  ]);
   const groupedReleases = groupByReleaseDate(releases);
   const linkedCount = releases.filter((release) => release.productId).length;
 
@@ -139,7 +179,7 @@ export default async function NieuweReleasesPage() {
           </h1>
 
           <p className="mt-3 text-base leading-7 text-neutral-600">
-            Aankomende en recente vinyl releases uit aangesloten releasebronnen. Releases met een bekende EAN kunnen naar een Vinylofy productpagina linken.
+            Recente vinyl releases uit aangesloten releasebronnen, aangevuld met een compacte kalender voor wat eraan komt.
           </p>
 
           <div className="mt-5 flex flex-wrap gap-2 text-xs text-neutral-600">
@@ -149,13 +189,16 @@ export default async function NieuweReleasesPage() {
             <span className="rounded-full border border-neutral-200 bg-white px-3 py-1">
               {linkedCount} gekoppeld aan Vinylofy
             </span>
+            <span className="rounded-full border border-neutral-200 bg-white px-3 py-1">
+              {upcomingReleases.length} verwacht
+            </span>
           </div>
         </div>
       </section>
 
-      <section className="mx-auto max-w-6xl px-6 pb-16">
+      <section className="mx-auto max-w-6xl px-6 pb-10">
         {groupedReleases.length === 0 ? (
-          <div className="rounded-3xl border border-neutral-200 bg-white p-6 text-sm text-neutral-600">
+          <div className="rounded-2xl border border-neutral-200 bg-white p-6 text-sm text-neutral-600">
             Nog geen releases beschikbaar.
           </div>
         ) : (
@@ -178,6 +221,74 @@ export default async function NieuweReleasesPage() {
                 </div>
               </section>
             ))}
+          </div>
+        )}
+      </section>
+
+      <section className="mx-auto max-w-6xl px-6 pb-16">
+        <div className="mb-4 border-b border-neutral-200 pb-3">
+          <div className="text-xs font-semibold uppercase tracking-[0.18em] text-orange-600">
+            Binnenkort op vinyl
+          </div>
+          <h2 className="mt-2 text-2xl font-semibold tracking-tight text-neutral-950">
+            Verwachte releases
+          </h2>
+        </div>
+
+        {upcomingReleases.length === 0 ? (
+          <div className="rounded-2xl border border-neutral-200 bg-white p-6 text-sm text-neutral-600">
+            Nog geen toekomstige releases beschikbaar.
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-white shadow-sm">
+            <div className="hidden md:block">
+              <table className="w-full border-collapse text-left text-sm">
+                <thead className="bg-neutral-100 text-xs font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                  <tr>
+                    <th scope="col" className="w-36 px-4 py-3">
+                      Datum
+                    </th>
+                    <th scope="col" className="px-4 py-3">
+                      Artiest
+                    </th>
+                    <th scope="col" className="px-4 py-3">
+                      Titel
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-100">
+                  {upcomingReleases.map((release) => (
+                    <tr key={release.id} className="align-top transition hover:bg-orange-50/50">
+                      <td className="whitespace-nowrap px-4 py-3 text-neutral-600">
+                        {formatCompactReleaseDate(release.releaseDate)}
+                      </td>
+                      <td className="px-4 py-3 font-medium text-neutral-950">
+                        {release.artist}
+                      </td>
+                      <td className="px-4 py-3">
+                        <ReleaseTitleLink release={release} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="divide-y divide-neutral-100 md:hidden">
+              {upcomingReleases.map((release) => (
+                <article key={release.id} className="px-4 py-4">
+                  <div className="text-xs font-medium uppercase tracking-[0.12em] text-neutral-500">
+                    {formatCompactReleaseDate(release.releaseDate)}
+                  </div>
+                  <h3 className="mt-2 text-sm font-semibold text-neutral-950">
+                    {release.artist}
+                  </h3>
+                  <p className="mt-1 text-sm leading-6 text-neutral-700">
+                    <ReleaseTitleLink release={release} />
+                  </p>
+                </article>
+              ))}
+            </div>
           </div>
         )}
       </section>

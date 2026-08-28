@@ -8,7 +8,7 @@ def friday_for_week(anchor: date | None = None) -> date:
     return today + timedelta(days=(4 - today.weekday()) % 7)
 
 
-def release_fridays(past_weeks: int = 1, future_weeks: int = 4, anchor: date | None = None) -> list[date]:
+def release_fridays(past_weeks: int = 2, future_weeks: int = 4, anchor: date | None = None) -> list[date]:
     base = friday_for_week(anchor)
     return [base + timedelta(weeks=i) for i in range(-past_weeks, future_weeks + 1)]
 
