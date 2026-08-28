@@ -81,6 +81,7 @@ class ReleaseCalendarContractTests(unittest.TestCase):
             source("scripts/release_discovery/jobs/discover_bobsvinyl.py")
             + source("scripts/release_discovery/jobs/discover_imusic.py")
             + source("scripts/release_discovery/jobs/backfill_musicbrainz.py")
+            + source("scripts/release_discovery/jobs/discover_upcomingvinyl.py")
         ).lower()
         self.assertNotIn("status = 'inactive'", combined)
         self.assertNotIn("release_date = null", combined)
