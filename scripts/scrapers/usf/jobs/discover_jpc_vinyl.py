@@ -25,6 +25,7 @@ PRODUCT_HREF_RE = re.compile(
     r"/jpcng/[^?#]+/detail/-/art/[^?#]+/hnum/([0-9]+)(?:[/?#]|$)",
     flags=re.I,
 )
+VINYL_TAXONOMY_CID_RE = re.compile(r"^/s/1238692_[0-9]+$", flags=re.I)
 EURO_PRICE_RE = re.compile(r"(?:EUR|€)\s*([0-9]+(?:[.,][0-9]{2}))", flags=re.I)
 VINYL_MEDIA_RE = re.compile(
     r"\b(?:[0-9]+\s*)?LPs?\b|\bSingle\s*(?:7|10|12)\"|\bVinyl\b",
@@ -40,8 +41,6 @@ DEFAULT_ROUTE_SPECS = (
     "pop=https://www.jpc.de/s/1238692_66726?searchtype=cid",
     "metal=https://www.jpc.de/s/1238692_66718?searchtype=cid",
     "soul-funk=https://www.jpc.de/s/1238692_66740?searchtype=cid",
-    "vinyl-neuheiten=https://www.jpc.de/s/1194801_1832?searchtype=cid",
-    "180g=https://www.jpc.de/s/1238692_81785?searchtype=cid",
 )
 
 EXCLUDED_ROUTE_LABEL_MARKERS = {
@@ -104,6 +103,46 @@ def parse_route_specs(value: str | None) -> list[RouteSpec]:
         raise SystemExit("[ERROR] Geef minimaal een JPC route of gebruik default.")
 
     return specs
+
+
+def canonical_taxonomy_route_url(href: str) -> str | None:
+    parsed = urlparse(href)
+    if parsed.netloc and parsed.netloc.lower() not in {"www.jpc.de", "jpc.de"}:
+        return None
+    if not VINYL_TAXONOMY_CID_RE.match(parsed.path):
+        return None
+
+    params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if params.get("searchtype") != "cid":
+        return None
+
+    return urlunparse(
+        (
+            "https",
+            "www.jpc.de",
+            parsed.path,
+            "",
+            urlencode({"searchtype": "cid"}),
+            "",
+        )
+    )
+
+
+def is_listing_page_url(url: str) -> bool:
+    parsed = urlparse(url)
+    if parsed.netloc and parsed.netloc.lower() not in {"www.jpc.de", "jpc.de"}:
+        return False
+    if "/detail/" in parsed.path or parsed.fragment:
+        return False
+    if parsed.path.startswith("/jpcng/vinyl/static/"):
+        return False
+    if parsed.path == "/jpcng/vinyl/home":
+        return False
+    if canonical_taxonomy_route_url(url):
+        return True
+    if parsed.path in {"/jpcng/vinyl/offers", "/jpcng/vinyl/charts"}:
+        return True
+    return False
 
 
 def build_session() -> requests.Session:
@@ -330,12 +369,7 @@ def route_is_probably_vinyl(label: str, href: str) -> bool:
     if any(marker in text for marker in EXCLUDED_ROUTE_LABEL_MARKERS):
         return False
 
-    if "/jpcng/vinyl/" in href:
-        return True
-    if "searchtype=cid" in href and "/s/" in href:
-        return True
-
-    return False
+    return canonical_taxonomy_route_url(href) is not None
 
 
 def discover_route_index(
@@ -363,6 +397,7 @@ def discover_route_index(
         if not route_is_probably_vinyl(label, href):
             continue
 
+        href = canonical_taxonomy_route_url(href) or href
         name = normalize_route_label(label or urlparse(href).path)
         routes_by_url[href] = RouteSpec(name=name, url=href, source="vinyl_home")
 
@@ -374,7 +409,9 @@ def extract_next_url(html: str, *, current_url: str) -> str | None:
 
     rel_next = soup.find("a", attrs={"rel": lambda value: value and "next" in str(value).lower()})
     if rel_next and rel_next.get("href"):
-        return urljoin(current_url, clean(rel_next.get("href")))
+        candidate = urljoin(current_url, clean(rel_next.get("href")))
+        if is_listing_page_url(candidate):
+            return candidate
 
     for anchor in soup.find_all("a", href=True):
         text = clean(anchor.get_text(" ", strip=True)).lower()
@@ -385,7 +422,9 @@ def extract_next_url(html: str, *, current_url: str) -> str | None:
             marker in combined
             for marker in ("weiter", "nachste", "nächste", "next", "folgende")
         ):
-            return urljoin(current_url, clean(anchor.get("href")))
+            candidate = urljoin(current_url, clean(anchor.get("href")))
+            if is_listing_page_url(candidate):
+                return candidate
 
     return None
 
@@ -559,7 +598,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="default",
         help=(
             "Comma-separated route specs: name=url,name=url. "
-            "Gebruik default voor Rock/Pop/Metal/Soul-Funk/Neuheiten/180g."
+            "Gebruik default voor Rock/Pop/Metal/Soul-Funk; "
+            "--include-route-index volgt overige vinyl-taxonomie-CID's."
         ),
     )
     parser.add_argument(

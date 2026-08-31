@@ -7,7 +7,11 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.scrapers.usf.jobs.detail_jpc import parse_offer
-from scripts.scrapers.usf.jobs.discover_jpc_vinyl import RouteSpec, parse_listing_links
+from scripts.scrapers.usf.jobs.discover_jpc_vinyl import (
+    RouteSpec,
+    parse_listing_links,
+    route_is_probably_vinyl,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -100,12 +104,34 @@ def run_tests() -> None:
     assert parsed.availability == "in_stock"
     assert parsed.format_label == "LP"
 
+    assert route_is_probably_vinyl(
+        "Rock",
+        "https://www.jpc.de/s/1238692_66733?searchtype=cid",
+    )
+    assert not route_is_probably_vinyl(
+        "Switch to English",
+        "https://www.jpc.de/jpcng/vinyl/home?lang=en",
+    )
+    assert not route_is_probably_vinyl(
+        "Vinyl Lagerraeumung",
+        "https://www.jpc.de/s/1238777_121878?searchtype=cid&vinyl_home_heroshot_lagerraumung",
+    )
+    assert not route_is_probably_vinyl(
+        "Vinyl immer portofrei",
+        "https://www.jpc.de/jpcng/vinyl/static/-/page/vinyl-immer-portofrei",
+    )
+    assert not route_is_probably_vinyl(
+        "Review",
+        "https://www.jpc.de/jpcng/poprock/detail/-/art/prince-timeless/hnum/12767124#reviews",
+    )
+
     print("[TEST-OK] alle JPC-jobs aanwezig")
     print("[TEST-OK] runner gebruikt alle JPC-modules")
     print("[TEST-OK] detail vereist EAN voor raw offers")
     print("[TEST-OK] JPC detail blijft listing-first")
     print("[TEST-OK] JPC promotie gebruikt land DE")
     print("[TEST-OK] JPC parsers halen listingprijs en detail-EAN uit HTML")
+    print("[TEST-OK] JPC route-index volgt alleen vinyl-taxonomie-CID's")
 
 
 if __name__ == "__main__":
