@@ -25,7 +25,7 @@ PRODUCT_HREF_RE = re.compile(
     r"/jpcng/[^?#]+/detail/-/art/[^?#]+/hnum/([0-9]+)(?:[/?#]|$)",
     flags=re.I,
 )
-VINYL_TAXONOMY_CID_RE = re.compile(r"^/s/1238692_[0-9]+$", flags=re.I)
+VINYL_TAXONOMY_CID_RE = re.compile(r"^/(?:s|ff)/1238692_[0-9]+$", flags=re.I)
 EURO_PRICE_RE = re.compile(r"(?:EUR|€)\s*([0-9]+(?:[.,][0-9]{2}))", flags=re.I)
 VINYL_MEDIA_RE = re.compile(
     r"\b(?:[0-9]+\s*)?LPs?\b|\bSingle\s*(?:7|10|12)\"|\bVinyl\b",
@@ -120,9 +120,27 @@ def canonical_taxonomy_route_url(href: str) -> str | None:
         (
             "https",
             "www.jpc.de",
-            parsed.path,
+            parsed.path.replace("/ff/", "/s/", 1),
             "",
             urlencode({"searchtype": "cid"}),
+            "",
+        )
+    )
+
+
+def ff_page_url(route_url: str, *, page_number: int) -> str | None:
+    parsed = urlparse(route_url)
+    match = re.match(r"^/s/(1238692_[0-9]+)$", parsed.path, flags=re.I)
+    if not match:
+        return None
+
+    return urlunparse(
+        (
+            "https",
+            "www.jpc.de",
+            f"/ff/{match.group(1)}",
+            "",
+            urlencode({"page": str(page_number), "searchtype": "cid"}),
             "",
         )
     )
@@ -139,8 +157,6 @@ def is_listing_page_url(url: str) -> bool:
     if parsed.path == "/jpcng/vinyl/home":
         return False
     if canonical_taxonomy_route_url(url):
-        return True
-    if parsed.path in {"/jpcng/vinyl/offers", "/jpcng/vinyl/charts"}:
         return True
     return False
 
@@ -432,6 +448,8 @@ def extract_next_url(html: str, *, current_url: str) -> str | None:
 def add_page_fallback(url: str, *, page_number: int, mode: str) -> str | None:
     if mode == "none":
         return None
+    if mode == "ff":
+        return ff_page_url(url, page_number=page_number)
 
     parsed = urlparse(url)
     params = dict(parse_qsl(parsed.query, keep_blank_values=True))
@@ -610,9 +628,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-pages-per-route", type=int, default=1)
     parser.add_argument(
         "--pagination-fallback",
-        choices=("none", "page", "pn"),
-        default="none",
-        help="Alleen gebruiken als JPC geen next-link aanbiedt en de parameter is bewezen.",
+        choices=("none", "ff", "page", "pn"),
+        default="ff",
+        help=(
+            "Fallback voor vervolgpagina's. JPC vinyl-taxonomie gebruikt "
+            "/ff/<cid>?page=N&searchtype=cid."
+        ),
     )
     parser.add_argument("--delay", type=float, default=DEFAULT_DELAY_SECONDS)
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)

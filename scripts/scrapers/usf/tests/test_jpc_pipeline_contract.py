@@ -9,6 +9,8 @@ sys.path.insert(0, str(REPO_ROOT))
 from scripts.scrapers.usf.jobs.detail_jpc import parse_offer
 from scripts.scrapers.usf.jobs.discover_jpc_vinyl import (
     RouteSpec,
+    add_page_fallback,
+    canonical_taxonomy_route_url,
     parse_listing_links,
     route_is_probably_vinyl,
 )
@@ -127,6 +129,14 @@ def run_tests() -> None:
         "Review",
         "https://www.jpc.de/jpcng/poprock/detail/-/art/prince-timeless/hnum/12767124#reviews",
     )
+    assert canonical_taxonomy_route_url(
+        "https://www.jpc.de/ff/1238692_66697?page=40&searchtype=cid"
+    ) == "https://www.jpc.de/s/1238692_66697?searchtype=cid"
+    assert add_page_fallback(
+        "https://www.jpc.de/s/1238692_66697?searchtype=cid",
+        page_number=40,
+        mode="ff",
+    ) == "https://www.jpc.de/ff/1238692_66697?page=40&searchtype=cid"
 
     print("[TEST-OK] alle JPC-jobs aanwezig")
     print("[TEST-OK] runner gebruikt alle JPC-modules")
@@ -136,6 +146,7 @@ def run_tests() -> None:
     print("[TEST-OK] JPC parsers halen listingprijs en detail-EAN uit HTML")
     print("[TEST-OK] JPC route-index volgt alleen vinyl-taxonomie-CID's")
     print("[TEST-OK] JPC runner ondersteunt losse write-flags")
+    print("[TEST-OK] JPC pagination gebruikt bewezen /ff/<cid>?page=N route")
 
 
 if __name__ == "__main__":

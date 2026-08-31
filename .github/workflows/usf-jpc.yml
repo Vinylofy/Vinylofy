@@ -19,11 +19,12 @@ on:
         default: "1"
         type: string
       pagination_fallback:
-        description: "Fallback pagination-param; none tenzij bewezen"
+        description: "Fallback pagination; ff gebruikt /ff/<cid>?page=N"
         required: true
-        default: "none"
+        default: "ff"
         type: choice
         options:
+          - "ff"
           - "none"
           - "page"
           - "pn"

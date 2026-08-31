@@ -53,8 +53,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-pages-per-route", type=int, default=1)
     parser.add_argument(
         "--pagination-fallback",
-        choices=("none", "page", "pn"),
-        default="none",
+        choices=("none", "ff", "page", "pn"),
+        default="ff",
     )
     parser.add_argument("--discovery-timeout", type=float, default=25.0)
     parser.add_argument("--discovery-sleep", type=float, default=4.0)
