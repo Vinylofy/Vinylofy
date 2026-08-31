@@ -80,6 +80,36 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Voer echte registry-, raw-, staging- en publieke writes uit.",
     )
+    parser.add_argument(
+        "--discovery-write",
+        action="store_true",
+        help="Schrijf alleen JPC discovered links naar shop_product_links.",
+    )
+    parser.add_argument(
+        "--requeue-write",
+        action="store_true",
+        help="Voer alleen JPC stale-link requeue writes uit.",
+    )
+    parser.add_argument(
+        "--detail-write",
+        action="store_true",
+        help="Schrijf alleen JPC detailresultaten naar raw_shop_scrapes.",
+    )
+    parser.add_argument(
+        "--stage-write",
+        action="store_true",
+        help="Schrijf alleen JPC staged_offers.",
+    )
+    parser.add_argument(
+        "--promote-write",
+        action="store_true",
+        help="Schrijf alleen JPC public promotion writes.",
+    )
+    parser.add_argument(
+        "--quarantine-write",
+        action="store_true",
+        help="Schrijf alleen JPC quarantine rows.",
+    )
 
     return parser
 
@@ -129,7 +159,16 @@ def main() -> int:
     print(f"[PIPELINE] detail_limit={args.detail_limit}")
     print(f"[PIPELINE] stage_limit={args.stage_limit}")
     print(f"[PIPELINE] promote_limit={args.promote_limit}")
-    print(f"[PIPELINE] write={args.write}")
+    effective_writes = {
+        "discovery": args.write or args.discovery_write,
+        "requeue": args.write or args.requeue_write,
+        "detail": args.write or args.detail_write,
+        "stage": args.write or args.stage_write,
+        "promote": args.write or args.promote_write,
+        "quarantine": args.write or args.quarantine_write,
+    }
+    print(f"[PIPELINE] write_all={args.write}")
+    print(f"[PIPELINE] effective_writes={effective_writes}")
 
     if not args.skip_discovery:
         command = [
@@ -149,7 +188,10 @@ def main() -> int:
         ]
         if args.include_route_index:
             command.append("--include-route-index")
-        run_step("discover_jpc_vinyl", add_write_flag(command, args.write))
+        run_step(
+            "discover_jpc_vinyl",
+            add_write_flag(command, effective_writes["discovery"]),
+        )
 
     if not args.skip_requeue:
         command = [
@@ -165,7 +207,10 @@ def main() -> int:
             "--target-queue",
             str(args.requeue_target_queue),
         ]
-        run_step("requeue_stale_links", add_write_flag(command, args.write))
+        run_step(
+            "requeue_stale_links",
+            add_write_flag(command, effective_writes["requeue"]),
+        )
 
     if not args.skip_detail:
         command = [
@@ -179,7 +224,10 @@ def main() -> int:
             "--sleep",
             str(args.detail_sleep),
         ]
-        run_step("detail_jpc", add_write_flag(command, args.write))
+        run_step(
+            "detail_jpc",
+            add_write_flag(command, effective_writes["detail"]),
+        )
 
     if not args.skip_stage:
         command = [
@@ -189,7 +237,10 @@ def main() -> int:
             "--limit",
             str(args.stage_limit),
         ]
-        run_step("stage_jpc", add_write_flag(command, args.write))
+        run_step(
+            "stage_jpc",
+            add_write_flag(command, effective_writes["stage"]),
+        )
 
     if not args.skip_promote:
         command = [
@@ -199,7 +250,10 @@ def main() -> int:
             "--limit",
             str(args.promote_limit),
         ]
-        run_step("promote_jpc", add_write_flag(command, args.write))
+        run_step(
+            "promote_jpc",
+            add_write_flag(command, effective_writes["promote"]),
+        )
 
     if not args.skip_quarantine:
         command = [
@@ -209,7 +263,10 @@ def main() -> int:
             "--limit",
             str(args.quarantine_limit),
         ]
-        run_step("quarantine_jpc", add_write_flag(command, args.write))
+        run_step(
+            "quarantine_jpc",
+            add_write_flag(command, effective_writes["quarantine"]),
+        )
 
     print("\n[PIPELINE] COMPLETE")
     return 0

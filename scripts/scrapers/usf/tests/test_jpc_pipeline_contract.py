@@ -49,6 +49,9 @@ def run_tests() -> None:
     assert "listing_price_and_availability_are_authoritative" in detail
     assert "listing_price_raw or parsed.price_raw" in detail
     assert "include-route-index" in discovery
+    assert "--discovery-write" in runner
+    assert "--detail-write" in runner
+    assert "effective_writes" in runner
     assert 'shop_country="DE"' in promote
     assert 'shop_domain="jpc.de"' in promote
 
@@ -132,6 +135,7 @@ def run_tests() -> None:
     print("[TEST-OK] JPC promotie gebruikt land DE")
     print("[TEST-OK] JPC parsers halen listingprijs en detail-EAN uit HTML")
     print("[TEST-OK] JPC route-index volgt alleen vinyl-taxonomie-CID's")
+    print("[TEST-OK] JPC runner ondersteunt losse write-flags")
 
 
 if __name__ == "__main__":

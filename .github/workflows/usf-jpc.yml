@@ -72,8 +72,38 @@ on:
         required: true
         default: "100"
         type: string
+      discovery_write:
+        description: "Alleen JPC discovered links naar shop_product_links schrijven"
+        required: true
+        default: false
+        type: boolean
+      requeue_write:
+        description: "Alleen stale JPC links opnieuw in detailqueue zetten"
+        required: true
+        default: false
+        type: boolean
+      detail_write:
+        description: "Alleen JPC detail/EAN-resultaten naar raw_shop_scrapes schrijven"
+        required: true
+        default: false
+        type: boolean
+      stage_write:
+        description: "Alleen JPC raw snapshots naar staged_offers schrijven"
+        required: true
+        default: false
+        type: boolean
+      promote_write:
+        description: "Alleen JPC staged offers naar publieke tabellen promoveren"
+        required: true
+        default: false
+        type: boolean
+      quarantine_write:
+        description: "Alleen JPC promote errors quarantinen"
+        required: true
+        default: false
+        type: boolean
       write:
-        description: "Werkelijke databasewrites uitvoeren"
+        description: "Alle JPC databasewrites uitvoeren; overschrijft losse write-flags"
         required: true
         default: false
         type: boolean
@@ -202,6 +232,30 @@ jobs:
 
           if [ "${{ inputs.include_route_index }}" = "true" ]; then
             COMMAND+=(--include-route-index)
+          fi
+
+          if [ "${{ inputs.discovery_write }}" = "true" ]; then
+            COMMAND+=(--discovery-write)
+          fi
+
+          if [ "${{ inputs.requeue_write }}" = "true" ]; then
+            COMMAND+=(--requeue-write)
+          fi
+
+          if [ "${{ inputs.detail_write }}" = "true" ]; then
+            COMMAND+=(--detail-write)
+          fi
+
+          if [ "${{ inputs.stage_write }}" = "true" ]; then
+            COMMAND+=(--stage-write)
+          fi
+
+          if [ "${{ inputs.promote_write }}" = "true" ]; then
+            COMMAND+=(--promote-write)
+          fi
+
+          if [ "${{ inputs.quarantine_write }}" = "true" ]; then
+            COMMAND+=(--quarantine-write)
           fi
 
           if [ "${{ inputs.write }}" = "true" ]; then
