@@ -34,7 +34,7 @@ export default async function TopDealsPage() {
               De grootste prijsverschillen op vinyl, gevonden door Vinylofy.
             </p>
             <p className="mt-3 text-sm font-medium text-neutral-900">
-              Zelfde plaat. Zelfde EAN. Andere prijs.
+              Dezelfde plaat kan elders een andere prijs hebben.
             </p>
             <p className="mt-2 text-sm text-neutral-500">
               We vergelijken actuele productprijzen. Verzendkosten tellen niet mee in deze ranking.

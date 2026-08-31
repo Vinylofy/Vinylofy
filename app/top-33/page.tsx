@@ -9,6 +9,7 @@ import {
   getDutchchartsVinylTop33,
   type DutchchartsVinylTop33Item,
 } from "@/lib/dutchcharts-vinyl-top33";
+import top33Visual from "./Top33new.png";
 
 export const dynamic = "force-dynamic";
 
@@ -77,19 +78,17 @@ export default async function Top33Page() {
       <SiteHeader searchSlot={<SearchControls initialQuery="" />} />
 
       <main className="mx-auto max-w-5xl px-4 py-10 sm:px-6 lg:px-8">
-        <section className="rounded-[2rem] border border-neutral-200 bg-neutral-50 p-6 sm:p-10">
+        <section>
           <p className="inline-flex rounded-full bg-orange-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-orange-700">
             Vinylofy chart
           </p>
 
           <div className="mt-6 flex justify-center">
             <Image
-              src="/home-cards/top-25-white.png"
+              src={top33Visual}
               alt="Vinyl Top 33"
-              width={260}
-              height={160}
               priority
-              className="h-auto w-full max-w-[13rem]"
+              className="h-auto w-full max-w-[30rem] rounded-3xl"
             />
           </div>
 
@@ -102,7 +101,7 @@ export default async function Top33Page() {
           </p>
         </section>
 
-        <section className="mt-8">
+        <section className="mt-4">
           {items.length > 0 ? (
             <ol className="space-y-3">
               {items.map((item) => (

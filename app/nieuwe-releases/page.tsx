@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { CoverImage } from "@/components/cover-image";
 
+import { SearchControls } from "@/components/search/search-controls";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import {
@@ -166,7 +167,7 @@ export default async function NieuweReleasesPage() {
 
   return (
     <main className="min-h-screen bg-neutral-50 text-neutral-950">
-      <SiteHeader />
+      <SiteHeader searchSlot={<SearchControls initialQuery="" />} />
 
       <section className="mx-auto max-w-6xl px-6 pb-6 pt-8 md:pt-10">
         <div className="max-w-3xl">

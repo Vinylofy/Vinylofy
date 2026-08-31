@@ -47,7 +47,6 @@ export function TopDealCard({ deal, rank }: TopDealCardProps) {
 
           <div className="mt-2 flex flex-wrap gap-2 text-xs text-neutral-500">
             {deal.formatLabel ? <span>{deal.formatLabel}</span> : null}
-            {deal.ean ? <span>EAN {deal.ean}</span> : null}
           </div>
 
           <p className="mt-4 text-lg font-semibold text-neutral-950">

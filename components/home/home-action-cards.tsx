@@ -12,7 +12,7 @@ const links: QuickLink[] = [
   {
     href: "/nieuwe-releases",
     label: "Nieuwe releases",
-    subtitle: "Vers binnen",
+    subtitle: "Vers binnen en aangekondigd",
     imageSrc: "/home-cards/blok1.png",
   },
   {

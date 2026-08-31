@@ -26,7 +26,7 @@ export function HeroSearch() {
           Zoek op artiest of albumtitel. Suggesties tonen alleen artiesten.
         </p>
 
-        <div className="mt-4 w-full max-w-[920px]">
+        <div className="mt-6 w-full max-w-[920px] md:mt-8">
           <HomeActionCards />
         </div>
 
