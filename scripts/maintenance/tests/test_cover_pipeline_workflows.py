@@ -44,16 +44,10 @@ class CoverPipelineWorkflowTests(unittest.TestCase):
         backfill = source(BACKFILL)
 
         expected_bulk_crons = (
-            'cron: "7 0 12-21 8 *"',
-            'cron: "31 2 12-21 8 *"',
-            'cron: "55 4 12-21 8 *"',
-            'cron: "19 7 12-21 8 *"',
-            'cron: "43 9 12-21 8 *"',
-            'cron: "7 12 12-21 8 *"',
-            'cron: "31 14 12-21 8 *"',
-            'cron: "55 16 12-21 8 *"',
-            'cron: "19 19 12-21 8 *"',
-            'cron: "43 21 12-21 8 *"',
+            'cron: "7 0 1-5 9 *"',
+            'cron: "7 6 1-5 9 *"',
+            'cron: "7 12 1-5 9 *"',
+            'cron: "7 18 1-5 9 *"',
         )
 
         self.assertEqual(
@@ -68,11 +62,11 @@ class CoverPipelineWorkflowTests(unittest.TestCase):
             )
 
         self.assertIn(
-            '"2026-08-12"',
+            '"2026-09-01"',
             backfill,
         )
         self.assertIn(
-            '"2026-08-21"',
+            '"2026-09-05"',
             backfill,
         )
 

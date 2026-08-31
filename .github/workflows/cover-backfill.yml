@@ -36,19 +36,13 @@ on:
         type: boolean
 
   # Tijdelijke bulkfill:
-  # 10 runs per dag van 12 t/m 23 augustus 2026.
+  # 4 runs per dag van 1 t/m 5 september 2026.
   # Cron is UTC; Nederland is in deze periode CEST (UTC+2).
   schedule:
-    - cron: "7 0 12-23 8 *"
-    - cron: "31 2 12-23 8 *"
-    - cron: "55 4 12-23 8 *"
-    - cron: "19 7 12-23 8 *"
-    - cron: "43 9 12-23 8 *"
-    - cron: "7 12 12-23 8 *"
-    - cron: "31 14 12-23 8 *"
-    - cron: "55 16 12-23 8 *"
-    - cron: "19 19 12-23 8 *"
-    - cron: "43 21 12-23 8 *"
+    - cron: "7 0 1-5 9 *"
+    - cron: "7 6 1-5 9 *"
+    - cron: "7 12 1-5 9 *"
+    - cron: "7 18 1-5 9 *"
 
 permissions:
   actions: read
@@ -109,10 +103,10 @@ jobs:
 
           # Cron kent geen jaarveld. Buiten deze exacte periode
           # mag de tijdelijke bulkfill nooit meer uitvoeren.
-          if [[ "$TODAY" < "2026-08-12" || "$TODAY" > "2026-08-23" ]]; then
+          if [[ "$TODAY" < "2026-09-01" || "$TODAY" > "2026-09-05" ]]; then
             {
               echo "run_backfill=false"
-              echo "reason=outside-2026-bulk-window"
+              echo "reason=outside-2026-september-backfill-window"
             } >> "$GITHUB_OUTPUT"
 
             exit 0

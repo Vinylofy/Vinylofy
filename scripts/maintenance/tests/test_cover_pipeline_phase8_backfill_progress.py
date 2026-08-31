@@ -289,12 +289,12 @@ class Phase8BackfillProgressTests(
         )
         self.assertEqual(
             text.count("cron:"),
-            10,
+            4,
         )
 
         for token in (
-            '"2026-08-12"',
-            '"2026-08-21"',
+            '"2026-09-01"',
+            '"2026-09-05"',
             "scheduled-bulk",
             "gh run download",
             "resume_checkpoint",
