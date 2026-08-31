@@ -46,8 +46,14 @@ class Cursor:
         return False
 
     def fetchall(self):
-        domain = self.executed[-1][1][0]
-        return self.matches_by_domain.get(domain, [])
+        domains = self.executed[-1][1][0]
+        if isinstance(domains, str):
+            domains = [domains]
+        for domain in domains:
+            matches = self.matches_by_domain.get(domain)
+            if matches is not None:
+                return matches
+        return []
 
     def executemany(self, sql, payload):
         if self.fail_on_write:

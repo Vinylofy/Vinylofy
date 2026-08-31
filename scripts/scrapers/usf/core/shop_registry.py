@@ -77,6 +77,13 @@ STABLE_SHOPS: dict[str, ShopDefinition] = {
         output_dir="data/raw/imusic",
         notes="EAN-only USF detail lookup; no catalog discovery.",
     ),
+    "jpc": ShopDefinition(
+        key="jpc",
+        scraper_module="scripts.scrapers.usf.jobs.detail_jpc",
+        importer_module="scripts.scrapers.usf.jobs.promote_jpc",
+        output_dir="data/raw/jpc",
+        notes="Large-catalog JPC vinyl discovery plus batched EAN detail enrichment.",
+    ),
 
 }
 

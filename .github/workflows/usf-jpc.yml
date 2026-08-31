@@ -1,0 +1,223 @@
+name: USF - JPC
+
+on:
+  workflow_dispatch:
+    inputs:
+      routes:
+        description: "JPC routes: default of comma-separated name=url specs"
+        required: true
+        default: "default"
+        type: string
+      include_route_index:
+        description: "Ook de JPC vinyl-home uitlezen als route-index"
+        required: true
+        default: true
+        type: boolean
+      max_pages_per_route:
+        description: "Aantal listingpagina's per route"
+        required: true
+        default: "1"
+        type: string
+      pagination_fallback:
+        description: "Fallback pagination-param; none tenzij bewezen"
+        required: true
+        default: "none"
+        type: choice
+        options:
+          - "none"
+          - "page"
+          - "pn"
+      discovery_sleep:
+        description: "Wachttijd tussen JPC listingpagina's"
+        required: true
+        default: "4.0"
+        type: string
+      requeue_stale_hours:
+        description: "Minimale ouderdom voor JPC detailrefresh"
+        required: true
+        default: "72"
+        type: string
+      requeue_limit:
+        description: "Maximaal aantal stale links requeueen"
+        required: true
+        default: "250"
+        type: string
+      requeue_target_queue:
+        description: "Queue maximaal aanvullen tot dit aantal"
+        required: true
+        default: "500"
+        type: string
+      detail_limit:
+        description: "Maximaal aantal JPC detail/EAN-lookups"
+        required: true
+        default: "100"
+        type: string
+      detail_sleep:
+        description: "Wachttijd tussen JPC detailpagina's"
+        required: true
+        default: "4.0"
+        type: string
+      stage_limit:
+        description: "Maximaal aantal raw snapshots naar staged_offers"
+        required: true
+        default: "100"
+        type: string
+      promote_limit:
+        description: "Maximaal aantal staged offers promoveren"
+        required: true
+        default: "100"
+        type: string
+      quarantine_limit:
+        description: "Maximaal aantal promote errors quarantinen"
+        required: true
+        default: "100"
+        type: string
+      write:
+        description: "Werkelijke databasewrites uitvoeren"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usf-jpc-production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate JPC USF pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
+          pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+
+      - name: Compile JPC USF modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/scrapers/usf/core/db.py \
+            scripts/scrapers/usf/core/link_registry.py \
+            scripts/scrapers/usf/core/staging.py \
+            scripts/scrapers/usf/core/promotion.py \
+            scripts/scrapers/usf/core/promotion_writer.py \
+            scripts/scrapers/usf/core/quarantine.py \
+            scripts/scrapers/usf/jobs/discover_jpc_vinyl.py \
+            scripts/scrapers/usf/jobs/detail_jpc.py \
+            scripts/scrapers/usf/jobs/stage_jpc.py \
+            scripts/scrapers/usf/jobs/promote_jpc.py \
+            scripts/scrapers/usf/jobs/quarantine_jpc.py \
+            scripts/scrapers/usf/jobs/run_jpc_pipeline.py
+
+      - name: Validate command-line interfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m scripts.scrapers.usf.jobs.discover_jpc_vinyl --help
+          python -m scripts.scrapers.usf.jobs.detail_jpc --help
+          python -m scripts.scrapers.usf.jobs.stage_jpc --help
+          python -m scripts.scrapers.usf.jobs.promote_jpc --help
+          python -m scripts.scrapers.usf.jobs.quarantine_jpc --help
+          python -m scripts.scrapers.usf.jobs.run_jpc_pipeline --help
+          python scripts/scrapers/usf/tests/test_jpc_pipeline_contract.py
+
+  run:
+    name: Run JPC USF pipeline
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-scrapers.txt ]; then pip install -r requirements-scrapers.txt; fi
+          pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+
+      - name: Validate configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          if not os.environ.get("DATABASE_URL"):
+              raise SystemExit("[ERROR] GitHub secret DATABASE_URL ontbreekt")
+          print("[CONFIG] DATABASE_URL is ingesteld")
+          PY
+
+      - name: Run JPC USF pipeline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output/usf-jpc
+
+          COMMAND=(
+            python -u -m scripts.scrapers.usf.jobs.run_jpc_pipeline
+            --routes "${{ inputs.routes }}"
+            --max-pages-per-route "${{ inputs.max_pages_per_route }}"
+            --pagination-fallback "${{ inputs.pagination_fallback }}"
+            --discovery-sleep "${{ inputs.discovery_sleep }}"
+            --requeue-stale-hours "${{ inputs.requeue_stale_hours }}"
+            --requeue-limit "${{ inputs.requeue_limit }}"
+            --requeue-target-queue "${{ inputs.requeue_target_queue }}"
+            --detail-limit "${{ inputs.detail_limit }}"
+            --detail-sleep "${{ inputs.detail_sleep }}"
+            --stage-limit "${{ inputs.stage_limit }}"
+            --promote-limit "${{ inputs.promote_limit }}"
+            --quarantine-limit "${{ inputs.quarantine_limit }}"
+          )
+
+          if [ "${{ inputs.include_route_index }}" = "true" ]; then
+            COMMAND+=(--include-route-index)
+          fi
+
+          if [ "${{ inputs.write }}" = "true" ]; then
+            COMMAND+=(--write)
+          fi
+
+          printf '[WORKFLOW] JPC command:'
+          printf ' %q' "${COMMAND[@]}"
+          printf '\n'
+
+          "${COMMAND[@]}" 2>&1 | tee output/usf-jpc/pipeline.log
+
+      - name: Upload JPC logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usf-jpc-logs
+          path: output/usf-jpc/
+          if-no-files-found: ignore
