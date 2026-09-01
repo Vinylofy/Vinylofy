@@ -472,6 +472,45 @@ def merge_routes(*route_lists: list[RouteSpec]) -> list[RouteSpec]:
     return list(merged.values())
 
 
+def select_route_shard(
+    routes: list[RouteSpec],
+    *,
+    shard_index: int,
+    shard_count: int,
+) -> list[RouteSpec]:
+    if shard_count < 1:
+        raise ValueError("route shard count moet minimaal 1 zijn")
+    if shard_index < 0 or shard_index >= shard_count:
+        raise ValueError("route shard index moet binnen route shard count vallen")
+    if shard_count == 1:
+        return routes
+
+    ordered = sorted(routes, key=lambda route: (route.url, route.name, route.source))
+    return [
+        route
+        for index, route in enumerate(ordered)
+        if index % shard_count == shard_index
+    ]
+
+
+def listing_page_numbers_for_shard(
+    *,
+    shard_index: int,
+    shard_count: int,
+    max_pages_per_route: int,
+) -> range:
+    if shard_count < 1:
+        raise ValueError("listing page shard count moet minimaal 1 zijn")
+    if shard_index < 0 or shard_index >= shard_count:
+        raise ValueError("listing page shard index moet binnen shard count vallen")
+    if max_pages_per_route < 0:
+        raise ValueError("max pages per route mag niet negatief zijn")
+
+    first_page = shard_index + 1
+    stop_page = max_pages_per_route + 1 if max_pages_per_route else 2**31
+    return range(first_page, stop_page, shard_count)
+
+
 def discover_links(
     *,
     routes: list[RouteSpec],
@@ -480,6 +519,10 @@ def discover_links(
     pagination_fallback: str,
     delay_seconds: float,
     timeout_seconds: float,
+    route_shard_index: int = 0,
+    route_shard_count: int = 1,
+    listing_page_shard_index: int = 0,
+    listing_page_shard_count: int = 1,
 ) -> list[DiscoveredLink]:
     session = build_session()
     indexed_routes = (
@@ -488,6 +531,17 @@ def discover_links(
         else []
     )
     all_routes = merge_routes(routes, indexed_routes)
+    unsharded_route_count = len(all_routes)
+    all_routes = select_route_shard(
+        all_routes,
+        shard_index=route_shard_index,
+        shard_count=route_shard_count,
+    )
+    page_numbers = listing_page_numbers_for_shard(
+        shard_index=listing_page_shard_index,
+        shard_count=listing_page_shard_count,
+        max_pages_per_route=max_pages_per_route,
+    )
     all_links_by_hnum: dict[str, DiscoveredLink] = {}
 
     print(
@@ -495,16 +549,29 @@ def discover_links(
         {
             "configured_routes": len(routes),
             "indexed_routes": len(indexed_routes),
-            "total_routes": len(all_routes),
+            "total_routes": unsharded_route_count,
+            "selected_routes": len(all_routes),
+            "route_shard_index": route_shard_index,
+            "route_shard_count": route_shard_count,
+            "listing_page_shard_index": listing_page_shard_index,
+            "listing_page_shard_count": listing_page_shard_count,
         },
         flush=True,
     )
 
     for route in all_routes:
-        current_url: str | None = route.url
         seen_page_signatures: set[tuple[str, ...]] = set()
 
-        for page_number in range(1, max_pages_per_route + 1):
+        for page_number in page_numbers:
+            current_url: str | None
+            if page_number == 1:
+                current_url = route.url
+            else:
+                current_url = add_page_fallback(
+                    route.url,
+                    page_number=page_number,
+                    mode=pagination_fallback,
+                )
             if not current_url:
                 break
 
@@ -593,15 +660,6 @@ def discover_links(
             if not links:
                 break
 
-            next_url = extract_next_url(response.text, current_url=response.url)
-            if not next_url:
-                next_url = add_page_fallback(
-                    route.url,
-                    page_number=page_number + 1,
-                    mode=pagination_fallback,
-                )
-
-            current_url = next_url
             time.sleep(delay_seconds)
 
     return list(all_links_by_hnum.values())
@@ -625,7 +683,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Lees ook de JPC vinyl-home uit als route-index.",
     )
-    parser.add_argument("--max-pages-per-route", type=int, default=1)
+    parser.add_argument(
+        "--max-pages-per-route",
+        type=int,
+        default=1,
+        help="Aantal listingpagina's per route; 0 = tot stopconditie.",
+    )
+    parser.add_argument("--route-shard-index", type=int, default=0)
+    parser.add_argument("--route-shard-count", type=int, default=1)
+    parser.add_argument("--listing-page-shard-index", type=int, default=0)
+    parser.add_argument("--listing-page-shard-count", type=int, default=1)
     parser.add_argument(
         "--pagination-fallback",
         choices=("none", "ff", "page", "pn"),
@@ -644,8 +711,25 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
 
-    if args.max_pages_per_route < 1:
-        raise SystemExit("[ERROR] --max-pages-per-route moet minimaal 1 zijn.")
+    if args.max_pages_per_route < 0:
+        raise SystemExit("[ERROR] --max-pages-per-route mag niet negatief zijn.")
+    if args.route_shard_count < 1:
+        raise SystemExit("[ERROR] --route-shard-count moet minimaal 1 zijn.")
+    if args.route_shard_index < 0 or args.route_shard_index >= args.route_shard_count:
+        raise SystemExit(
+            "[ERROR] --route-shard-index moet tussen 0 en "
+            "--route-shard-count - 1 liggen."
+        )
+    if args.listing_page_shard_count < 1:
+        raise SystemExit("[ERROR] --listing-page-shard-count moet minimaal 1 zijn.")
+    if (
+        args.listing_page_shard_index < 0
+        or args.listing_page_shard_index >= args.listing_page_shard_count
+    ):
+        raise SystemExit(
+            "[ERROR] --listing-page-shard-index moet tussen 0 en "
+            "--listing-page-shard-count - 1 liggen."
+        )
     if args.delay < 0:
         raise SystemExit("[ERROR] --delay mag niet negatief zijn.")
     if args.timeout <= 0:
@@ -659,6 +743,10 @@ def main() -> int:
         pagination_fallback=args.pagination_fallback,
         delay_seconds=args.delay,
         timeout_seconds=args.timeout,
+        route_shard_index=args.route_shard_index,
+        route_shard_count=args.route_shard_count,
+        listing_page_shard_index=args.listing_page_shard_index,
+        listing_page_shard_count=args.listing_page_shard_count,
     )
 
     print(

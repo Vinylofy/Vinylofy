@@ -36,6 +36,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--exclude-successful-ean",
+        action="store_true",
+        help="Sluit links met bewezen EAN in payload of raw snapshots uit.",
+    )
+    parser.add_argument(
         "--write",
         action="store_true",
         help="Voer de requeue werkelijk uit. Standaard is dry-run.",
@@ -51,6 +56,7 @@ def main() -> int:
         stale_hours=args.stale_hours,
         limit=args.limit,
         target_queue=args.target_queue,
+        exclude_successful_ean=args.exclude_successful_ean,
         write=args.write,
     )
 

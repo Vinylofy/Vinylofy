@@ -136,6 +136,27 @@ def mark_detail_scraped(link_id: str) -> None:
             )
 
 
+def mark_detail_ean_found(link_id: str, ean: str) -> None:
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                update public.shop_product_links
+                set
+                    last_detail_scraped_at = now(),
+                    payload = coalesce(payload, '{}'::jsonb)
+                        || jsonb_build_object(
+                            'last_successful_ean',
+                            %s,
+                            'last_successful_ean_at',
+                            now()
+                        )
+                where id = %s
+                """,
+                (ean, link_id),
+            )
+
+
 def insert_raw_shop_scrape(
     *,
     run_id: str | None,

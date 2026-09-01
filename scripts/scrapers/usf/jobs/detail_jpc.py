@@ -12,9 +12,10 @@ import requests
 from bs4 import BeautifulSoup
 
 from scripts.importers.common import normalize_ean, normalize_text, parse_price
+from scripts.scrapers.usf.core.db import db_connection
 from scripts.scrapers.usf.core.link_registry import (
-    get_links_for_detail_scrape,
     insert_raw_shop_scrape,
+    mark_detail_ean_found,
     mark_detail_scraped,
 )
 
@@ -309,6 +310,50 @@ def listing_availability_from_payload(payload: dict[str, Any]) -> tuple[str | No
     return None, raw or None
 
 
+def get_missing_ean_links_for_detail_scrape(limit: int) -> list[dict[str, Any]]:
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                r"""
+                select l.id, l.shop_id, l.source_url, l.source_product_id, l.payload
+                from public.shop_product_links l
+                where l.shop_id = %s
+                  and l.status = 'active'
+                  and l.last_detail_scraped_at is null
+                  and nullif(l.payload->>'last_successful_ean', '') is null
+                  and not exists (
+                      select 1
+                      from public.raw_shop_scrapes r
+                      where r.shop_id = l.shop_id
+                        and r.source_product_id = l.source_product_id
+                        and regexp_replace(coalesce(r.ean_raw, ''), '\D', '', 'g')
+                            ~ '^(\d{8}|\d{12}|\d{13}|\d{14})$'
+                  )
+                order by
+                    case
+                        when l.payload->>'detail_priority' = 'high' then 0
+                        else 1
+                    end,
+                    l.last_seen_at desc nulls last,
+                    l.first_seen_at asc
+                limit %s
+                """,
+                (SHOP_ID, limit),
+            )
+            rows = cur.fetchall()
+
+    return [
+        {
+            "id": str(row[0]),
+            "shop_id": row[1],
+            "source_url": row[2],
+            "source_product_id": row[3],
+            "payload": row[4],
+        }
+        for row in rows
+    ]
+
+
 def build_session() -> requests.Session:
     session = requests.Session()
     session.headers.update(
@@ -345,7 +390,7 @@ def main() -> int:
     if args.sleep < 0:
         raise SystemExit("[ERROR] --sleep mag niet negatief zijn.")
 
-    links = get_links_for_detail_scrape(SHOP_ID, limit=args.limit)
+    links = get_missing_ean_links_for_detail_scrape(limit=args.limit)
     session = build_session()
 
     stats = {
@@ -518,7 +563,7 @@ def main() -> int:
                 image_url_raw=parsed.image_url,
                 payload=raw_payload,
             )
-            mark_detail_scraped(link["id"])
+            mark_detail_ean_found(link["id"], parsed.ean)
 
         stats["offers"] += 1
         print(

@@ -51,6 +51,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--routes", default="default")
     parser.add_argument("--include-route-index", action="store_true")
     parser.add_argument("--max-pages-per-route", type=int, default=1)
+    parser.add_argument("--route-shard-index", type=int, default=0)
+    parser.add_argument("--route-shard-count", type=int, default=1)
+    parser.add_argument("--listing-page-shard-index", type=int, default=0)
+    parser.add_argument("--listing-page-shard-count", type=int, default=1)
     parser.add_argument(
         "--pagination-fallback",
         choices=("none", "ff", "page", "pn"),
@@ -64,6 +68,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--detail-limit", type=int, default=100)
     parser.add_argument("--detail-timeout", type=float, default=25.0)
     parser.add_argument("--detail-sleep", type=float, default=4.0)
+    parser.add_argument("--price-sync-limit", type=int, default=200000)
+    parser.add_argument("--price-sync-max-matches-per-listing", type=int, default=3)
     parser.add_argument("--stage-limit", type=int, default=100)
     parser.add_argument("--promote-limit", type=int, default=100)
     parser.add_argument("--quarantine-limit", type=int, default=100)
@@ -71,6 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-discovery", action="store_true")
     parser.add_argument("--skip-requeue", action="store_true")
     parser.add_argument("--skip-detail", action="store_true")
+    parser.add_argument("--sync-listing-prices", action="store_true")
     parser.add_argument("--skip-stage", action="store_true")
     parser.add_argument("--skip-promote", action="store_true")
     parser.add_argument("--skip-quarantine", action="store_true")
@@ -96,6 +103,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Schrijf alleen JPC detailresultaten naar raw_shop_scrapes.",
     )
     parser.add_argument(
+        "--price-sync-write",
+        action="store_true",
+        help="Werk alleen bestaande JPC public.prices bij vanuit listingprijzen.",
+    )
+    parser.add_argument(
         "--stage-write",
         action="store_true",
         help="Schrijf alleen JPC staged_offers.",
@@ -116,10 +128,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def validate_args(args: argparse.Namespace) -> None:
     for name in (
-        "max_pages_per_route",
         "requeue_limit",
         "requeue_target_queue",
         "detail_limit",
+        "price_sync_limit",
+        "price_sync_max_matches_per_listing",
         "stage_limit",
         "promote_limit",
         "quarantine_limit",
@@ -128,6 +141,26 @@ def validate_args(args: argparse.Namespace) -> None:
         if value < 1:
             option = name.replace("_", "-")
             raise SystemExit(f"[ERROR] --{option} moet minimaal 1 zijn.")
+
+    if args.max_pages_per_route < 0:
+        raise SystemExit("[ERROR] --max-pages-per-route mag niet negatief zijn.")
+    if args.route_shard_count < 1:
+        raise SystemExit("[ERROR] --route-shard-count moet minimaal 1 zijn.")
+    if args.route_shard_index < 0 or args.route_shard_index >= args.route_shard_count:
+        raise SystemExit(
+            "[ERROR] --route-shard-index moet tussen 0 en "
+            "--route-shard-count - 1 liggen."
+        )
+    if args.listing_page_shard_count < 1:
+        raise SystemExit("[ERROR] --listing-page-shard-count moet minimaal 1 zijn.")
+    if (
+        args.listing_page_shard_index < 0
+        or args.listing_page_shard_index >= args.listing_page_shard_count
+    ):
+        raise SystemExit(
+            "[ERROR] --listing-page-shard-index moet tussen 0 en "
+            "--listing-page-shard-count - 1 liggen."
+        )
 
     for name in ("discovery_timeout", "detail_timeout"):
         if getattr(args, name) <= 0:
@@ -155,14 +188,21 @@ def main() -> int:
     print(f"[PIPELINE] routes={args.routes}")
     print(f"[PIPELINE] include_route_index={args.include_route_index}")
     print(f"[PIPELINE] max_pages_per_route={args.max_pages_per_route}")
+    print(f"[PIPELINE] route_shard_index={args.route_shard_index}")
+    print(f"[PIPELINE] route_shard_count={args.route_shard_count}")
+    print(f"[PIPELINE] listing_page_shard_index={args.listing_page_shard_index}")
+    print(f"[PIPELINE] listing_page_shard_count={args.listing_page_shard_count}")
     print(f"[PIPELINE] pagination_fallback={args.pagination_fallback}")
     print(f"[PIPELINE] detail_limit={args.detail_limit}")
+    print(f"[PIPELINE] sync_listing_prices={args.sync_listing_prices}")
+    print(f"[PIPELINE] price_sync_limit={args.price_sync_limit}")
     print(f"[PIPELINE] stage_limit={args.stage_limit}")
     print(f"[PIPELINE] promote_limit={args.promote_limit}")
     effective_writes = {
         "discovery": args.write or args.discovery_write,
         "requeue": args.write or args.requeue_write,
         "detail": args.write or args.detail_write,
+        "price_sync": args.write or args.price_sync_write,
         "stage": args.write or args.stage_write,
         "promote": args.write or args.promote_write,
         "quarantine": args.write or args.quarantine_write,
@@ -179,6 +219,14 @@ def main() -> int:
             args.routes,
             "--max-pages-per-route",
             str(args.max_pages_per_route),
+            "--route-shard-index",
+            str(args.route_shard_index),
+            "--route-shard-count",
+            str(args.route_shard_count),
+            "--listing-page-shard-index",
+            str(args.listing_page_shard_index),
+            "--listing-page-shard-count",
+            str(args.listing_page_shard_count),
             "--pagination-fallback",
             args.pagination_fallback,
             "--timeout",
@@ -206,6 +254,7 @@ def main() -> int:
             str(args.requeue_limit),
             "--target-queue",
             str(args.requeue_target_queue),
+            "--exclude-successful-ean",
         ]
         run_step(
             "requeue_stale_links",
@@ -227,6 +276,21 @@ def main() -> int:
         run_step(
             "detail_jpc",
             add_write_flag(command, effective_writes["detail"]),
+        )
+
+    if args.sync_listing_prices:
+        command = [
+            sys.executable,
+            "-m",
+            "scripts.scrapers.usf.jobs.sync_jpc_listing_prices",
+            "--limit",
+            str(args.price_sync_limit),
+            "--max-matches-per-listing",
+            str(args.price_sync_max_matches_per_listing),
+        ]
+        run_step(
+            "sync_jpc_listing_prices",
+            add_write_flag(command, effective_writes["price_sync"]),
         )
 
     if not args.skip_stage:

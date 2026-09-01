@@ -1,6 +1,11 @@
 name: USF - JPC
 
 on:
+  schedule:
+    # Elke 2 uur een listingpagina-shard; 24 shards = volledige page-cyclus binnen 48 uur.
+    - cron: "17 */2 * * *"
+    # Tijdelijke detailburst: 4x per dag 500 missende EAN-detailpagina's.
+    - cron: "47 1,7,13,19 * * *"
   workflow_dispatch:
     inputs:
       routes:
@@ -14,7 +19,17 @@ on:
         default: true
         type: boolean
       max_pages_per_route:
-        description: "Aantal listingpagina's per route"
+        description: "Aantal listingpagina's per route; 0 = tot stopconditie"
+        required: true
+        default: "1"
+        type: string
+      route_shard_index:
+        description: "Route shard index, 0-based"
+        required: true
+        default: "0"
+        type: string
+      route_shard_count:
+        description: "Aantal route shards"
         required: true
         default: "1"
         type: string
@@ -58,6 +73,16 @@ on:
         required: true
         default: "4.0"
         type: string
+      sync_listing_prices:
+        description: "Listingprijzen naar bestaande JPC public.prices syncen"
+        required: true
+        default: false
+        type: boolean
+      price_sync_limit:
+        description: "Maximaal aantal JPC listinglinks voor price-sync"
+        required: true
+        default: "200000"
+        type: string
       stage_limit:
         description: "Maximaal aantal raw snapshots naar staged_offers"
         required: true
@@ -85,6 +110,11 @@ on:
         type: boolean
       detail_write:
         description: "Alleen JPC detail/EAN-resultaten naar raw_shop_scrapes schrijven"
+        required: true
+        default: false
+        type: boolean
+      price_sync_write:
+        description: "Alleen bestaande JPC public.prices vanuit listingprijzen bijwerken"
         required: true
         default: false
         type: boolean
@@ -154,6 +184,7 @@ jobs:
             scripts/scrapers/usf/core/quarantine.py \
             scripts/scrapers/usf/jobs/discover_jpc_vinyl.py \
             scripts/scrapers/usf/jobs/detail_jpc.py \
+            scripts/scrapers/usf/jobs/sync_jpc_listing_prices.py \
             scripts/scrapers/usf/jobs/stage_jpc.py \
             scripts/scrapers/usf/jobs/promote_jpc.py \
             scripts/scrapers/usf/jobs/quarantine_jpc.py \
@@ -165,6 +196,7 @@ jobs:
           set -euo pipefail
           python -m scripts.scrapers.usf.jobs.discover_jpc_vinyl --help
           python -m scripts.scrapers.usf.jobs.detail_jpc --help
+          python -m scripts.scrapers.usf.jobs.sync_jpc_listing_prices --help
           python -m scripts.scrapers.usf.jobs.stage_jpc --help
           python -m scripts.scrapers.usf.jobs.promote_jpc --help
           python -m scripts.scrapers.usf.jobs.quarantine_jpc --help
@@ -211,56 +243,118 @@ jobs:
 
       - name: Run JPC USF pipeline
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          DETAIL_BURST_START_DATE: "2026-08-31"
+          DETAIL_BURST_END_DATE_EXCLUSIVE: "2026-09-28"
         run: |
           set -euo pipefail
           mkdir -p output/usf-jpc
 
-          COMMAND=(
-            python -u -m scripts.scrapers.usf.jobs.run_jpc_pipeline
-            --routes "${{ inputs.routes }}"
-            --max-pages-per-route "${{ inputs.max_pages_per_route }}"
-            --pagination-fallback "${{ inputs.pagination_fallback }}"
-            --discovery-sleep "${{ inputs.discovery_sleep }}"
-            --requeue-stale-hours "${{ inputs.requeue_stale_hours }}"
-            --requeue-limit "${{ inputs.requeue_limit }}"
-            --requeue-target-queue "${{ inputs.requeue_target_queue }}"
-            --detail-limit "${{ inputs.detail_limit }}"
-            --detail-sleep "${{ inputs.detail_sleep }}"
-            --stage-limit "${{ inputs.stage_limit }}"
-            --promote-limit "${{ inputs.promote_limit }}"
-            --quarantine-limit "${{ inputs.quarantine_limit }}"
-          )
+          if [ "$EVENT_NAME" = "schedule" ] && [ "$EVENT_SCHEDULE" = "17 */2 * * *" ]; then
+            SHARD_COUNT=24
+            SHARD_INDEX=$(( ($(date -u +%s) / 7200) % SHARD_COUNT ))
 
-          if [ "${{ inputs.include_route_index }}" = "true" ]; then
-            COMMAND+=(--include-route-index)
-          fi
+            COMMAND=(
+              python -u -m scripts.scrapers.usf.jobs.run_jpc_pipeline
+              --routes default
+              --include-route-index
+              --max-pages-per-route 0
+              --listing-page-shard-index "$SHARD_INDEX"
+              --listing-page-shard-count "$SHARD_COUNT"
+              --pagination-fallback ff
+              --discovery-sleep 2.0
+              --discovery-write
+              --sync-listing-prices
+              --price-sync-limit 200000
+              --price-sync-write
+              --skip-requeue
+              --skip-detail
+              --skip-stage
+              --skip-promote
+              --skip-quarantine
+            )
+          elif [ "$EVENT_NAME" = "schedule" ] && [ "$EVENT_SCHEDULE" = "47 1,7,13,19 * * *" ]; then
+            TODAY=$(date -u +%F)
+            if [[ "$TODAY" < "$DETAIL_BURST_START_DATE" || "$TODAY" > "$DETAIL_BURST_END_DATE_EXCLUSIVE" || "$TODAY" = "$DETAIL_BURST_END_DATE_EXCLUSIVE" ]]; then
+              echo "[WORKFLOW] JPC detailburst buiten datumvenster: today=$TODAY start=$DETAIL_BURST_START_DATE end_exclusive=$DETAIL_BURST_END_DATE_EXCLUSIVE"
+              exit 0
+            fi
 
-          if [ "${{ inputs.discovery_write }}" = "true" ]; then
-            COMMAND+=(--discovery-write)
-          fi
+            COMMAND=(
+              python -u -m scripts.scrapers.usf.jobs.run_jpc_pipeline
+              --skip-discovery
+              --skip-requeue
+              --detail-limit 500
+              --detail-sleep 4.0
+              --detail-write
+              --stage-limit 500
+              --stage-write
+              --promote-limit 500
+              --promote-write
+              --quarantine-limit 500
+              --quarantine-write
+            )
+          else
+            COMMAND=(
+              python -u -m scripts.scrapers.usf.jobs.run_jpc_pipeline
+              --routes "${{ inputs.routes }}"
+              --max-pages-per-route "${{ inputs.max_pages_per_route }}"
+              --route-shard-index "${{ inputs.route_shard_index }}"
+              --route-shard-count "${{ inputs.route_shard_count }}"
+              --pagination-fallback "${{ inputs.pagination_fallback }}"
+              --discovery-sleep "${{ inputs.discovery_sleep }}"
+              --requeue-stale-hours "${{ inputs.requeue_stale_hours }}"
+              --requeue-limit "${{ inputs.requeue_limit }}"
+              --requeue-target-queue "${{ inputs.requeue_target_queue }}"
+              --detail-limit "${{ inputs.detail_limit }}"
+              --detail-sleep "${{ inputs.detail_sleep }}"
+              --price-sync-limit "${{ inputs.price_sync_limit }}"
+              --stage-limit "${{ inputs.stage_limit }}"
+              --promote-limit "${{ inputs.promote_limit }}"
+              --quarantine-limit "${{ inputs.quarantine_limit }}"
+            )
 
-          if [ "${{ inputs.requeue_write }}" = "true" ]; then
-            COMMAND+=(--requeue-write)
-          fi
+            if [ "${{ inputs.include_route_index }}" = "true" ]; then
+              COMMAND+=(--include-route-index)
+            fi
 
-          if [ "${{ inputs.detail_write }}" = "true" ]; then
-            COMMAND+=(--detail-write)
-          fi
+            if [ "${{ inputs.sync_listing_prices }}" = "true" ]; then
+              COMMAND+=(--sync-listing-prices)
+            fi
 
-          if [ "${{ inputs.stage_write }}" = "true" ]; then
-            COMMAND+=(--stage-write)
-          fi
+            if [ "${{ inputs.discovery_write }}" = "true" ]; then
+              COMMAND+=(--discovery-write)
+            fi
 
-          if [ "${{ inputs.promote_write }}" = "true" ]; then
-            COMMAND+=(--promote-write)
-          fi
+            if [ "${{ inputs.requeue_write }}" = "true" ]; then
+              COMMAND+=(--requeue-write)
+            fi
 
-          if [ "${{ inputs.quarantine_write }}" = "true" ]; then
-            COMMAND+=(--quarantine-write)
-          fi
+            if [ "${{ inputs.detail_write }}" = "true" ]; then
+              COMMAND+=(--detail-write)
+            fi
 
-          if [ "${{ inputs.write }}" = "true" ]; then
-            COMMAND+=(--write)
+            if [ "${{ inputs.price_sync_write }}" = "true" ]; then
+              COMMAND+=(--price-sync-write)
+            fi
+
+            if [ "${{ inputs.stage_write }}" = "true" ]; then
+              COMMAND+=(--stage-write)
+            fi
+
+            if [ "${{ inputs.promote_write }}" = "true" ]; then
+              COMMAND+=(--promote-write)
+            fi
+
+            if [ "${{ inputs.quarantine_write }}" = "true" ]; then
+              COMMAND+=(--quarantine-write)
+            fi
+
+            if [ "${{ inputs.write }}" = "true" ]; then
+              COMMAND+=(--write)
+            fi
           fi
 
           printf '[WORKFLOW] JPC command:'

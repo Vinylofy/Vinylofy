@@ -23,6 +23,7 @@ def requeue_stale_links(
     stale_hours: float,
     limit: int,
     target_queue: int,
+    exclude_successful_ean: bool = False,
     write: bool,
 ) -> RequeueResult:
     if not shop_id.strip():
@@ -36,6 +37,20 @@ def requeue_stale_links(
 
     if target_queue < 0:
         raise ValueError("target_queue mag niet negatief zijn")
+
+    resolved_ean_filter = ""
+    if exclude_successful_ean:
+        resolved_ean_filter = r"""
+                  and nullif(payload->>'last_successful_ean', '') is null
+                  and not exists (
+                      select 1
+                      from public.raw_shop_scrapes raw
+                      where raw.shop_id = shop_product_links.shop_id
+                        and raw.source_product_id = shop_product_links.source_product_id
+                        and regexp_replace(coalesce(raw.ean_raw, ''), '\D', '', 'g')
+                            ~ '^(\d{8}|\d{12}|\d{13}|\d{14})$'
+                  )
+        """
 
     with db_connection() as conn:
         with conn.cursor() as cur:
@@ -60,6 +75,7 @@ def requeue_stale_links(
                   and last_detail_scraped_at is not null
                   and last_detail_scraped_at
                       <= now() - (%s * interval '1 hour')
+                """ + resolved_ean_filter + """
                 """,
                 (shop_id, stale_hours),
             )
@@ -91,6 +107,7 @@ def requeue_stale_links(
                           and last_detail_scraped_at is not null
                           and last_detail_scraped_at
                               <= now() - (%s * interval '1 hour')
+                        """ + resolved_ean_filter + """
                         order by
                             last_detail_scraped_at asc,
                             id asc
@@ -115,6 +132,7 @@ def requeue_stale_links(
                       and last_detail_scraped_at is not null
                       and last_detail_scraped_at
                           <= now() - (%s * interval '1 hour')
+                    """ + resolved_ean_filter + """
                     order by
                         last_detail_scraped_at asc,
                         id asc
