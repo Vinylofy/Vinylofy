@@ -147,7 +147,7 @@ def mark_detail_ean_found(link_id: str, ean: str) -> None:
                     payload = coalesce(payload, '{}'::jsonb)
                         || jsonb_build_object(
                             'last_successful_ean',
-                            %s,
+                            %s::text,
                             'last_successful_ean_at',
                             now()
                         )

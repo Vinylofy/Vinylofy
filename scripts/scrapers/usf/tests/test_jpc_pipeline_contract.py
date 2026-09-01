@@ -63,6 +63,7 @@ def run_tests() -> None:
     assert "missing_ean" in detail
     assert "mark_detail_ean_found" in detail
     assert "last_successful_ean" in link_registry
+    assert "%s::text" in link_registry
     assert "raw_shop_scrapes r" in detail
     assert "last_successful_ean" in requeue
     assert "exclude_successful_ean" in requeue
