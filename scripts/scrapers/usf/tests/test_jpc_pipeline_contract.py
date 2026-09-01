@@ -82,7 +82,7 @@ def run_tests() -> None:
     assert "public.raw_shop_scrapes" in price_sync
     assert "public.prices pr" in price_sync
     assert "Nieuwe JPC offers worden niet" in price_sync
-    assert 'cron: "17 */2 * * *"' in workflow
+    assert 'cron: "17 4,16 * * *"' in workflow
     assert 'cron: "47 1,7,13,19 * * *"' in workflow
     assert 'DETAIL_BURST_START_DATE: "2026-08-31"' in workflow
     assert 'DETAIL_BURST_END_DATE_EXCLUSIVE: "2026-09-28"' in workflow
@@ -90,6 +90,8 @@ def run_tests() -> None:
     assert "--skip-requeue" in workflow
     assert "--sync-listing-prices" in workflow
     assert "--listing-page-shard-count \"$SHARD_COUNT\"" in workflow
+    assert "SHARD_COUNT=4" in workflow
+    assert "/ 43200" in workflow
 
     listing_html = """
     <html><body>

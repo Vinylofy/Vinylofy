@@ -2,8 +2,8 @@ name: USF - JPC
 
 on:
   schedule:
-    # Elke 2 uur een listingpagina-shard; 24 shards = volledige page-cyclus binnen 48 uur.
-    - cron: "17 */2 * * *"
+    # Twee keer per dag een listingpagina-shard; 4 shards = volledige page-cyclus binnen 48 uur.
+    - cron: "17 4,16 * * *"
     # Tijdelijke detailburst: 4x per dag 500 missende EAN-detailpagina's.
     - cron: "47 1,7,13,19 * * *"
   workflow_dispatch:
@@ -252,9 +252,9 @@ jobs:
           set -euo pipefail
           mkdir -p output/usf-jpc
 
-          if [ "$EVENT_NAME" = "schedule" ] && [ "$EVENT_SCHEDULE" = "17 */2 * * *" ]; then
-            SHARD_COUNT=24
-            SHARD_INDEX=$(( ($(date -u +%s) / 7200) % SHARD_COUNT ))
+          if [ "$EVENT_NAME" = "schedule" ] && [ "$EVENT_SCHEDULE" = "17 4,16 * * *" ]; then
+            SHARD_COUNT=4
+            SHARD_INDEX=$(( ($(date -u +%s) / 43200) % SHARD_COUNT ))
 
             COMMAND=(
               python -u -m scripts.scrapers.usf.jobs.run_jpc_pipeline
