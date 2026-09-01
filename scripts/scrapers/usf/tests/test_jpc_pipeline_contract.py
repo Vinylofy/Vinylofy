@@ -6,11 +6,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.scrapers.usf.jobs.detail_jpc import parse_offer
+from scripts.scrapers.usf.jobs.detail_jpc import extract_availability, parse_offer
 from scripts.scrapers.usf.jobs.discover_jpc_vinyl import (
     RouteSpec,
     add_page_fallback,
     canonical_taxonomy_route_url,
+    extract_availability_hint,
     parse_listing_links,
     listing_page_numbers_for_shard,
     route_is_probably_vinyl,
@@ -142,8 +143,19 @@ def run_tests() -> None:
     assert parsed.ean == "0199584438818"
     assert parsed.article_number == "12345678"
     assert parsed.price_raw == "34,99"
-    assert parsed.availability == "in_stock"
+    assert parsed.availability == "out_of_stock"
     assert parsed.format_label == "LP"
+
+    for availability_text, expected in (
+        ("Artikel am Lager", "in_stock"),
+        ("innerhalb 24 Stunden", "in_stock"),
+        ("innerhalb von 3 Tagen", "in_stock"),
+        ("innerhalb einer Woche", "out_of_stock"),
+        ("innerhalb von 1-2 Wochen", "out_of_stock"),
+        ("Noch nicht erschienen", "preorder"),
+    ):
+        assert extract_availability_hint(availability_text)[0] == expected
+        assert extract_availability([availability_text], None)[0] == expected
 
     assert route_is_probably_vinyl(
         "Rock",
@@ -209,6 +221,7 @@ def run_tests() -> None:
     print("[TEST-OK] JPC detail bezoekt bekende EANs niet opnieuw")
     print("[TEST-OK] JPC stale requeue sluit succesvolle EAN-items uit")
     print("[TEST-OK] JPC detail blijft listing-first")
+    print("[TEST-OK] JPC accepteert alleen voorraad of levering binnen drie dagen")
     print("[TEST-OK] JPC price sync gebruikt listingprijzen voor bestaande prices")
     print("[TEST-OK] JPC workflow plant 48-uurs listing-shards")
     print("[TEST-OK] JPC workflow plant vier weken detailburst zonder requeue")

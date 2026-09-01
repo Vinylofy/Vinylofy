@@ -175,7 +175,7 @@ def extract_availability(lines: list[str], price_index: int | None) -> tuple[str
     raw = " | ".join(search_lines)
     low = raw.lower()
 
-    if "lieferbar ab" in low:
+    if "noch nicht erschienen" in low or "lieferbar ab" in low:
         return "preorder", raw[:500]
     if (
         "benachrichtigung anfordern" in low
@@ -184,8 +184,16 @@ def extract_availability(lines: list[str], price_index: int | None) -> tuple[str
         or "nicht lieferbar" in low
     ):
         return "out_of_stock", raw[:500]
-    if "artikel am lager" in low or "lieferbar" in low:
+    if (
+        "artikel am lager" in low
+        or "innerhalb 24 stunden" in low
+        or "innerhalb von 24 stunden" in low
+        or "innerhalb 3 tagen" in low
+        or "innerhalb von 3 tagen" in low
+    ):
         return "in_stock", raw[:500]
+    if "lieferbar" in low or "innerhalb" in low:
+        return "out_of_stock", raw[:500]
 
     return "unknown", raw[:500] if raw else None
 

@@ -287,6 +287,7 @@ def extract_availability_hint(text: str) -> tuple[str | None, str | None]:
     snippets = []
     for marker in (
         "artikel am lager",
+        "noch nicht erschienen",
         "lieferbar innerhalb",
         "lieferbar in mind",
         "lieferbar ab",
@@ -300,8 +301,8 @@ def extract_availability_hint(text: str) -> tuple[str | None, str | None]:
 
     raw = " | ".join(snippets) if snippets else None
 
-    if "lieferbar ab" in low:
-        return "preorder", raw or "lieferbar ab"
+    if "noch nicht erschienen" in low or "lieferbar ab" in low:
+        return "preorder", raw or "noch nicht erschienen"
     if (
         "benachrichtigung anfordern" in low
         or "nicht erhältlich" in low
@@ -309,8 +310,16 @@ def extract_availability_hint(text: str) -> tuple[str | None, str | None]:
         or "nicht lieferbar" in low
     ):
         return "out_of_stock", raw
-    if "artikel am lager" in low or "lieferbar" in low:
+    if (
+        "artikel am lager" in low
+        or "innerhalb 24 stunden" in low
+        or "innerhalb von 24 stunden" in low
+        or "innerhalb 3 tagen" in low
+        or "innerhalb von 3 tagen" in low
+    ):
         return "in_stock", raw
+    if "lieferbar" in low or "innerhalb" in low:
+        return "out_of_stock", raw
 
     return None, raw
 
