@@ -14,6 +14,13 @@ class ShopDefinition:
 
 
 STABLE_SHOPS: dict[str, ShopDefinition] = {
+    "blackvinyl": ShopDefinition(
+        key="blackvinyl",
+        scraper_module="scripts.scrapers.blackvinyl",
+        importer_module="scripts.importers.import_blackvinyl",
+        output_dir="data/raw/blackvinyl",
+        notes="WooCommerce Store API LP Nieuw discovery with full pagination and detail EAN fallback.",
+    ),
     "bobsvinyl": ShopDefinition(
         key="bobsvinyl",
         scraper_module="scripts.scrapers.bobsvinyl",

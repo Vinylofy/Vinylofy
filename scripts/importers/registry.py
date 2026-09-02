@@ -3,6 +3,7 @@ from __future__ import annotations
 from scripts.importers.contracts import ShopImporterDefinition
 from scripts.importers.import_atthemovies import SHOP_DEFINITION as ATTHEMOVIES_IMPORTER
 from scripts.importers.import_bobsvinyl import SHOP_DEFINITION as BOBSVINYL_IMPORTER
+from scripts.importers.import_blackvinyl import SHOP_DEFINITION as BLACKVINYL_IMPORTER
 from scripts.importers.import_dgmoutlet import SHOP_DEFINITION as DGMOUTLET_IMPORTER
 from scripts.importers.import_groovespin import SHOP_DEFINITION as GROOVESPIN_IMPORTER
 from scripts.importers.import_grooverecords import SHOP_DEFINITION as GROOVERECORDS_IMPORTER
@@ -20,6 +21,7 @@ SHOP_IMPORTERS: dict[str, ShopImporterDefinition] = {
     definition.key: definition
     for definition in (
         ATTHEMOVIES_IMPORTER,
+        BLACKVINYL_IMPORTER,
         BOBSVINYL_IMPORTER,
         DGMOUTLET_IMPORTER,
         GROOVESPIN_IMPORTER,

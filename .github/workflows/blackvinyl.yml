@@ -1,0 +1,197 @@
+name: Blackvinyl catalog
+
+on:
+  # Listing/prices are refreshed daily.
+  schedule:
+    - cron: "20 2 * * *"
+    # Missing EANs are retried weekly.
+    - cron: "40 2 * * 1"
+
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/blackvinyl.yml"
+      - "scripts/scrapers/blackvinyl.py"
+      - "scripts/importers/import_blackvinyl.py"
+      - "scripts/scrapers/usf/core/shop_registry.py"
+      - "scripts/importers/registry.py"
+      - "scripts/scrapers/usf/tests/test_blackvinyl_contract.py"
+
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Runmodus: daily prices, weekly EAN retry, or one-time full enrichment"
+        required: true
+        default: "full"
+        type: choice
+        options:
+          - prices
+          - ean
+          - full
+
+permissions:
+  contents: read
+
+concurrency:
+  group: blackvinyl-catalog
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate Blackvinyl integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            python -m pip install -r requirements.txt
+          else
+            python -m pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+          fi
+
+      - name: Compile and test Blackvinyl modules
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/scrapers/blackvinyl.py \
+            scripts/importers/import_blackvinyl.py \
+            scripts/scrapers/usf/core/shop_registry.py \
+            scripts/scrapers/usf/tests/test_blackvinyl_contract.py
+          python -m unittest scripts.scrapers.usf.tests.test_blackvinyl_contract -v
+          python -m scripts.scrapers.blackvinyl --help >/dev/null
+          python -m scripts.importers.import_blackvinyl --help >/dev/null
+
+  run:
+    name: Run Blackvinyl ${{ inputs.mode || 'scheduled' }}
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            python -m pip install -r requirements.txt
+          else
+            python -m pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+          fi
+
+      - name: Create runtime folders
+        run: |
+          set -euo pipefail
+          mkdir -p data/raw/blackvinyl output
+
+      - name: Select catalog mode
+        id: mode
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          DISPATCH_MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            MODE="${DISPATCH_MODE:-full}"
+          elif [ "${EVENT_SCHEDULE}" = "20 2 * * *" ]; then
+            MODE="prices"
+          elif [ "${EVENT_SCHEDULE}" = "40 2 * * 1" ]; then
+            MODE="ean"
+          else
+            echo "Onbekend schedule-event: ${EVENT_SCHEDULE}" >&2
+            exit 1
+          fi
+
+          case "${MODE}" in
+            prices)
+              DETAIL_MODE="none"
+              REFRESH_CACHE="false"
+              ;;
+            ean)
+              DETAIL_MODE="missing"
+              # Recheck unresolved EANs every week; do not let a previous
+              # not_found cache entry suppress the scheduled retry.
+              REFRESH_CACHE="true"
+              ;;
+            full)
+              DETAIL_MODE="all"
+              REFRESH_CACHE="true"
+              ;;
+            *)
+              echo "Ongeldige Blackvinyl mode: ${MODE}" >&2
+              exit 1
+              ;;
+          esac
+
+          {
+            echo "mode=${MODE}"
+            echo "detail_mode=${DETAIL_MODE}"
+            echo "refresh_cache=${REFRESH_CACHE}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Run Blackvinyl scraper and importer
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          DETAIL_MODE: ${{ steps.mode.outputs.detail_mode }}
+          REFRESH_CACHE: ${{ steps.mode.outputs.refresh_cache }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "DATABASE_URL secret ontbreekt."
+            exit 1
+          fi
+
+          SCRAPER_ARGS=(
+            --detail-mode "${DETAIL_MODE}"
+            --output data/raw/blackvinyl/blackvinyl_products.csv
+            --detail-cache data/raw/blackvinyl/blackvinyl_detail_cache.json
+          )
+          if [ "${REFRESH_CACHE}" = "true" ]; then
+            SCRAPER_ARGS+=(--refresh-detail-cache)
+          fi
+
+          export VINYLOFY_SCRAPER_CMD_BLACKVINYL="python -u scripts/scrapers/blackvinyl.py ${SCRAPER_ARGS[*]}"
+          echo "Blackvinyl mode: ${MODE}"
+          echo "Scraper command: ${VINYLOFY_SCRAPER_CMD_BLACKVINYL}"
+
+          python -u scripts/automation/run_vinylofy_pipeline.py \
+            --shop blackvinyl \
+            --skip-upload \
+            2>&1 | tee /tmp/blackvinyl-pipeline.log
+
+      - name: Upload Blackvinyl artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: blackvinyl-${{ steps.mode.outputs.mode }}-${{ github.run_id }}
+          path: |
+            data/raw/blackvinyl/*.csv
+            data/raw/blackvinyl/*.json
+            output/blackvinyl_*.csv
+            output/blackvinyl_*.json
+            output/pipeline_runs/*.json
+            /tmp/blackvinyl-pipeline.log
+          if-no-files-found: warn
+          retention-days: 14
