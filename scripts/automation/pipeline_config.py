@@ -20,6 +20,7 @@ class ShopPipelineConfig:
     key: str
     shop_name: str
     shop_domain: str
+    shop_country: str
     scraper_command_env: str
     csv_output_path: str
     importer_module: str
@@ -34,6 +35,7 @@ class ShopPipelineConfig:
             key=definition.key,
             shop_name=definition.shop_name,
             shop_domain=definition.shop_domain,
+            shop_country=definition.config.shop_country,
             scraper_command_env=definition.scraper_command_env,
             csv_output_path=definition.files.csv_output_path,
             importer_module=definition.importer_module,

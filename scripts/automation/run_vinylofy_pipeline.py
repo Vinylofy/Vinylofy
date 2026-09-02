@@ -320,15 +320,52 @@ def resolve_shop_id(cur, shop_domain: str):
     return row[0] if row else None
 
 
+def ensure_monitoring_shop_id(cur, shop_config: ShopPipelineConfig):
+    """Ensure the mandatory shop FK exists before writing scraper_runs.
+
+    A newly onboarded shop is normally created by its importer, but the
+    monitoring row is written before the importer starts.  Provisioning the
+    same idempotent shop row here keeps first runs observable and satisfies
+    scraper_runs.shop_id's NOT NULL contract.
+    """
+    shop_id = resolve_shop_id(cur, shop_config.shop_domain)
+    if shop_id is not None:
+        return shop_id
+
+    cur.execute(
+        """
+        insert into public.shops (name, domain, country, is_active)
+        values (%s, %s, %s, true)
+        on conflict (domain) do nothing
+        returning id
+        """,
+        (shop_config.shop_name, shop_config.shop_domain, shop_config.shop_country),
+    )
+    row = cur.fetchone()
+    if row:
+        return row[0]
+    return resolve_shop_id(cur, shop_config.shop_domain)
+
+
 def insert_run_log(conn, pipeline_run_id: str, shop_config: ShopPipelineConfig, result: ShopRunResult):
     if conn is None:
         return None
 
     try:
         with conn.cursor() as cur:
-            shop_id = resolve_shop_id(cur, shop_config.shop_domain)
-    except Exception:
-        shop_id = None
+            shop_id = ensure_monitoring_shop_id(cur, shop_config)
+            if shop_id is None:
+                log(
+                    f"[monitoring] Geen shop_id beschikbaar voor {shop_config.key}; "
+                    "scraper_runs startrecord wordt overgeslagen"
+                )
+                return None
+    except Exception as exc:
+        log(
+            f"[monitoring] Shop-id voor {shop_config.key} kon niet worden "
+            f"bepaald; scraper_runs startrecord wordt overgeslagen: {exc}"
+        )
+        return None
 
     try:
         with conn.cursor() as cur:
