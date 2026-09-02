@@ -182,6 +182,13 @@ def resolve_category_id(
     fallback: int,
     timeout: float,
 ) -> int:
+    # Blackvinyl has duplicate/ambiguous category slugs in the Store API.
+    # The category ID supplied by the configured source URL is authoritative;
+    # never replace it with the first slug match (which currently resolves to
+    # an 11-item accessories category instead of LP Nieuw).
+    if fallback > 0:
+        return fallback
+
     try:
         response = session.get(
             STORE_CATEGORIES_URL,

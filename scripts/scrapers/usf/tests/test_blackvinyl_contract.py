@@ -9,6 +9,7 @@ from scripts.scrapers.blackvinyl import (
     discover_all,
     extract_valid_gtin,
     listing_row,
+    resolve_category_id,
 )
 
 
@@ -64,6 +65,16 @@ class Session:
 
 
 class BlackvinylContractTests(unittest.TestCase):
+    def test_configured_category_id_wins_over_ambiguous_slug_lookup(self):
+        class CategorySession:
+            def get(self, *args, **kwargs):
+                raise AssertionError("configured category must avoid slug lookup")
+
+        self.assertEqual(
+            resolve_category_id(CategorySession(), "vinyl-nieuw", 15, 1),
+            15,
+        )
+
     def test_extract_valid_gtin_prefers_explicit_ean_and_validates_checkdigit(self):
         result = extract_valid_gtin("ean: 0602438614813", "Label 123456")
         self.assertEqual(result, ("0602438614813", "00602438614813"))
