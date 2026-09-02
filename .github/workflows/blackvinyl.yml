@@ -172,7 +172,9 @@ jobs:
             SCRAPER_ARGS+=(--refresh-detail-cache)
           fi
 
-          export VINYLOFY_SCRAPER_CMD_BLACKVINYL="python -u scripts/scrapers/blackvinyl.py ${SCRAPER_ARGS[*]}"
+          # Run as a module so imports resolve from the repository root in the
+          # pipeline subprocess as well as in the validation job.
+          export VINYLOFY_SCRAPER_CMD_BLACKVINYL="python -u -m scripts.scrapers.blackvinyl ${SCRAPER_ARGS[*]}"
           echo "Blackvinyl mode: ${MODE}"
           echo "Scraper command: ${VINYLOFY_SCRAPER_CMD_BLACKVINYL}"
 
