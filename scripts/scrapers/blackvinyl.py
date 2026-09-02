@@ -14,6 +14,7 @@ import html
 import json
 import os
 import re
+import sys
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -25,6 +26,14 @@ import requests
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+# Keep the script entry point (``python scripts/scrapers/blackvinyl.py``)
+# usable as well as the module entry point used by the pipeline.  Python puts
+# the script directory, rather than the repository root, on sys.path when a
+# file is executed directly.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.importers.common import strict_normalize_gtin
 
