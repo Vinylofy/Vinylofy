@@ -115,16 +115,25 @@ function ArtistSidebar({
   results,
   activeArtistFilter,
   activeSort,
+  className,
 }: {
   query: string;
   results: SearchResultItem[];
   activeArtistFilter: string;
   activeSort: SearchSort;
+  className?: string;
 }) {
   const artistOptions = getArtistFilterOptions(results, query);
 
   return (
-    <aside className="h-fit rounded-3xl border border-neutral-200 bg-white p-5 shadow-sm">
+    <aside
+      className={[
+        "h-fit rounded-3xl border border-neutral-200 bg-white p-5 shadow-sm",
+        className,
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
       <div className="space-y-4">
         <h2 className="text-sm font-semibold text-neutral-900">Gevonden artiesten</h2>
 
@@ -239,14 +248,31 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
             </div>
           ) : (
             <div className="grid gap-6 lg:grid-cols-[220px_minmax(0,1fr)]">
+              {filteredResults.length > 0 ? (
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between lg:col-start-2">
+                  <p className="text-xs text-neutral-500">
+                    {visibleResults.length === filteredResults.length
+                      ? `${filteredResults.length} resultaten`
+                      : `${visibleResults.length} van ${filteredResults.length} resultaten`}
+                  </p>
+
+                  <SearchSortSelect
+                    value={activeSort}
+                    query={query}
+                    artistFilter={activeArtistFilter}
+                  />
+                </div>
+              ) : null}
+
               <ArtistSidebar
                 query={query}
                 results={results}
                 activeArtistFilter={activeArtistFilter}
-      activeSort={activeSort}
+                activeSort={activeSort}
+                className={filteredResults.length > 0 ? "lg:row-start-2" : undefined}
               />
 
-              <div className="max-w-[920px] space-y-4">
+              <div className="max-w-[920px] space-y-4 lg:col-start-2 lg:row-start-2">
                 {filteredResults.length === 0 ? (
                   <div className="rounded-3xl border border-neutral-200 bg-white p-8 text-sm text-neutral-600 shadow-sm">
                     Geen resultaten gevonden voor {query}. Probeer een artiest, albumtitel of een
@@ -254,32 +280,19 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
                   </div>
                 ) : (
                   <>
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-xs text-neutral-500">
-                {visibleResults.length === filteredResults.length
-                  ? `${filteredResults.length} resultaten`
-                  : `${visibleResults.length} van ${filteredResults.length} resultaten`}
-              </p>
-
-              <SearchSortSelect
-                value={activeSort}
-                query={query}
-                artistFilter={activeArtistFilter}
-              />
-            </div>
-                {firstResults.map((item) => (
-                  <ProductResultCard key={item.id} item={item} />
-                ))}
-                {grooveData && grooveData.candidates.length > 0 ? (
-                  <GrooveSearchBlock
-                    activeArtistMbid={grooveData.artist.mbid}
-                    candidates={grooveData.candidates}
-                  />
-                ) : null}
-                {remainingResults.map((item) => (
-                  <ProductResultCard key={item.id} item={item} />
-                ))}
-              </>
+                    {firstResults.map((item) => (
+                      <ProductResultCard key={item.id} item={item} />
+                    ))}
+                    {grooveData && grooveData.candidates.length > 0 ? (
+                      <GrooveSearchBlock
+                        activeArtistMbid={grooveData.artist.mbid}
+                        candidates={grooveData.candidates}
+                      />
+                    ) : null}
+                    {remainingResults.map((item) => (
+                      <ProductResultCard key={item.id} item={item} />
+                    ))}
+                  </>
                 )}
               </div>
             </div>

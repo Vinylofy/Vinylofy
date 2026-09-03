@@ -20,6 +20,16 @@ BASE_URL = "https://www.jpc.de"
 VINYL_HOME_URL = f"{BASE_URL}/jpcng/vinyl/home"
 DEFAULT_DELAY_SECONDS = 4.0
 DEFAULT_TIMEOUT_SECONDS = 25.0
+FAST_DELIVERY_LABELS = frozenset(
+    {
+        "artikel am lager",
+        "innerhalb 24 stunden",
+        "innerhalb von 24 stunden",
+        "innerhalb 3 tagen",
+        "innerhalb von 3 tagen",
+    }
+)
+FAST_DELIVERY_FACETS = frozenset({"stock", "24h", "3d"})
 
 PRODUCT_HREF_RE = re.compile(
     r"/jpcng/[^?#]+/detail/-/art/[^?#]+/hnum/([0-9]+)(?:[/?#]|$)",
@@ -134,13 +144,20 @@ def ff_page_url(route_url: str, *, page_number: int) -> str | None:
     if not match:
         return None
 
+    params = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key not in {"page", "searchtype"}
+    ]
+    params.extend((("page", str(page_number)), ("searchtype", "cid")))
+
     return urlunparse(
         (
             "https",
             "www.jpc.de",
             f"/ff/{match.group(1)}",
             "",
-            urlencode({"page": str(page_number), "searchtype": "cid"}),
+            urlencode(params),
             "",
         )
     )
@@ -324,6 +341,188 @@ def extract_availability_hint(text: str) -> tuple[str | None, str | None]:
     return None, raw
 
 
+def normalized_filter_label(value: object) -> str:
+    label = re.sub(r"\s+", " ", clean(value).lower().replace("\xa0", " ")).strip()
+    return re.sub(r"\s*\([0-9.,]+\)\s*$", "", label).strip()
+
+
+def control_label(control: Tag, soup: BeautifulSoup) -> str:
+    parent_label = control.find_parent("label")
+    if parent_label:
+        return normalized_filter_label(parent_label.get_text(" ", strip=True))
+
+    control_id = clean(control.get("id"))
+    if control_id:
+        label = soup.find("label", attrs={"for": control_id})
+        if label:
+            return normalized_filter_label(label.get_text(" ", strip=True))
+    return ""
+
+
+def fast_delivery_facet(label: str) -> str | None:
+    if label == "artikel am lager":
+        return "stock"
+    if label in {"innerhalb 24 stunden", "innerhalb von 24 stunden"}:
+        return "24h"
+    if label in {"innerhalb 3 tagen", "innerhalb von 3 tagen"}:
+        return "3d"
+    return None
+
+
+def fast_delivery_filter_params(html: str) -> list[tuple[str, str]] | None:
+    """Extract JPC's own availability facet values from one listing response.
+
+    The values are deliberately not hard-coded: JPC owns this query contract.
+    Missing or non-GET controls are treated as unsafe, so callers can stop
+    instead of falling back to the unfiltered catalog.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    params: list[tuple[str, str]] = []
+    facets: set[str] = set()
+
+    for control in soup.find_all("input"):
+        control_type = clean(control.get("type")).lower()
+        if control_type not in {"checkbox", "radio"}:
+            continue
+        facet = fast_delivery_facet(control_label(control, soup))
+        if not facet:
+            continue
+
+        form = control.find_parent("form")
+        if form and clean(form.get("method")).lower() not in {"", "get"}:
+            return None
+
+        name = clean(control.get("name"))
+        value = clean(control.get("value"))
+        if not name or not value:
+            return None
+        params.append((name, value))
+        facets.add(facet)
+
+    return params if facets == FAST_DELIVERY_FACETS else None
+
+
+def fast_delivery_filter_is_applied(
+    html: str, expected_params: list[tuple[str, str]]
+) -> bool:
+    soup = BeautifulSoup(html, "html.parser")
+    expected = set(expected_params)
+    selected: set[tuple[str, str]] = set()
+
+    for control in soup.find_all("input"):
+        if control_label(control, soup) not in FAST_DELIVERY_LABELS:
+            continue
+        name = clean(control.get("name"))
+        value = clean(control.get("value"))
+        if (name, value) in expected and control.has_attr("checked"):
+            selected.add((name, value))
+
+    return selected == expected
+
+
+def apply_query_params(url: str, params: list[tuple[str, str]]) -> str:
+    parsed = urlparse(url)
+    existing = parse_qsl(parsed.query, keep_blank_values=True)
+    names = {name for name, _ in params}
+    merged = [(name, value) for name, value in existing if name not in names]
+    merged.extend(params)
+    return urlunparse(parsed._replace(query=urlencode(merged, doseq=True)))
+
+
+def build_fast_delivery_routes(
+    *,
+    session: requests.Session,
+    routes: list[RouteSpec],
+    timeout_seconds: float,
+) -> list[RouteSpec] | None:
+    if not routes:
+        return []
+
+    probe_route = routes[0]
+    try:
+        response = session.get(probe_route.url, timeout=timeout_seconds, allow_redirects=True)
+    except requests.RequestException as exc:
+        print(
+            "[JPC-DISCOVER-FILTER-STOP]",
+            {"url": probe_route.url, "reason": "filter_probe_error", "error": str(exc)},
+            flush=True,
+        )
+        return None
+
+    if response.status_code != 200:
+        print(
+            "[JPC-DISCOVER-FILTER-STOP]",
+            {
+                "url": probe_route.url,
+                "reason": "filter_probe_http_status",
+                "status_code": response.status_code,
+            },
+            flush=True,
+        )
+        return None
+
+    params = fast_delivery_filter_params(response.text)
+    if not params:
+        print(
+            "[JPC-DISCOVER-FILTER-STOP]",
+            {"url": response.url, "reason": "fast_delivery_facet_unavailable"},
+            flush=True,
+        )
+        return None
+
+    filtered_probe_url = apply_query_params(response.url, params)
+    try:
+        filtered_response = session.get(
+            filtered_probe_url,
+            timeout=timeout_seconds,
+            allow_redirects=True,
+        )
+    except requests.RequestException as exc:
+        print(
+            "[JPC-DISCOVER-FILTER-STOP]",
+            {
+                "url": filtered_probe_url,
+                "reason": "filtered_probe_error",
+                "error": str(exc),
+            },
+            flush=True,
+        )
+        return None
+
+    if (
+        filtered_response.status_code != 200
+        or not fast_delivery_filter_is_applied(filtered_response.text, params)
+    ):
+        print(
+            "[JPC-DISCOVER-FILTER-STOP]",
+            {
+                "url": filtered_response.url,
+                "reason": "fast_delivery_filter_not_confirmed",
+                "status_code": filtered_response.status_code,
+            },
+            flush=True,
+        )
+        return None
+
+    print(
+        "[JPC-DISCOVER-FILTER]",
+        {
+            "probe_url": filtered_response.url,
+            "selected_facet_values": len(params),
+            "mode": "fast_delivery",
+        },
+        flush=True,
+    )
+    return [
+        RouteSpec(
+            name=route.name,
+            url=apply_query_params(route.url, params),
+            source=route.source,
+        )
+        for route in routes
+    ]
+
+
 def parse_listing_links(
     html: str,
     *,
@@ -350,6 +549,8 @@ def parse_listing_links(
             continue
 
         availability, availability_raw = extract_availability_hint(context_text)
+        if availability != "in_stock":
+            continue
         payload: dict[str, Any] = {
             "source": "jpc_vinyl_listing",
             "route_name": route.name,
@@ -532,6 +733,7 @@ def discover_links(
     route_shard_count: int = 1,
     listing_page_shard_index: int = 0,
     listing_page_shard_count: int = 1,
+    availability_filter: str = "fast_delivery",
 ) -> list[DiscoveredLink]:
     session = build_session()
     indexed_routes = (
@@ -546,6 +748,15 @@ def discover_links(
         shard_index=route_shard_index,
         shard_count=route_shard_count,
     )
+    if availability_filter == "fast_delivery":
+        filtered_routes = build_fast_delivery_routes(
+            session=session,
+            routes=all_routes,
+            timeout_seconds=timeout_seconds,
+        )
+        if filtered_routes is None:
+            return []
+        all_routes = filtered_routes
     page_numbers = listing_page_numbers_for_shard(
         shard_index=listing_page_shard_index,
         shard_count=listing_page_shard_count,
@@ -713,6 +924,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--delay", type=float, default=DEFAULT_DELAY_SECONDS)
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
+    parser.add_argument(
+        "--availability-filter",
+        choices=("fast_delivery", "none"),
+        default="fast_delivery",
+        help=(
+            "Gebruik alleen JPC's Artikel am Lager / 24 uur / 3 dagen facet. "
+            "Bij ontbrekend facet stopt discovery fail-closed."
+        ),
+    )
     parser.add_argument("--write", action="store_true")
     return parser
 
@@ -756,6 +976,7 @@ def main() -> int:
         route_shard_count=args.route_shard_count,
         listing_page_shard_index=args.listing_page_shard_index,
         listing_page_shard_count=args.listing_page_shard_count,
+        availability_filter=args.availability_filter,
     )
 
     print(

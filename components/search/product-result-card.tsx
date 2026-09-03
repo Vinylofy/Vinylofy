@@ -63,8 +63,17 @@ export function ProductResultCard({ item }: ProductResultCardProps) {
                     <span className="text-neutral-400"> · {countryCode}</span>
                   </div>
 
-                  <div className="shrink-0 text-right text-sm font-medium text-neutral-950">
-                    {formatEuro(shop.price)}
+                  <div className="shrink-0 text-right">
+                    <p className="text-sm font-medium text-neutral-950">
+                      {formatEuro(shop.price)}
+                    </p>
+                    <p className="mt-0.5 text-xs font-normal text-neutral-500">
+                      {shop.estimatedShippingPrice !== null
+                        ? shop.freeShippingApplied
+                          ? "Gratis verzending"
+                          : `+ ${formatEuro(shop.estimatedShippingPrice)} verzending`
+                        : "Verzending onbekend"}
+                    </p>
                   </div>
                 </div>
               );

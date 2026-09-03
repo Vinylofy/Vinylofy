@@ -10,8 +10,11 @@ from scripts.scrapers.usf.jobs.detail_jpc import extract_availability, parse_off
 from scripts.scrapers.usf.jobs.discover_jpc_vinyl import (
     RouteSpec,
     add_page_fallback,
+    apply_query_params,
     canonical_taxonomy_route_url,
     extract_availability_hint,
+    fast_delivery_filter_is_applied,
+    fast_delivery_filter_params,
     parse_listing_links,
     listing_page_numbers_for_shard,
     route_is_probably_vinyl,
@@ -61,6 +64,7 @@ def run_tests() -> None:
     )
 
     assert "missing_ean" in detail
+    assert "listing_availability' = 'in_stock'" in detail
     assert "mark_detail_ean_found" in detail
     assert "last_successful_ean" in link_registry
     assert "%s::text" in link_registry
@@ -84,6 +88,7 @@ def run_tests() -> None:
     assert "public.raw_shop_scrapes" in price_sync
     assert "public.prices pr" in price_sync
     assert "Nieuwe JPC offers worden niet" in price_sync
+    assert "listing_availability' = 'in_stock'" in price_sync
     assert 'cron: "17 4,16 * * *"' in workflow
     assert 'cron: "47 1,7,13,19 * * *"' in workflow
     assert 'DETAIL_BURST_START_DATE: "2026-08-31"' in workflow
@@ -118,6 +123,51 @@ def run_tests() -> None:
     assert links[0].source_product_id == "12345678"
     assert links[0].payload["listing_price_raw"] == "29,99"
     assert links[0].payload["listing_availability"] == "in_stock"
+
+    filtered_listing_html = """
+    <html><body><form method="get">
+      <label><input type="checkbox" name="availability" value="stock">Artikel am Lager (8)</label>
+      <label><input type="checkbox" name="availability" value="24h">innerhalb 24 Stunden (3)</label>
+      <label><input type="checkbox" name="availability" value="3d">innerhalb von 3 Tagen (4)</label>
+    </form></body></html>
+    """
+    filter_params = fast_delivery_filter_params(filtered_listing_html)
+    assert filter_params == [("availability", "stock"), ("availability", "24h"), ("availability", "3d")]
+    assert fast_delivery_filter_params(
+        filtered_listing_html.replace(
+            '<label><input type="checkbox" name="availability" value="3d">innerhalb von 3 Tagen (4)</label>',
+            "",
+        )
+    ) is None
+    assert apply_query_params(
+        "https://www.jpc.de/s/1238692_66733?searchtype=cid",
+        filter_params,
+    ) == (
+        "https://www.jpc.de/s/1238692_66733?searchtype=cid&availability=stock"
+        "&availability=24h&availability=3d"
+    )
+    confirmed_filtered_listing_html = filtered_listing_html.replace(
+        'value="stock"', 'value="stock" checked'
+    ).replace('value="24h"', 'value="24h" checked').replace(
+        'value="3d"', 'value="3d" checked'
+    )
+    assert fast_delivery_filter_is_applied(
+        confirmed_filtered_listing_html, filter_params
+    )
+    assert not fast_delivery_filter_is_applied(filtered_listing_html, filter_params)
+
+    slow_listing_html = """
+    <html><body>
+      <h3><a href="/jpcng/poprock/detail/-/art/artist-title/hnum/11111111">Artist: Slow</a></h3>
+      <p>lieferbar innerhalb einer Woche</p><p>LP</p><p>EUR 19,99* Aktueller Preis: EUR 19,99</p>
+    </body></html>
+    """
+    assert not parse_listing_links(
+        slow_listing_html,
+        listing_url="https://www.jpc.de/s/example?searchtype=cid",
+        route=RouteSpec("test", "https://www.jpc.de/s/example?searchtype=cid"),
+        page_number=1,
+    )
 
     detail_html = """
     <html>
@@ -186,6 +236,11 @@ def run_tests() -> None:
         page_number=40,
         mode="ff",
     ) == "https://www.jpc.de/ff/1238692_66697?page=40&searchtype=cid"
+    assert add_page_fallback(
+        "https://www.jpc.de/s/1238692_66697?searchtype=cid&availability=stock",
+        page_number=40,
+        mode="ff",
+    ) == "https://www.jpc.de/ff/1238692_66697?availability=stock&page=40&searchtype=cid"
 
     routes = [
         RouteSpec("b", "https://www.jpc.de/s/1238692_66740?searchtype=cid"),
@@ -223,6 +278,7 @@ def run_tests() -> None:
     print("[TEST-OK] JPC stale requeue sluit succesvolle EAN-items uit")
     print("[TEST-OK] JPC detail blijft listing-first")
     print("[TEST-OK] JPC accepteert alleen voorraad of levering binnen drie dagen")
+    print("[TEST-OK] JPC discovery gebruikt alleen de eigen snelle-levering facets")
     print("[TEST-OK] JPC price sync gebruikt listingprijzen voor bestaande prices")
     print("[TEST-OK] JPC workflow plant 48-uurs listing-shards")
     print("[TEST-OK] JPC workflow plant vier weken detailburst zonder requeue")

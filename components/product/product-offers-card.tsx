@@ -50,7 +50,7 @@ export function ProductOffersCard({ offers }: ProductOffersCardProps) {
             return (
               <div
                 key={`${offer.name}-${offer.productUrl}-${index}`}
-                className="grid gap-3 rounded-xl border border-[rgba(63,38,22,0.08)] bg-[#fffdfb] px-3.5 py-3 transition hover:border-[rgba(230,126,34,0.28)] hover:bg-[#fffaf6] md:grid-cols-[minmax(0,1fr)_96px_128px] md:items-center"
+                className="grid gap-3 rounded-xl border border-[rgba(63,38,22,0.08)] bg-[#fffdfb] px-3.5 py-3 transition hover:border-[rgba(230,126,34,0.28)] hover:bg-[#fffaf6] md:grid-cols-[minmax(0,1fr)_220px_128px] md:items-center"
               >
                 <div className="min-w-0">
                   <p className="truncate text-sm font-semibold text-[#3f2616] md:text-[15px]">
@@ -75,9 +75,26 @@ export function ProductOffersCard({ offers }: ProductOffersCardProps) {
                   >
                     {formatEuro(offer.price)}
                   </p>
+                  {offer.estimatedShippingPrice !== null ? (
+                    <p
+                      className="mt-0.5 whitespace-nowrap text-xs font-normal text-[#7d6b5d]"
+                      title={shippingTitle}
+                    >
+                      {offer.freeShippingApplied
+                        ? "Gratis"
+                        : `+ ${formatEuro(offer.estimatedShippingPrice)}`}
+                    </p>
+                  ) : (
+                    <p
+                      className="mt-0.5 whitespace-nowrap text-xs font-normal text-[#7d6b5d]"
+                      title={shippingTitle}
+                    >
+                      Verzending onbekend
+                    </p>
+                  )}
                   {hasEstimatedTotal ? (
                     <p
-                      className="mt-0.5 text-xs font-medium text-[#7d6b5d]"
+                      className="mt-0.5 whitespace-nowrap text-xs font-medium text-[#7d6b5d]"
                       title={shippingTitle}
                     >
                       ± {formatEuro(offer.estimatedTotalPrice)} totaal

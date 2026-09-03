@@ -520,27 +520,133 @@ class DedicatedDestinationSelectionTests(unittest.TestCase):
         onward: dict[str, list[dict[str, object]]] | None = None,
         limit: int = 5,
         visited_names: list[str] | None = None,
+        excluded_ids: list[str] | None = None,
     ) -> list[dict[str, object]]:
         return run_typescript(
             "lib/follow-the-groove/destination-selection.ts",
-            "subject.selectDedicatedDestinations({ sourceArtistId: 'source', visitedArtistNames: input.visitedNames, direct: input.direct, onward: new Map(Object.entries(input.onward)), limit: input.limit }).map(row => ({ name: row.displayName, bridge: row.bridgeName, entityType: row.entityType, factual: row.factual }))",
-            {"direct": direct, "onward": onward or {}, "limit": limit, "visitedNames": visited_names or []},
+            "subject.selectDedicatedDestinations({ sourceArtistId: 'source', visitedArtistNames: input.visitedNames, direct: input.direct, onward: new Map(Object.entries(input.onward)), excludedArtistIds: new Set(input.excludedIds), limit: input.limit }).map(row => ({ id: row.targetArtistId, name: row.displayName, bridge: row.bridgeName, entityType: row.entityType, factual: row.factual, directMembershipDestination: row.directMembershipDestination === true }))",
+            {
+                "direct": direct,
+                "onward": onward or {},
+                "limit": limit,
+                "visitedNames": visited_names or [],
+                "excludedIds": excluded_ids or [],
+            },
         )
 
-    def test_members_are_bridges_not_unexplained_dedicated_destinations(self) -> None:
-        dave = fixture_candidate("Dave Grohl", factual=True, mechanisms=("membership",))
+    def test_productless_members_are_bridges_not_unexplained_dedicated_destinations(self) -> None:
+        dave = fixture_candidate("Dave Grohl", factual=True, mechanisms=("membership",), product_count=0)
         qotsa = {
             **fixture_candidate("Queens of the Stone Age", factual=True, mechanisms=("artist_credit",)),
             "entityType": "group",
             "sourceArtistId": "dave-grohl",
         }
-        chris = fixture_candidate("Chris Shiflett", factual=True, mechanisms=("membership",))
+        chris = fixture_candidate("Chris Shiflett", factual=True, mechanisms=("membership",), product_count=0)
         eddie = fixture_candidate("Eddie Vedder", similarity=True, position=1)
         actual = self.select([dave, chris, eddie], {"dave-grohl": [qotsa]})
         self.assertEqual(
             actual,
-            [{"name": "Queens of the Stone Age", "bridge": "Dave Grohl", "entityType": "group", "factual": True}],
+            [{"id": "queens-of-the-stone-age", "name": "Queens of the Stone Age", "bridge": "Dave Grohl", "entityType": "group", "factual": True, "directMembershipDestination": False}],
         )
+
+    def test_queen_members_with_publishable_inventory_fill_dead_end(self) -> None:
+        members = [
+            fixture_candidate("Brian May", factual=True, mechanisms=("membership",), product_count=6, output_status="unknown"),
+            fixture_candidate("Roger Taylor", factual=True, mechanisms=("membership",), product_count=5, output_status="unknown"),
+            fixture_candidate("Freddie Mercury", factual=True, mechanisms=("membership",), product_count=2, output_status="unknown"),
+            fixture_candidate("Barry Mitchell", factual=True, mechanisms=("membership",), product_count=0, output_status="unknown"),
+        ]
+        actual = self.select(members)
+        self.assertEqual(
+            [row["name"] for row in actual],
+            ["Brian May", "Freddie Mercury", "Roger Taylor"],
+        )
+        self.assertGreater(len(actual), 0)
+
+    def test_disallowed_or_non_membership_people_do_not_enter_membership_fill(self) -> None:
+        disallowed_membership = fixture_candidate(
+            "Disallowed Member",
+            factual=True,
+            mechanisms=(),
+            product_count=3,
+        )
+        non_membership = fixture_candidate(
+            "Non Membership Person",
+            factual=True,
+            mechanisms=("producer",),
+            product_count=3,
+        )
+        actual = self.select([disallowed_membership, non_membership])
+        self.assertEqual(actual, [])
+
+    def test_direct_membership_fill_is_bounded_at_three(self) -> None:
+        members = [
+            fixture_candidate(name, factual=True, mechanisms=("membership",), product_count=1)
+            for name in ("Brian May", "Freddie Mercury", "Roger Taylor", "Spike Edney")
+        ]
+        actual = self.select(members)
+        self.assertEqual(
+            [row["name"] for row in actual],
+            ["Brian May", "Freddie Mercury", "Roger Taylor"],
+        )
+
+    def test_stronger_dedicated_destinations_keep_priority_before_membership_fill(self) -> None:
+        direct = [
+            {**fixture_candidate("Band Project", factual=True, mechanisms=("membership",)), "entityType": "group"},
+            {**fixture_candidate("Similar Project A", similarity=True, position=1), "entityType": "group"},
+            {**fixture_candidate("Similar Project B", similarity=True, position=2), "entityType": "group"},
+            fixture_candidate("Brian May", factual=True, mechanisms=("membership",), product_count=6),
+            fixture_candidate("Freddie Mercury", factual=True, mechanisms=("membership",), product_count=2),
+            fixture_candidate("Roger Taylor", factual=True, mechanisms=("membership",), product_count=5),
+        ]
+        actual = self.select(direct)
+        self.assertEqual(
+            [row["name"] for row in actual],
+            ["Band Project", "Similar Project A", "Similar Project B", "Brian May", "Freddie Mercury"],
+        )
+
+    def test_membership_fill_deduplicates_stronger_person_routes(self) -> None:
+        member_with_recording = fixture_candidate(
+            "Brian May",
+            factual=True,
+            mechanisms=("artist_credit", "membership"),
+            product_count=6,
+        )
+        actual = self.select([member_with_recording])
+        self.assertEqual([row["name"] for row in actual], ["Brian May"])
+
+    def test_membership_fill_is_marked_for_membership_copy_even_with_similarity(self) -> None:
+        member = fixture_candidate(
+            "Brian May",
+            factual=True,
+            mechanisms=("membership",),
+            similarity=True,
+            position=1,
+            product_count=6,
+            output_status="unknown",
+        )
+        actual = self.select([member])
+        self.assertEqual(
+            actual,
+            [{
+                "id": "brian-may",
+                "name": "Brian May",
+                "bridge": None,
+                "entityType": "person",
+                "factual": True,
+                "directMembershipDestination": True,
+            }],
+        )
+
+    def test_membership_fill_excludes_source_and_visited_artists(self) -> None:
+        current = {**fixture_candidate("Current Artist", factual=True, mechanisms=("membership",)), "targetArtistId": "source"}
+        visited = fixture_candidate("Visited Member", factual=True, mechanisms=("membership",))
+        available = fixture_candidate("Available Member", factual=True, mechanisms=("membership",))
+        actual = self.select(
+            [current, visited, available],
+            excluded_ids=["visited-member"],
+        )
+        self.assertEqual([row["name"] for row in actual], ["Available Member"])
 
     def test_bridge_only_person_can_reconstruct_a_route_without_being_visible(self) -> None:
         bridge = fixture_candidate(
@@ -763,8 +869,8 @@ class DedicatedDestinationSelectionTests(unittest.TestCase):
         )
 
     def test_destination_reached_via_multiple_bridges_gets_independent_bridge_count(self) -> None:
-        bridge_a = fixture_candidate("Bridge A", factual=True, mechanisms=("membership",))
-        bridge_b = fixture_candidate("Bridge B", factual=True, mechanisms=("membership",))
+        bridge_a = fixture_candidate("Bridge A", factual=True, mechanisms=("membership",), product_count=0)
+        bridge_b = fixture_candidate("Bridge B", factual=True, mechanisms=("membership",), product_count=0)
         destination_a = {
             **fixture_candidate("Shared Destination", factual=True, mechanisms=("membership",)),
             "entityType": "group",
@@ -849,7 +955,7 @@ class FrontendPureContractTests(unittest.TestCase):
             ({**common, "reasonCode": "recording_collaboration", "evidence": []}, "Werkten samen op een opname"),
             ({**common, "reasonCode": "membership", "evidence": [{"sourceArtistId": "person", "targetArtistId": "group", "evidenceKind": "membership", "ended": False}]}, "Lid van The Band"),
             ({**common, "reasonCode": "membership", "evidence": [{"sourceArtistId": "person", "targetArtistId": "group", "evidenceKind": "membership", "ended": True}]}, "Voormalig lid van The Band"),
-            ({**common, "reasonCode": "membership", "evidence": [{"sourceArtistId": "person", "targetArtistId": "group", "evidenceKind": "membership", "ended": None}]}, "Bandconnectie"),
+            ({**common, "reasonCode": "membership", "evidence": [{"sourceArtistId": "person", "targetArtistId": "group", "evidenceKind": "membership", "ended": None}]}, "Bandlid van The Band"),
         ]
         for payload, expected in cases:
             with self.subTest(expected=expected):
@@ -1020,11 +1126,31 @@ class FrontendSourceContractTests(unittest.TestCase):
         self.assertIn('.from("artist_output_status")', data)
         self.assertIn('=== "proven_output"', data)
 
+    def test_ftg_artist_edges_are_undirected_for_targets_and_evidence(self) -> None:
+        data = (ROOT / "lib/follow-the-groove/data.ts").read_text()
+        self.assertIn(
+            "edge.artist_low_id === sourceArtistId ? edge.artist_high_id : edge.artist_low_id",
+            data,
+        )
+        self.assertIn(
+            ".or(`artist_low_id.eq.${activeArtist.id},artist_high_id.eq.${activeArtist.id}`)",
+            data,
+        )
+        self.assertIn(
+            "(row.source_artist_id === activeArtist.id && row.target_artist_id === candidateId)",
+            data,
+        )
+        self.assertIn(
+            "(row.source_artist_id === candidateId && row.target_artist_id === activeArtist.id)",
+            data,
+        )
+
     def test_output_eligibility_and_explanations_are_generic_and_batched(self) -> None:
         data = (ROOT / "lib/follow-the-groove/data.ts").read_text()
         selector = (ROOT / "lib/follow-the-groove/destination-selection.ts").read_text()
         trail = (ROOT / "components/follow-the-groove/groove-trail.tsx").read_text()
         self.assertIn('destinationOutputStatus === "proven_output"', selector)
+        self.assertIn("DIRECT_MEMBERSHIP_DESTINATION_LIMIT = 3", selector)
         self.assertIn('.in("artist_id", destinationArtistIds)', data)
         self.assertIn("loadTrailExplanations(orderedTrailArtists)", data)
         self.assertIn("item.explanation", trail)

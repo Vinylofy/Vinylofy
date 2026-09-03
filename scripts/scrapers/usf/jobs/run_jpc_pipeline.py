@@ -62,6 +62,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--discovery-timeout", type=float, default=25.0)
     parser.add_argument("--discovery-sleep", type=float, default=4.0)
+    parser.add_argument(
+        "--availability-filter",
+        choices=("fast_delivery", "none"),
+        default="fast_delivery",
+    )
     parser.add_argument("--requeue-stale-hours", type=float, default=72.0)
     parser.add_argument("--requeue-limit", type=int, default=250)
     parser.add_argument("--requeue-target-queue", type=int, default=500)
@@ -193,6 +198,7 @@ def main() -> int:
     print(f"[PIPELINE] listing_page_shard_index={args.listing_page_shard_index}")
     print(f"[PIPELINE] listing_page_shard_count={args.listing_page_shard_count}")
     print(f"[PIPELINE] pagination_fallback={args.pagination_fallback}")
+    print(f"[PIPELINE] availability_filter={args.availability_filter}")
     print(f"[PIPELINE] detail_limit={args.detail_limit}")
     print(f"[PIPELINE] sync_listing_prices={args.sync_listing_prices}")
     print(f"[PIPELINE] price_sync_limit={args.price_sync_limit}")
@@ -233,6 +239,8 @@ def main() -> int:
             str(args.discovery_timeout),
             "--delay",
             str(args.discovery_sleep),
+            "--availability-filter",
+            args.availability_filter,
         ]
         if args.include_route_index:
             command.append("--include-route-index")

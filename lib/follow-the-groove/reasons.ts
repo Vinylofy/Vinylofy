@@ -39,10 +39,12 @@ export function mapReasonLabel(input: ReasonInput): string {
   if (input.candidate.entityType === "person" && input.activeArtist.entityType === "group") {
     if (isCurrent) return `Lid van ${input.activeArtist.name}`;
     if (isFormer) return `Voormalig lid van ${input.activeArtist.name}`;
+    if (membership.length > 0) return `Bandlid van ${input.activeArtist.name}`;
   }
   if (input.activeArtist.entityType === "person" && input.candidate.entityType === "group") {
     if (isCurrent) return `Band waarvan ${input.activeArtist.name} lid is`;
     if (isFormer) return `Band waarvan ${input.activeArtist.name} lid was`;
+    if (membership.length > 0) return `Band waar ${input.activeArtist.name} deel van uitmaakte`;
   }
 
   return "Bandconnectie";

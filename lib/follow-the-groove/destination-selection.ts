@@ -12,6 +12,7 @@ export type FtgDestinationCandidate = FtgRankingCandidate & {
   v3Order: number;
   bridgeCount?: number;
   dedicatedSoloFallback?: boolean;
+  directMembershipDestination?: boolean;
 };
 
 function compareStrings(left: string, right: string): number {
@@ -199,6 +200,7 @@ export function selectNextDestinations(input: {
 }
 
 const RECORDING_EVIDENCE = new Set(["artist_credit", "instrument", "vocal"]);
+const DIRECT_MEMBERSHIP_DESTINATION_LIMIT = 3;
 
 function isDedicatedDestination(candidate: FtgRankingCandidate): boolean {
   if (candidate.destinationOutputStatus !== "proven_output" || candidate.productCount <= 0) {
@@ -206,13 +208,20 @@ function isDedicatedDestination(candidate: FtgRankingCandidate): boolean {
   }
   if (candidate.entityType === "group") return true;
 
-  // Membership alone turns a person into a bridge, not a destination. A
-  // person may be a destination when the data also proves participation in a
-  // recording, which is the narrowest available evidence of an own musical
-  // oeuvre and a concrete route to the destination.
+  // Recording evidence is a stronger direct route for people. Membership-only
+  // people are considered separately as a bounded fill rule, after the normal
+  // dedicated destinations have kept priority.
   return candidate.factual && candidate.factualMechanisms.some((mechanism) =>
     RECORDING_EVIDENCE.has(mechanism),
   );
+}
+
+function isDirectMembershipDestination(candidate: FtgRankingCandidate): boolean {
+  return candidate.destinationOutputStatus !== "proven_bridge_only" &&
+    candidate.productCount > 0 &&
+    candidate.entityType === "person" &&
+    candidate.factual &&
+    candidate.factualMechanisms.includes("membership");
 }
 
 function isDedicatedSoloFallback(candidate: FtgRankingCandidate): boolean {
@@ -520,5 +529,44 @@ export function selectDedicatedDestinations(input: {
     ? Math.min(2, boundedLimit)
     : boundedLimit;
 
-  return selectWithBridgeDiversity(ordered, boundedLimit, maxSimilarityOnly);
+  const selected = selectWithBridgeDiversity(ordered, boundedLimit, maxSimilarityOnly);
+  const openSlots = boundedLimit - selected.length;
+  if (openSlots <= 0) return selected;
+
+  const selectedIds = new Set(selected.map((candidate) => candidate.targetArtistId));
+  const membershipFillers = suppressDedicatedArtistFamilyVariants(
+    input.direct
+      .filter((candidate) =>
+        candidate.targetArtistId !== input.sourceArtistId &&
+        !excluded.has(candidate.targetArtistId) &&
+        !selectedIds.has(candidate.targetArtistId) &&
+        isDirectMembershipDestination(candidate),
+      )
+      .map((candidate) => ({
+        ...candidate,
+        direct: true,
+        bridgeId: null,
+        bridgeName: null,
+        onwardCount: new Set(
+          onwardDestinations(candidate.targetArtistId)
+            .map((relation) => relation.targetArtistId)
+            .filter((targetId) => targetId !== input.sourceArtistId && !excluded.has(targetId)),
+        ).size,
+        v3Order: candidate.similarityPosition ?? 2 ** 31,
+        bridgeCount: 0,
+        directMembershipDestination: true,
+      }))
+      .sort(compareDedicatedDestinations),
+    input.visitedArtistNames ?? [],
+  )
+    .filter((candidate) => !selectedIds.has(candidate.targetArtistId))
+    .sort(compareDedicatedDestinations);
+
+  return [
+    ...selected,
+    ...membershipFillers.slice(
+      0,
+      Math.min(DIRECT_MEMBERSHIP_DESTINATION_LIMIT, openSlots),
+    ),
+  ];
 }

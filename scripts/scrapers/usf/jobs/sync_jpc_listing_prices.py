@@ -56,6 +56,7 @@ listing_prices_raw as (
   from public.shop_product_links spl
   where spl.shop_id = %(shop_id)s
     and spl.status = 'active'
+    and spl.payload->>'listing_availability' = 'in_stock'
     and spl.source_url is not null
     and spl.source_product_id is not null
     and replace(coalesce(spl.payload->>'listing_price_raw', ''), ',', '.')

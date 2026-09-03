@@ -15,6 +15,12 @@ export type ShippingInfo = {
   freeShippingThresholdPrice: number | null;
 };
 
+function toFiniteNumber(value: number | string | null | undefined): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = typeof value === "string" ? Number(value) : value;
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 export function enrichOffersWithShipping<
   T extends {
     shopId?: string | null;
@@ -52,27 +58,32 @@ export function enrichOffersWithShipping<
     }
 
     const priceCents = Math.round(offer.price * 100);
+    const shippingCostCents = toFiniteNumber(rule.shippingCostCents);
+    const freeShippingThresholdCents = toFiniteNumber(
+      rule.freeShippingThresholdCents,
+    );
 
     const free =
-      rule.freeShippingThresholdCents !== null &&
-      priceCents >= rule.freeShippingThresholdCents;
+      freeShippingThresholdCents !== null &&
+      priceCents >= freeShippingThresholdCents;
 
-    const shippingCents = free
-      ? 0
-      : (rule.shippingCostCents ?? 0);
+    // A missing tariff is unknown, not free shipping. Only a threshold that
+    // was actually met can turn a known tariff into zero.
+    const shippingCents = free ? 0 : shippingCostCents;
 
     return {
       ...offer,
-      estimatedShippingPrice: shippingCents / 100,
+      estimatedShippingPrice:
+        shippingCents === null ? null : shippingCents / 100,
       estimatedTotalPrice:
-        (priceCents + shippingCents) / 100,
+        shippingCents === null ? null : (priceCents + shippingCents) / 100,
       freeShippingApplied: free,
       shippingNote: rule.shippingNote,
       shippingConfidence: rule.confidence,
-    freeShippingThresholdPrice:
-      rule.freeShippingThresholdCents !== null
-        ? rule.freeShippingThresholdCents / 100
-        : null,
+      freeShippingThresholdPrice:
+        freeShippingThresholdCents !== null
+          ? freeShippingThresholdCents / 100
+          : null,
     };
   });
 }

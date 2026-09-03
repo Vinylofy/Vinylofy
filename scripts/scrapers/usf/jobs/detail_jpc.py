@@ -327,6 +327,7 @@ def get_missing_ean_links_for_detail_scrape(limit: int) -> list[dict[str, Any]]:
                 from public.shop_product_links l
                 where l.shop_id = %s
                   and l.status = 'active'
+                  and l.payload->>'listing_availability' = 'in_stock'
                   and l.last_detail_scraped_at is null
                   and nullif(l.payload->>'last_successful_ean', '') is null
                   and not exists (

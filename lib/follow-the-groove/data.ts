@@ -749,7 +749,9 @@ export async function getFollowTheGroovePage(input: {
   const candidateViews = selected.map((candidate, index) => {
     const view = views.get(candidate.targetArtistId);
     if (!view) return null;
-    const reasonCode = getReasonCodes(candidate)[0] ?? "similar_artist";
+    const reasonCode = candidate.directMembershipDestination === true
+      ? "membership"
+      : getReasonCodes(candidate)[0] ?? "similar_artist";
     if (!reasonCode) {
       throw new Error(`Candidate ${candidate.targetArtistId} has no supported V1 reason`);
     }
