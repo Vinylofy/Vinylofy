@@ -6,7 +6,11 @@ from datetime import datetime, timezone
 from scripts.scrapers.usf.core.db import db_connection
 from scripts.scrapers.usf.core.fast_listing_price_sync import bulk_update_prices_from_link_registry
 from scripts.scrapers.usf.core.link_registry import upsert_discovered_links
-from scripts.scrapers.usf.core.listing_price_sync import ListingOffer, sync_listing_offers
+from scripts.scrapers.usf.core.listing_price_sync import (
+    ListingOffer,
+    offers_needing_price_reconcile,
+    sync_listing_offers,
+)
 from scripts.scrapers.usf.jobs.discover_platomania import (
     SHOP_COUNTRY,
     SHOP_DOMAIN,
@@ -18,14 +22,22 @@ from scripts.scrapers.usf.jobs.discover_platomania import (
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Fast Platomania listing price refresh into public prices.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Platomania listing price refresh with fast existing-price sync "
+            "and bounded new-offer reconciliation."
+        )
+    )
     parser.add_argument("--seed-limit", type=int, default=0, help="Aantal seedcategorieën; 0 = alle seeds.")
     parser.add_argument("--max-pages-per-seed", type=int, default=0, help="Aantal pagina's per seed; 0 = tot leeg/dubbel.")
     parser.add_argument("--delay-seconds", type=float, default=0.35)
     parser.add_argument(
         "--fast-price-sync",
         action="store_true",
-        help="Gebruik snelle bulk price sync vanuit shop_product_links; alleen bestaande prices op URL.",
+        help=(
+            "Gebruik snelle bulk sync voor bestaande prices en reconcile "
+            "daarna nieuwe links EAN-aware."
+        ),
     )
     parser.add_argument("--write", action="store_true")
     return parser
@@ -113,6 +125,12 @@ def main() -> int:
     )
 
     with db_connection() as conn:
+        offers_needing_reconcile = offers_needing_price_reconcile(
+            conn,
+            offers,
+            shop_domain=SHOP_DOMAIN,
+        )
+
         if args.fast_price_sync:
             stats = bulk_update_prices_from_link_registry(
                 conn,
@@ -122,8 +140,32 @@ def main() -> int:
                 currency="EUR",
             )
             print("[LISTING-REFRESH] fast_price_sync", vars(stats), flush=True)
+
+            if offers_needing_reconcile:
+                reconcile_stats = sync_listing_offers(
+                    conn,
+                    offers_needing_reconcile,
+                    write=True,
+                    create_product_from_offer_ean=True,
+                )
+                print(
+                    "[LISTING-REFRESH] new_offer_reconcile",
+                    vars(reconcile_stats),
+                    flush=True,
+                )
+            else:
+                print(
+                    "[LISTING-REFRESH] new_offer_reconcile",
+                    {"offers": 0, "reason": "all discovered offers already have a price"},
+                    flush=True,
+                )
         else:
-            stats = sync_listing_offers(conn, offers, write=True)
+            stats = sync_listing_offers(
+                conn,
+                offers,
+                write=True,
+                create_product_from_offer_ean=True,
+            )
             print("[LISTING-REFRESH] price_sync", vars(stats), flush=True)
 
     return 0

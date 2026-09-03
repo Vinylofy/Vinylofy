@@ -34,6 +34,10 @@ SEED_URLS = [
     "https://www.platomania.nl/etalage/list/id/3715",
     "https://www.platomania.nl/nieuw-vinyl-klassiek",
     "https://www.platomania.nl/vinyl-reissues",
+    # General catalog coverage keeps products discoverable after they leave
+    # a temporary promotion category.
+    "https://www.platomania.nl/vinyl",
+    "https://www.platomania.nl/vinyl-aanbiedingen",
 ]
 
 STEP1_COLUMNS = [

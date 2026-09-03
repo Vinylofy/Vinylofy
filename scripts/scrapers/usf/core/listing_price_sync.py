@@ -43,6 +43,7 @@ class ListingSyncStats:
     matched_latest_raw_ean: int = 0
     matched_offer_ean: int = 0
     product_created_from_raw_ean: int = 0
+    product_created_from_offer_ean: int = 0
     unmatched: int = 0
     inserted_prices: int = 0
     changed_prices: int = 0
@@ -61,6 +62,57 @@ def normalize_url(value: str | None) -> str:
     if not text:
         return ""
     return text.split("#", 1)[0].split("?", 1)[0].rstrip("/")
+
+
+def offers_needing_price_reconcile(
+    conn: psycopg.Connection,
+    offers: list[ListingOffer],
+    *,
+    shop_domain: str,
+) -> list[ListingOffer]:
+    """Return discovered offers that fast-sync cannot update.
+
+    Fast-sync matches prices by normalized source URL.  Any offer whose URL
+    is not already present must go through the normal EAN-aware sync.  This
+    also covers a product whose shop URL changed: matching only by EAN here
+    would incorrectly skip the URL/price refresh.
+    """
+    if not offers:
+        return []
+
+    normalized_urls = sorted(
+        {
+            normalize_url(offer.source_url)
+            for offer in offers
+            if normalize_url(offer.source_url)
+        }
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select trim(trailing '/' from split_part(pr.product_url, '?', 1)) as product_url_norm
+            from public.prices pr
+            join public.shops s on s.id = pr.shop_id
+            where s.domain = %s
+              and trim(trailing '/' from split_part(pr.product_url, '?', 1)) = any(%s)
+            """,
+            (
+                shop_domain,
+                normalized_urls or [""],
+            ),
+        )
+        rows = cur.fetchall()
+
+    known_urls = {str(row[0]) for row in rows if row[0]}
+
+    result: list[ListingOffer] = []
+    for offer in offers:
+        offer_url = normalize_url(offer.source_url)
+        if offer_url in known_urls:
+            continue
+        result.append(offer)
+
+    return result
 
 
 def parse_price(value: str | float | Decimal | None) -> Decimal | None:
@@ -315,6 +367,67 @@ def ensure_product_from_raw_ean(
     return upsert_product(cur, record)
 
 
+def ensure_product_from_offer_ean(
+    cur: psycopg.Cursor,
+    *,
+    offer: ListingOffer,
+    price: Decimal,
+    availability: str,
+) -> tuple[str, bool] | None:
+    """Create a product from a validated listing EAN and explicit metadata.
+
+    Listing discovery may be the first source that exposes a product.  Keep
+    the EAN gatekeeper strict: no product is created unless the listing has a
+    usable EAN, artist and title.  Shop metadata is marked as a placeholder
+    so stronger canonical metadata can replace it later.
+    """
+    ean = normalize_ean(offer.ean)
+    raw = dict(offer.raw or {})
+    artist = normalize_text(raw.get("artist"))
+    title = normalize_text(raw.get("title"))
+    if not ean or not artist or not title:
+        return None
+
+    format_label = (
+        normalize_text(raw.get("drager"))
+        or normalize_text(raw.get("type"))
+        or None
+    )
+    captured_at = offer.seen_at or now_utc()
+    if captured_at.tzinfo is None:
+        captured_at = captured_at.replace(tzinfo=timezone.utc)
+
+    record = CanonicalRecord(
+        source_row_number=1,
+        shop_name=offer.shop_name,
+        shop_domain=offer.shop_domain,
+        shop_country=offer.shop_country,
+        ean=ean,
+        artist=artist,
+        title=title,
+        format_label=format_label,
+        cover_url=None,
+        product_url=normalize_url(offer.source_url),
+        price=float(price),
+        currency=offer.currency,
+        availability=availability,
+        captured_at=captured_at,
+        product_handle=normalize_text(raw.get("item_nr")) or None,
+        detail_status="listing_ean",
+        is_secondhand=False,
+        raw={
+            "source": "listing_price_sync",
+            "policy": (
+                "product created from validated listing EAN; "
+                "listing price is authoritative"
+            ),
+            "listing": raw,
+        },
+        gtin_normalized=normalize_gtin14(ean),
+    )
+    return upsert_product(cur, record)
+
+
 def get_existing_price(
     cur: psycopg.Cursor,
     *,
@@ -491,6 +604,7 @@ def sync_listing_offers(
     *,
     write: bool,
     preserve_availability: bool = False,
+    create_product_from_offer_ean: bool = False,
 ) -> ListingSyncStats:
     stats = ListingSyncStats(total=len(offers))
 
@@ -551,6 +665,22 @@ def sync_listing_offers(
             if product_id is None and offer.ean:
                 product_id = find_product_by_ean(cur, ean=offer.ean)
                 matched_kind = "offer_ean" if product_id is not None else None
+
+                if (
+                    product_id is None
+                    and write
+                    and create_product_from_offer_ean
+                ):
+                    created_product = ensure_product_from_offer_ean(
+                        cur,
+                        offer=offer,
+                        price=price,
+                        availability=normalize_availability(offer.availability),
+                    )
+                    if created_product is not None:
+                        product_id, created = created_product
+                        stats.product_created_from_offer_ean += int(created)
+                        matched_kind = "offer_ean_created"
 
             if product_id is None:
                 stats.unmatched += 1
