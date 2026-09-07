@@ -81,7 +81,7 @@ jobs:
           if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
             MAX_PAGES="0"
             DETAIL_LIMIT="500"
-            WRITE="false"
+            WRITE="true"
           else
             MAX_PAGES="${{ inputs.max_pages }}"
             DETAIL_LIMIT="${{ inputs.detail_limit }}"
