@@ -68,6 +68,12 @@ class ConfigTests(unittest.TestCase):
         source=inspect.getsource(generic.run)
         self.assertLess(source.rfind("update_execution_state(os.environ[\"DATABASE_URL\"], execution_id, status=\"succeeded\""), source.rfind("args.output.write_text"))
 
+    def test_failed_write_preflight_keeps_artifact_and_error_details(self):
+        source=inspect.getsource(generic.run)
+        preflight=source.index('raise persistence.PersistenceConflict("write preflight')
+        self.assertLess(source.rfind("error_summary=preflight_errors", 0, preflight), preflight)
+        self.assertLess(source.rfind("args.output.write_text", 0, preflight), preflight)
+
 
 class SelectorTests(unittest.TestCase):
     class Conn:

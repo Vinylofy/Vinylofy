@@ -21,6 +21,11 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(persistence.plan_rows("artists",[incoming],[artist()])[0]["action"],"SEEN_AGAIN")
         self.assertEqual(persistence.plan_rows("artists",[{**incoming,"display_name":"Other"}],[artist()])[0]["action"],"CONFLICT")
 
+    def test_artist_display_name_typography_drift_is_seen_again(self):
+        existing = artist(display_name="George's Band")
+        incoming = artist(id=None, display_name="George’s Band", last_seen_run_id=None)
+        self.assertEqual(persistence.plan_rows("artists", [incoming], [existing])[0]["action"], "SEEN_AGAIN")
+
     def test_seen_again_captures_old_last_seen(self):
         plan=persistence.plan_rows("artists",[artist(id=None,last_seen_run_id=None)],[artist()])[0]
         self.assertEqual(plan["preimage"],{"id":"a1","last_seen_run_id":"old"})

@@ -146,11 +146,29 @@ def create_execution_state(database_url: str, execution_id: str, config: Bounded
     return {"execution_id": execution_id, "status": "running", "counters": counters}
 
 
-def update_execution_state(database_url: str, execution_id: str, *, status: str, counters: dict[str, Any]) -> None:
+def update_execution_state(
+    database_url: str,
+    execution_id: str,
+    *,
+    status: str,
+    counters: dict[str, Any],
+    error_summary: list[dict[str, Any]] | None = None,
+) -> None:
     with psycopg.connect(database_url, autocommit=False) as conn:
         changed = conn.execute(
-            "update follow_the_groove_collection_runs set status=%s,counters=%s::jsonb,finished_at=case when %s <> 'running' then now() else finished_at end where id=%s and collector=%s",
-            (status, json.dumps(counters, default=str), status, execution_id, BATCH_COLLECTOR),
+            "update follow_the_groove_collection_runs set status=%s,counters=%s::jsonb,"
+            "error_summary=case when %s::jsonb is null then error_summary else %s::jsonb end,"
+            "finished_at=case when %s <> 'running' then now() else finished_at end "
+            "where id=%s and collector=%s",
+            (
+                status,
+                json.dumps(counters, default=str),
+                json.dumps(error_summary, default=str) if error_summary is not None else None,
+                json.dumps(error_summary, default=str) if error_summary is not None else None,
+                status,
+                execution_id,
+                BATCH_COLLECTOR,
+            ),
         )
         if changed.rowcount != 1:
             raise persistence.PersistenceConflict("durable execution state transition failed")
@@ -579,6 +597,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     execution_id = validate_execution_id(args) if write else None
     lock_conn = None
     execution = None
+    output: dict[str, Any] | None = None
     if write:
         lock_conn = acquire_write_lock(os.environ["DATABASE_URL"])
         existing = read_execution_state(os.environ["DATABASE_URL"], execution_id)
@@ -613,7 +632,24 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             conn.close()
         if write:
             if len(results)!=args.max_sources or any(item.status!="succeeded" or item.rollback.get("status")!="PROVEN" for item in results):
-                update_execution_state(os.environ["DATABASE_URL"], execution_id, status="failed", counters={"execution_id":execution_id,"preflight":output})
+                preflight_errors = [
+                    {
+                        "source_artist_mbid": item.source.mbid,
+                        "source_display_name": item.source.display_name,
+                        **error,
+                    }
+                    for item in results
+                    for error in item.errors
+                ]
+                update_execution_state(
+                    os.environ["DATABASE_URL"],
+                    execution_id,
+                    status="failed",
+                    counters={"execution_id":execution_id,"preflight":output},
+                    error_summary=preflight_errors,
+                )
+                if args.output:
+                    args.output.write_text(json.dumps(output,ensure_ascii=False,indent=2,default=str)+"\n",encoding="utf-8")
                 raise persistence.PersistenceConflict("write preflight did not produce a successful proven plan for every source")
             for item in results:
                 item.run_plan.setdefault("counters", {})["execution_id"] = execution_id
@@ -624,12 +660,25 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             update_execution_state(os.environ["DATABASE_URL"], execution_id, status="succeeded", counters=execution_counters)
         if args.output: args.output.write_text(json.dumps(output,ensure_ascii=False,indent=2,default=str)+"\n",encoding="utf-8")
         return output
-    except Exception:
+    except Exception as exc:
         if write and execution_id and read_execution_state(os.environ["DATABASE_URL"], execution_id) and execution and execution.get("status")=="running":
             with psycopg.connect(os.environ["DATABASE_URL"],autocommit=False) as check:
                 count=check.execute("select count(*) from follow_the_groove_collection_runs where counters->>'execution_id'=%s and collector=%s",(execution_id,GENERIC_COLLECTOR)).fetchone()[0]
                 check.rollback()
-            update_execution_state(os.environ["DATABASE_URL"], execution_id, status="partial" if count else "failed", counters={"execution_id":execution_id,"source_run_count":count,"recovery_required":bool(count)})
+            update_execution_state(
+                os.environ["DATABASE_URL"],
+                execution_id,
+                status="partial" if count else "failed",
+                counters={
+                    "execution_id":execution_id,
+                    "source_run_count":count,
+                    "recovery_required":bool(count),
+                    **({"preflight": output} if output is not None else {}),
+                },
+                error_summary=[{"classification":"COLLECTOR_EXCEPTION","detail":f"{type(exc).__name__}: {exc}"}],
+            )
+            if args.output and output is not None:
+                args.output.write_text(json.dumps(output,ensure_ascii=False,indent=2,default=str)+"\n",encoding="utf-8")
         raise
     finally:
         if lock_conn is not None:

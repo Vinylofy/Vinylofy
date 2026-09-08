@@ -11,6 +11,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 import json
 import os
+import unicodedata
 import uuid
 
 import psycopg
@@ -93,6 +94,33 @@ def _hashable(value: Any) -> Any:
     if isinstance(value, dict):
         return tuple(sorted((key, _hashable(item)) for key, item in value.items()))
     return value
+
+
+_DISPLAY_NAME_TYPOGRAPHY = str.maketrans({
+    "\u2018": "'",
+    "\u2019": "'",
+    "\u201a": "'",
+    "\u201b": "'",
+    "\u2032": "'",
+    "\u02bc": "'",
+    "\u201c": '"',
+    "\u201d": '"',
+    "\u201e": '"',
+    "\u201f": '"',
+    "\u2033": '"',
+})
+
+
+def _immutable_values_equal(kind: str, field: str, existing: Any, incoming: Any) -> bool:
+    """Compare immutable values without treating harmless name typography as drift."""
+    if kind == "artists" and field == "display_name":
+        values = []
+        for value in (existing, incoming):
+            if isinstance(value, str):
+                value = unicodedata.normalize("NFKC", value).translate(_DISPLAY_NAME_TYPOGRAPHY)
+            values.append(value)
+        return values[0] == values[1]
+    return _hashable(existing) == _hashable(incoming)
 
 
 def natural_key(kind: str, row: Mapping[str, Any]) -> tuple[Any, ...]:
@@ -212,7 +240,7 @@ def plan_rows(kind: str, incoming: Iterable[Mapping[str, Any]], existing: Iterab
         conflicts = {
             field: {"existing": old.get(field), "incoming": row.get(field)}
             for field in contract.immutable
-            if _hashable(old.get(field)) != _hashable(row.get(field))
+            if not _immutable_values_equal(kind, field, old.get(field), row.get(field))
         }
         if conflicts:
             planned.append({**row, "action": "CONFLICT", "conflicts": conflicts, "existing_id": old.get("id")})
