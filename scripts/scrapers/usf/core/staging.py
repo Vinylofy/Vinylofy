@@ -102,7 +102,7 @@ def fetch_latest_unstaged_raw_rows(
     lock_rows: bool,
 ) -> list[dict[str, Any]]:
     sql = """
-        with latest_raw as (
+        with latest_raw as materialized (
             select distinct on (r.shop_id, r.source_url)
                 r.id
             from public.raw_shop_scrapes r

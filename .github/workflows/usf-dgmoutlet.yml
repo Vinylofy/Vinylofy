@@ -14,6 +14,8 @@ on:
       - "scripts/scrapers/usf/**"
       - "scripts/importers/common.py"
       - "scripts/importers/import_dgmoutlet.py"
+      - "supabase/migrations/20260908163000_optimize_usf_staging_queue.sql"
+      - "supabase/rollbacks/20260908163000_optimize_usf_staging_queue.rollback.sql"
 
   workflow_dispatch:
     inputs:
@@ -162,6 +164,15 @@ jobs:
           python -m scripts.scrapers.usf.jobs.promote_dgmoutlet --help
           python -m scripts.scrapers.usf.jobs.quarantine_dgmoutlet --help
           python -m scripts.scrapers.usf.jobs.run_dgmoutlet_pipeline --help
+
+      - name: Validate DGM pipeline contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m unittest \
+            scripts.scrapers.usf.tests.test_dgmoutlet_pipeline_contract \
+            -v
 
   run:
     name: Run DGM USF pipeline
