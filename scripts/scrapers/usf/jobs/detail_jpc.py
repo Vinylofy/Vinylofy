@@ -321,8 +321,21 @@ def listing_availability_from_payload(payload: dict[str, Any]) -> tuple[str | No
 def get_missing_ean_links_for_detail_scrape(limit: int) -> list[dict[str, Any]]:
     with db_connection() as conn:
         with conn.cursor() as cur:
+            # Keep these predicates aligned with the partial queue index in
+            # supabase/migrations/20260908120000_optimize_jpc_detail_queue.sql.
+            # The raw-shop-scrapes lookup is indexed by shop/product as well;
+            # without both indexes this queue degenerates into a catalog-wide
+            # scan before every detail burst.
             cur.execute(
                 r"""
+                with valid_ean_raw as materialized (
+                    select distinct r.source_product_id
+                    from public.raw_shop_scrapes r
+                    where r.shop_id = %s
+                      and r.ean_raw is not null
+                      and regexp_replace(coalesce(r.ean_raw, ''), '\D', '', 'g')
+                          ~ '^(\d{8}|\d{12}|\d{13}|\d{14})$'
+                )
                 select l.id, l.shop_id, l.source_url, l.source_product_id, l.payload
                 from public.shop_product_links l
                 where l.shop_id = %s
@@ -332,11 +345,8 @@ def get_missing_ean_links_for_detail_scrape(limit: int) -> list[dict[str, Any]]:
                   and nullif(l.payload->>'last_successful_ean', '') is null
                   and not exists (
                       select 1
-                      from public.raw_shop_scrapes r
-                      where r.shop_id = l.shop_id
-                        and r.source_product_id = l.source_product_id
-                        and regexp_replace(coalesce(r.ean_raw, ''), '\D', '', 'g')
-                            ~ '^(\d{8}|\d{12}|\d{13}|\d{14})$'
+                      from valid_ean_raw r
+                      where r.source_product_id = l.source_product_id
                   )
                 order by
                     case
@@ -347,7 +357,7 @@ def get_missing_ean_links_for_detail_scrape(limit: int) -> list[dict[str, Any]]:
                     l.first_seen_at asc
                 limit %s
                 """,
-                (SHOP_ID, limit),
+                (SHOP_ID, SHOP_ID, limit),
             )
             rows = cur.fetchall()
 

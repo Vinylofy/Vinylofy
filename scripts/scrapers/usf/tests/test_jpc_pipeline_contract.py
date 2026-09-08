@@ -62,6 +62,12 @@ def run_tests() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "usf-jpc.yml").read_text(
         encoding="utf-8"
     )
+    migration = (
+        REPO_ROOT
+        / "supabase"
+        / "migrations"
+        / "20260908120000_optimize_jpc_detail_queue.sql"
+    ).read_text(encoding="utf-8")
 
     assert "missing_ean" in detail
     assert "listing_availability' = 'in_stock'" in detail
@@ -69,6 +75,14 @@ def run_tests() -> None:
     assert "last_successful_ean" in link_registry
     assert "%s::text" in link_registry
     assert "raw_shop_scrapes r" in detail
+    assert "r.ean_raw is not null" in detail
+    assert "valid_ean_raw as materialized" in detail
+    assert "select distinct r.source_product_id" in detail
+    assert "idx_jpc_detail_queue" in migration
+    assert "idx_raw_shop_scrapes_shop_product" in migration
+    assert "last_detail_scraped_at is null" in migration
+    assert "listing_availability' = 'in_stock'" in migration
+    assert "last_successful_ean" in migration
     assert "last_successful_ean" in requeue
     assert "exclude_successful_ean" in requeue
     assert "listing_price_and_availability_are_authoritative" in detail
