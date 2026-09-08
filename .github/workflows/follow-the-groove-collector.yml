@@ -69,7 +69,7 @@ jobs:
         shell: bash
         env:
           MODE_INPUT: ${{ github.event_name == 'schedule' && 'frontier' || inputs.mode }}
-          MAX_SOURCES_INPUT: ${{ github.event_name == 'schedule' && '25' || inputs.max_sources }}
+          MAX_SOURCES_INPUT: ${{ github.event_name == 'schedule' && '10' || inputs.max_sources }}
           SOURCE_MBIDS_INPUT: ${{ github.event_name == 'schedule' && '' || inputs.source_mbids }}
           WRITE_INPUT: ${{ github.event_name == 'schedule' && 'true' || inputs.write }}
         run: |
@@ -143,6 +143,7 @@ jobs:
           data=json.loads(Path("output/follow_the_groove/collector-result.json").read_text())
           print("## Follow the Groove Collector")
           print(f"- Mode: {data.get('mode')}")
+          print(f"- Status: {data.get('status', 'unknown')}")
           print(f"- Selected sources: {len(data.get('selected_sources', []))}")
           print(f"- Recording API calls: {data.get('recording_api_calls')}")
           print(f"- Same-run recursion: {data.get('same_run_recursion')}")

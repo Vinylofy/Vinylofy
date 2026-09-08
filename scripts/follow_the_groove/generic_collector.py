@@ -550,6 +550,35 @@ def orchestrate(sources: list[Source], collect: Callable[[Source], SourceResult]
     return results
 
 
+def write_eligible_results(results: Iterable[SourceResult]) -> list[SourceResult]:
+    """Return only source plans that are complete and rollback-proven."""
+    return [
+        item for item in results
+        if item.status == "succeeded" and item.rollback.get("status") == "PROVEN"
+    ]
+
+
+def preflight_error_records(results: Iterable[SourceResult]) -> list[dict[str, Any]]:
+    """Return durable, source-scoped diagnostics for sources skipped by preflight."""
+    errors: list[dict[str, Any]] = []
+    for item in results:
+        if item.status == "succeeded" and item.rollback.get("status") == "PROVEN":
+            continue
+        source_context = {
+            "source_artist_mbid": item.source.mbid,
+            "source_display_name": item.source.display_name,
+        }
+        if item.errors:
+            errors.extend({**source_context, **error} for error in item.errors)
+        else:
+            errors.append({
+                **source_context,
+                "classification": "PERSISTENCE_CONFLICT",
+                "detail": "source did not produce a succeeded, rollback-proven plan",
+            })
+    return errors
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser=argparse.ArgumentParser(description="Generic bounded Follow-the-Groove collector")
     mode=parser.add_mutually_exclusive_group(required=True)
@@ -596,7 +625,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     config=BoundedConfig(args.max_sources,args.max_direct_targets,args.lastfm_limit,args.graph_depth,tuple(args.recording_release_seed),True)
     execution_id = validate_execution_id(args) if write else None
     lock_conn = None
-    execution = None
     output: dict[str, Any] | None = None
     if write:
         lock_conn = acquire_write_lock(os.environ["DATABASE_URL"])
@@ -607,7 +635,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             if args.output:
                 args.output.write_text(json.dumps(state, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
             return state
-        execution = create_execution_state(os.environ["DATABASE_URL"], execution_id, config)
+        create_execution_state(os.environ["DATABASE_URL"], execution_id, config)
     started=now(); started_perf=time.perf_counter()
     try:
         conn=psycopg.connect(os.environ["DATABASE_URL"],autocommit=False); conn.execute("begin read only")
@@ -631,16 +659,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         finally:
             conn.close()
         if write:
-            if len(results)!=args.max_sources or any(item.status!="succeeded" or item.rollback.get("status")!="PROVEN" for item in results):
-                preflight_errors = [
-                    {
-                        "source_artist_mbid": item.source.mbid,
-                        "source_display_name": item.source.display_name,
-                        **error,
-                    }
-                    for item in results
-                    for error in item.errors
-                ]
+            writable_results = write_eligible_results(results)
+            preflight_errors = preflight_error_records(results)
+            explicit_refresh_scope_mismatch = bool(getattr(args, "refresh", False)) and len(results) != args.max_sources
+            if explicit_refresh_scope_mismatch or (results and not writable_results):
+                output["status"] = "failed"
+                output["skipped_sources"] = preflight_errors
                 update_execution_state(
                     os.environ["DATABASE_URL"],
                     execution_id,
@@ -650,18 +674,35 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 if args.output:
                     args.output.write_text(json.dumps(output,ensure_ascii=False,indent=2,default=str)+"\n",encoding="utf-8")
-                raise persistence.PersistenceConflict("write preflight did not produce a successful proven plan for every source")
-            for item in results:
+                raise persistence.PersistenceConflict("write preflight produced no writable source plan")
+            for item in writable_results:
                 item.run_plan.setdefault("counters", {})["execution_id"] = execution_id
                 item.counters["execution_id"] = execution_id
-            writes=execute_writes(os.environ["DATABASE_URL"],results,execution_id=execution_id)
-            output["writes"]=writes; output["mode"]="write"
-            execution_counters={"execution_id":execution_id,"selected_sources":output["selected_sources"],"source_run_ids":[w["run_id"] for w in writes],"writes":writes}
-            update_execution_state(os.environ["DATABASE_URL"], execution_id, status="succeeded", counters=execution_counters)
+            writes=execute_writes(os.environ["DATABASE_URL"],writable_results,execution_id=execution_id)
+            output["writes"]=writes
+            output["mode"]="write"
+            output["status"]="partial" if preflight_errors else "succeeded"
+            output["skipped_sources"]=preflight_errors
+            execution_status=output["status"]
+            execution_counters={
+                "execution_id":execution_id,
+                "selected_sources":output["selected_sources"],
+                "source_run_ids":[w["run_id"] for w in writes],
+                "writes":writes,
+                "skipped_sources":preflight_errors,
+            }
+            update_execution_state(
+                os.environ["DATABASE_URL"],
+                execution_id,
+                status=execution_status,
+                counters=execution_counters,
+                error_summary=preflight_errors,
+            )
         if args.output: args.output.write_text(json.dumps(output,ensure_ascii=False,indent=2,default=str)+"\n",encoding="utf-8")
         return output
     except Exception as exc:
-        if write and execution_id and read_execution_state(os.environ["DATABASE_URL"], execution_id) and execution and execution.get("status")=="running":
+        state = read_execution_state(os.environ["DATABASE_URL"], execution_id) if write and execution_id else None
+        if write and state and state.get("status")=="running":
             with psycopg.connect(os.environ["DATABASE_URL"],autocommit=False) as check:
                 count=check.execute("select count(*) from follow_the_groove_collection_runs where counters->>'execution_id'=%s and collector=%s",(execution_id,GENERIC_COLLECTOR)).fetchone()[0]
                 check.rollback()
@@ -720,6 +761,8 @@ def main() -> int:
     args=build_parser().parse_args(); result=run(args); print(json.dumps(result,ensure_ascii=False,indent=2,default=lambda v:str(v) if isinstance(v,Decimal) else v))
     if result.get("mode") == "existing-execution":
         return 0 if result.get("status") == "succeeded" else 1
+    if result.get("mode") == "write":
+        return 0 if result.get("status") in {"succeeded", "partial"} else 1
     return 0 if all(item["status"]=="succeeded" for item in result["sources"]) else 1
 
 

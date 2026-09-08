@@ -28,9 +28,9 @@ class WorkflowSafetyTests(unittest.TestCase):
         self.assertIn('          - "25"',self.text)
         self.assertIn('^(1|2|3|10|25)$',self.text)
 
-    def test_schedule_is_write_frontier_twenty_five_and_manual_inputs_remain_available(self):
+    def test_schedule_is_write_frontier_ten_and_manual_inputs_remain_available(self):
         self.assertIn("github.event_name == 'schedule' && 'frontier' || inputs.mode",self.text)
-        self.assertIn("github.event_name == 'schedule' && '25' || inputs.max_sources",self.text)
+        self.assertIn("github.event_name == 'schedule' && '10' || inputs.max_sources",self.text)
         self.assertIn("github.event_name == 'schedule' && 'true' || inputs.write",self.text)
         self.assertIn('args+=(--write --execution-id "$execution_id")',self.text)
 

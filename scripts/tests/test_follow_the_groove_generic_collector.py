@@ -5,6 +5,7 @@ import contextlib
 import io
 import inspect
 import unittest
+from unittest.mock import patch
 
 from scripts.follow_the_groove import collector, generic_collector as generic, local_resolution, persistence
 
@@ -56,6 +57,20 @@ class ConfigTests(unittest.TestCase):
         source=inspect.getsource(generic.run)
         self.assertIn('status="partial" if count else "failed"',source)
         self.assertNotIn('status="recovery_required" if count else "failed"',source)
+
+    def test_exception_handler_does_not_overwrite_terminal_batch_state(self):
+        source=inspect.getsource(generic.run)
+        self.assertIn('state.get("status")=="running"',source)
+
+    def test_main_accepts_partial_write_as_successful_progress(self):
+        class Parser:
+            def parse_args(self):
+                return argparse.Namespace()
+
+        with patch.object(generic,"build_parser",return_value=Parser()), patch.object(
+            generic,"run",return_value={"mode":"write","status":"partial"}
+        ), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(generic.main(),0)
 
     def test_execution_safety_is_database_global_and_durable(self):
         source=inspect.getsource(generic)
@@ -156,6 +171,20 @@ class LocalResolutionTests(unittest.TestCase):
 
 
 class OrchestrationTests(unittest.TestCase):
+    def test_only_proven_source_plans_are_write_eligible(self):
+        failed=generic.SourceResult(SOURCE,status="failed")
+        unproven=generic.SourceResult(SOURCE,status="succeeded",rollback={"status":"NOT_PROVEN"})
+        proven=generic.SourceResult(SOURCE,status="succeeded",rollback={"status":"PROVEN"})
+        self.assertEqual(generic.write_eligible_results([failed,unproven,proven]),[proven])
+
+    def test_preflight_errors_keep_source_context_and_add_missing_diagnostics(self):
+        failed=generic.SourceResult(SOURCE,status="failed",errors=[{"classification":"MUSICBRAINZ_TRANSIENT","detail":"503"}])
+        unproven=generic.SourceResult(SOURCE,status="succeeded",rollback={"status":"NOT_PROVEN"})
+        errors=generic.preflight_error_records([failed,unproven])
+        self.assertEqual(errors[0]["source_display_name"],SOURCE.display_name)
+        self.assertEqual(errors[0]["classification"],"MUSICBRAINZ_TRANSIENT")
+        self.assertEqual(errors[1]["classification"],"PERSISTENCE_CONFLICT")
+
     def test_edge_snapshot_recanonicalizes_mbids_independent_of_database_id_order(self):
         self.assertEqual(
             generic.snapshot_edge_mbids("f0000000-0000-0000-0000-000000000000",
