@@ -101,10 +101,21 @@ def fetch_latest_unstaged_raw_rows(
     limit: int,
     lock_rows: bool,
 ) -> list[dict[str, Any]]:
-    sql = """
+    latest_raw_sql = """
         with latest_raw as materialized (
             select distinct on (r.shop_id, r.source_url)
-                r.id
+                r.id,
+                r.run_id,
+                r.shop_id,
+                r.source_url,
+                r.source_product_id,
+                r.title_raw,
+                r.ean_raw,
+                r.price_raw,
+                r.availability_raw,
+                r.image_url_raw,
+                r.payload,
+                r.scraped_at
             from public.raw_shop_scrapes r
             where r.shop_id = %s
             order by
@@ -113,35 +124,47 @@ def fetch_latest_unstaged_raw_rows(
                 r.scraped_at desc nulls last,
                 r.id desc
         )
+    """
+
+    candidates_sql = """
         select
-            r.id,
-            r.run_id,
-            r.shop_id,
-            r.source_url,
-            r.source_product_id,
-            r.title_raw,
-            r.ean_raw,
-            r.price_raw,
-            r.availability_raw,
-            r.image_url_raw,
-            r.payload,
-            r.scraped_at
+            latest.*
         from latest_raw latest
-        join public.raw_shop_scrapes r
-          on r.id = latest.id
-        left join public.staged_offers s
-          on s.raw_scrape_id = r.id
-        where s.id is null
-          and r.ean_raw is not null
-          and r.price_raw is not null
+        where latest.ean_raw is not null
+          and latest.price_raw is not null
+          and not exists (
+              select 1
+              from public.staged_offers s
+              where s.raw_scrape_id = latest.id
+          )
         order by
-            r.scraped_at asc nulls last,
-            r.id asc
+            latest.scraped_at asc nulls last,
+            latest.id asc
         limit %s
     """
 
     if lock_rows:
-        sql += " for update of r skip locked"
+        # Materializing complete latest rows avoids a second full scan of the
+        # growing raw table. Rejoin only the bounded candidate IDs so write
+        # workers can retain the existing row-lock/single-flight contract.
+        sql = (
+            latest_raw_sql
+            + ", candidates as materialized ("
+            + candidates_sql
+            + ")"
+            + """
+            select candidates.*
+            from candidates
+            join public.raw_shop_scrapes lock_target
+              on lock_target.id = candidates.id
+            order by
+                candidates.scraped_at asc nulls last,
+                candidates.id asc
+            for update of lock_target skip locked
+        """
+        )
+    else:
+        sql = latest_raw_sql + candidates_sql
 
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(sql, (shop_id, limit))

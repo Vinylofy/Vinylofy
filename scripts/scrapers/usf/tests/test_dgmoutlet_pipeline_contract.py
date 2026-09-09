@@ -35,7 +35,16 @@ class DgmOutletPipelineContractTests(unittest.TestCase):
         self.assertIn("on public.staged_offers (raw_scrape_id)", migration)
         self.assertIn("distinct on (r.shop_id, r.source_url)", staging)
         self.assertIn("with latest_raw as materialized", staging)
-        self.assertIn("on s.raw_scrape_id = r.id", staging)
+        self.assertIn(
+            "select distinct on (r.shop_id, r.source_url)\n"
+            "                r.id,\n"
+            "                r.run_id",
+            staging,
+        )
+        self.assertIn("where s.raw_scrape_id = latest.id", staging)
+        self.assertIn("candidates as materialized", staging)
+        self.assertIn("join public.raw_shop_scrapes lock_target", staging)
+        self.assertIn("for update of lock_target skip locked", staging)
 
     def test_index_migration_has_exact_rollback(self):
         rollback = ROLLBACK.read_text(encoding="utf-8").lower()

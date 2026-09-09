@@ -75,7 +75,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: usf-imusic-exposure-priority
+  # Both iMusic workflows mutate the same registry/raw/staging/public rows.
+  group: usf-imusic-production
   cancel-in-progress: false
 
 jobs:
