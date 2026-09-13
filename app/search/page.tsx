@@ -226,8 +226,8 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
         limit: 3,
       }).catch(() => null)
     : null;
-  const firstResults = visibleResults.slice(0, 5);
-  const remainingResults = visibleResults.slice(5);
+  const firstResults = visibleResults.slice(0, 3);
+  const remainingResults = visibleResults.slice(3);
 
   return (
     <div className="min-h-screen bg-[#f8f7f4] text-neutral-900">

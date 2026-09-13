@@ -1089,11 +1089,11 @@ class FrontendSourceContractTests(unittest.TestCase):
         )
         self.assertEqual(completed.stdout, "")
 
-    def test_search_integration_inserts_one_bounded_block_after_five(self) -> None:
+    def test_search_integration_inserts_one_bounded_block_after_three(self) -> None:
         page = (ROOT / "app/search/page.tsx").read_text()
         block = (ROOT / "components/follow-the-groove/groove-search-block.tsx").read_text()
-        self.assertIn("visibleResults.slice(0, 5)", page)
-        self.assertIn("visibleResults.slice(5)", page)
+        self.assertIn("visibleResults.slice(0, 3)", page)
+        self.assertIn("visibleResults.slice(3)", page)
         self.assertIn("grooveData.candidates.length > 0", page)
         self.assertEqual(page.count("<GrooveSearchBlock"), 1)
         self.assertIn("limit: 3", page)
