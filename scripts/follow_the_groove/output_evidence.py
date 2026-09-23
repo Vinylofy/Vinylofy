@@ -321,6 +321,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pilot", action="store_true")
     parser.add_argument("--reachable-missing-status", action="store_true")
     parser.add_argument("--refresh", action="store_true")
+    parser.add_argument("--require-proven-output", action="store_true",
+                        help="abort a write if any selected artist is not proven_output")
     parser.add_argument("--output", type=Path)
     return parser
 
@@ -363,6 +365,10 @@ def run(args: argparse.Namespace, *, client: MBClient | None = None) -> dict[str
                          "source": source, "verified_at": verified_at,
                          "evidence_write": bool(evidence and (evidence.natural_key not in existing_keys or args.refresh)),
                          "status_write": bool(artist.id not in existing_status or existing_status[artist.id] != status or args.refresh)})
+        if args.write and getattr(args, "require_proven_output", False) and any(
+            row["status"] != "proven_output" for row in rows
+        ):
+            raise ValueError("selected artist is not proven_output")
         conflicts = 0
         expected_new_evidence = sum(row["evidence_write"] for row in rows)
         expected_status_writes = sum(row["status_write"] for row in rows)
@@ -388,6 +394,7 @@ def run(args: argparse.Namespace, *, client: MBClient | None = None) -> dict[str
         "next_after_mbid": artists[-1].mbid if artists else args.after_mbid,
         "artists": [{"name": row["artist"].name, "artist_mbid": row["artist"].mbid,
                      "status": row["status"], "source": row["source"],
+                     "write_required": row["evidence_write"] or row["status_write"],
                      "evidence_type": row["evidence"].evidence_type if row["evidence"] else None,
                      "source_entity_id": row["evidence"].source_entity_id if row["evidence"] else None}
                     for row in rows],

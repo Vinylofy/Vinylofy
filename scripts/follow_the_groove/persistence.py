@@ -338,7 +338,7 @@ def _row_id(row: Mapping[str, Any]) -> str:
 def register_source_run(database_url: str, run_plan: Mapping[str, Any]) -> str:
     """Durably register one running source before its atomic data transaction."""
     run_id = str(run_plan["id"])
-    with psycopg.connect(database_url, autocommit=False) as conn:
+    with psycopg.connect(database_url, autocommit=False, prepare_threshold=None) as conn:
         conn.execute("begin isolation level serializable")
         conn.execute(
             "insert into follow_the_groove_collection_runs "
@@ -351,7 +351,7 @@ def register_source_run(database_url: str, run_plan: Mapping[str, Any]) -> str:
 
 
 def mark_source_run_failed(database_url: str, run_id: str, classification: str, detail: str) -> None:
-    with psycopg.connect(database_url, autocommit=False) as conn:
+    with psycopg.connect(database_url, autocommit=False, prepare_threshold=None) as conn:
         conn.execute("begin isolation level serializable")
         changed = conn.execute(
             "update follow_the_groove_collection_runs set status='failed',finished_at=now(),"

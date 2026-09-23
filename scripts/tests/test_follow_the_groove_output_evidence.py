@@ -47,6 +47,23 @@ class FakeConnection:
 
 
 class OutputEvidenceTest(unittest.TestCase):
+    def test_require_proven_output_blocks_unknown_before_persist(self):
+        args = argparse.Namespace(dry_run=False, write=True, batch_size=1, after_mbid=None,
+                                  artist_mbid=[ARTIST.mbid], pilot=False, refresh=False,
+                                  reachable_missing_status=False, require_proven_output=True,
+                                  output=None)
+        conn = FakeConnection()
+        with patch.dict(subject.os.environ, {"DATABASE_URL": "postgres://fixture"}), \
+             patch.object(subject.psycopg, "connect", return_value=conn), \
+             patch.object(subject, "select_artists", return_value=[ARTIST]), \
+             patch.object(subject, "load_existing", return_value=({}, set(), {})), \
+             patch.object(subject, "load_local_evidence", return_value=[]), \
+             patch.object(subject, "lookup_musicbrainz", return_value=None), \
+             patch.object(subject, "persist") as persist:
+            with self.assertRaisesRegex(ValueError, "not proven_output"):
+                subject.run(args, client=FakeClient([]))
+        persist.assert_not_called()
+
     def test_reachable_selection_requires_products_relations_and_missing_status(self):
         conn = FakeConnection()
         conn.fetchall = lambda: [(ARTIST.id, ARTIST.mbid, ARTIST.name)]

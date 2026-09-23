@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -68,8 +69,11 @@ def run(*, min_products: int, limit: int, lastfm_limit: int = 25,
     priorities = coverage_priorities.run(min_products=min_products, limit=limit)
     selected = priorities["artists"]
     if not selected:
-        return {"mode": "dry-run", "database_writes": 0, "sources": [],
-                "selected_sources": [], "api_counters": {}}
+        return {"mode": "dry-run", "generated_at": datetime.now(timezone.utc).isoformat(),
+                "database_writes": 0, "sources": [], "selected_sources": [],
+                "collector_limits": {"lastfm_limit": lastfm_limit,
+                                     "max_direct_targets": max_direct_targets},
+                "api_counters": {}}
     source_mbids = [row["artist_mbid"] for row in selected]
     collector_args = argparse.Namespace(
         dry_run=True, write=False, frontier=False, refresh=True,
@@ -86,8 +90,11 @@ def run(*, min_products: int, limit: int, lastfm_limit: int = 25,
         raise RuntimeError("collector source set changed during pilot")
     return {
         "mode": "dry-run",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "database_writes": 0,
         "heuristic_only": True,
+        "collector_limits": {"lastfm_limit": lastfm_limit,
+                             "max_direct_targets": max_direct_targets},
         "selected_sources": selected,
         "api_counters": collected.get("api_counters", {}),
         "sources": [summarize_source(row) for row in collected["sources"]],

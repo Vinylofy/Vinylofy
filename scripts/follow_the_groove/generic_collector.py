@@ -102,7 +102,7 @@ def acquire_write_lock(database_url: str) -> psycopg.Connection[Any]:
     """Hold a database-global advisory lock for the whole write execution."""
     # Transaction-scoped locks remain valid through transaction-pooling and are
     # released automatically on commit/rollback or process termination.
-    conn = psycopg.connect(database_url, autocommit=False)
+    conn = psycopg.connect(database_url, autocommit=False, prepare_threshold=None)
     locked = conn.execute("select pg_try_advisory_xact_lock(hashtext(%s))", (WRITE_LOCK_KEY,)).fetchone()[0]
     if not locked:
         conn.close()
@@ -111,7 +111,7 @@ def acquire_write_lock(database_url: str) -> psycopg.Connection[Any]:
 
 
 def read_execution_state(database_url: str, execution_id: str) -> dict[str, Any] | None:
-    with psycopg.connect(database_url, autocommit=False) as conn:
+    with psycopg.connect(database_url, autocommit=False, prepare_threshold=None) as conn:
         row = conn.execute(
             "select id::text,status,counters,started_at::text,finished_at::text "
             "from follow_the_groove_collection_runs where id=%s and collector=%s",
@@ -135,7 +135,7 @@ def read_execution_state(database_url: str, execution_id: str) -> dict[str, Any]
 
 def create_execution_state(database_url: str, execution_id: str, config: BoundedConfig) -> dict[str, Any]:
     counters = {"execution_id": execution_id, "config": asdict(config), "source_run_ids": []}
-    with psycopg.connect(database_url, autocommit=False) as conn:
+    with psycopg.connect(database_url, autocommit=False, prepare_threshold=None) as conn:
         conn.execute(
             "insert into follow_the_groove_collection_runs "
             "(id,collector,source_system,scope,status,counters,error_summary) "
@@ -154,7 +154,7 @@ def update_execution_state(
     counters: dict[str, Any],
     error_summary: list[dict[str, Any]] | None = None,
 ) -> None:
-    with psycopg.connect(database_url, autocommit=False) as conn:
+    with psycopg.connect(database_url, autocommit=False, prepare_threshold=None) as conn:
         changed = conn.execute(
             "update follow_the_groove_collection_runs set status=%s,counters=%s::jsonb,"
             "error_summary=case when %s::jsonb is null then error_summary else %s::jsonb end,"
@@ -624,7 +624,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         create_execution_state(os.environ["DATABASE_URL"], execution_id, config)
     started=now(); started_perf=time.perf_counter()
     try:
-        conn=psycopg.connect(os.environ["DATABASE_URL"],autocommit=False); conn.execute("begin read only")
+        conn=psycopg.connect(os.environ["DATABASE_URL"],autocommit=False,prepare_threshold=None); conn.execute("begin read only")
         try:
             sources=select_sources(conn,config.max_sources,tuple(args.source_mbid),include_successful=bool(getattr(args,"refresh",False)))
             existing_snapshot=read_existing(conn)
@@ -689,7 +689,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     except Exception as exc:
         state = read_execution_state(os.environ["DATABASE_URL"], execution_id) if write and execution_id else None
         if write and state and state.get("status")=="running":
-            with psycopg.connect(os.environ["DATABASE_URL"],autocommit=False) as check:
+            with psycopg.connect(os.environ["DATABASE_URL"],autocommit=False,prepare_threshold=None) as check:
                 count=check.execute("select count(*) from follow_the_groove_collection_runs where counters->>'execution_id'=%s and collector=%s",(execution_id,GENERIC_COLLECTOR)).fetchone()[0]
                 check.rollback()
             update_execution_state(
@@ -716,7 +716,7 @@ def execute_writes(database_url: str, results: list[SourceResult], *, execution_
     writes=[]
     for result in results:
         run_id=persistence.register_source_run(database_url,result.run_plan)
-        conn=psycopg.connect(database_url,autocommit=False)
+        conn=psycopg.connect(database_url,autocommit=False,prepare_threshold=None)
         try:
             conn.execute("begin isolation level serializable")
             conn.execute("lock table artists,artist_aliases,artist_edges,artist_relation_evidence,artist_similarity,product_artists in share row exclusive mode")
@@ -733,7 +733,7 @@ def execute_writes(database_url: str, results: list[SourceResult], *, execution_
             raise
         else:
             conn.close()
-        with psycopg.connect(database_url,autocommit=False) as check:
+        with psycopg.connect(database_url,autocommit=False,prepare_threshold=None) as check:
             check.execute("begin read only")
             post=persistence.audit_source_run(check,run_id)
             check.rollback()
