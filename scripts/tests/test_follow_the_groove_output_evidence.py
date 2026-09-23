@@ -47,6 +47,48 @@ class FakeConnection:
 
 
 class OutputEvidenceTest(unittest.TestCase):
+    def test_reachable_selection_requires_products_relations_and_missing_status(self):
+        conn = FakeConnection()
+        conn.fetchall = lambda: [(ARTIST.id, ARTIST.mbid, ARTIST.name)]
+        self.assertEqual(subject.select_reachable_missing_status(conn, 5), [ARTIST])
+        sql, params = conn.commands[0]
+        self.assertIn("join product_counts pc", sql)
+        self.assertIn("fresh_product_counts", sql)
+        self.assertIn("product_best_prices_v1", sql)
+        self.assertIn("p.last_seen_at>=now()-interval '48 hours'", sql)
+        self.assertIn("order by (coalesce(fp.fresh_product_count,0)>0) desc", sql)
+        self.assertIn("join reach r", sql)
+        self.assertIn("where s.artist_id is null", sql)
+        self.assertEqual(params, (5,))
+
+    def test_reachable_selection_is_exclusive(self):
+        args = argparse.Namespace(dry_run=True, write=False, batch_size=5, after_mbid=None,
+                                  artist_mbid=[ARTIST.mbid], pilot=False, refresh=False,
+                                  reachable_missing_status=True, output=None)
+        with self.assertRaisesRegex(ValueError, "cannot be combined"):
+            subject.run(args)
+
+    def test_reachable_write_requires_explicit_targets(self):
+        args = argparse.Namespace(dry_run=False, write=True, batch_size=5, after_mbid=None,
+                                  artist_mbid=[], pilot=False, refresh=False,
+                                  reachable_missing_status=True, output=None)
+        with self.assertRaisesRegex(ValueError, "explicit --artist-mbid"):
+            subject.run(args)
+
+    def test_explicit_write_rejects_incomplete_target_set(self):
+        args = argparse.Namespace(dry_run=False, write=True, batch_size=2, after_mbid=None,
+                                  artist_mbid=[ARTIST.mbid], pilot=False, refresh=False,
+                                  reachable_missing_status=False, output=None)
+        conn = FakeConnection()
+        with patch.dict(subject.os.environ, {"DATABASE_URL": "postgres://fixture"}), \
+             patch.object(subject.psycopg, "connect", return_value=conn), \
+             patch.object(subject, "select_artists", return_value=[]), \
+             patch.object(subject, "persist") as persist:
+            with self.assertRaisesRegex(ValueError, "target set is incomplete"):
+                subject.run(args, client=FakeClient([]))
+        persist.assert_not_called()
+        self.assertEqual(conn.commits, 0)
+
     def test_local_release_credit_is_proven_output(self):
         detail = credit("30000000-0000-0000-0000-000000000003")
         evidence = subject.local_release_evidence(ARTIST, detail, NOW)
@@ -77,9 +119,8 @@ class OutputEvidenceTest(unittest.TestCase):
         self.assertNotEqual(subject.classify(None), "proven_bridge_only")
 
     def test_product_count_is_not_a_classifier(self):
-        source = inspect.getsource(subject)
-        self.assertNotIn("productCount", source)
-        self.assertNotIn("product_count", source)
+        source = inspect.getsource(subject.classify)
+        self.assertNotIn("product", source)
 
     def test_duplicate_evidence_prevention_and_idempotency(self):
         item = subject.Evidence(ARTIST.id, ARTIST.mbid, "recording_artist", "musicbrainz", "recording",

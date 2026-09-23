@@ -184,6 +184,42 @@ def select_artists(conn: Any, limit: int, after_mbid: str | None, explicit_mbids
     return [Artist(*row) for row in rows]
 
 
+def select_reachable_missing_status(conn: Any, limit: int) -> list[Artist]:
+    """Prioritize reachable destinations with a currently fresh product price."""
+    rows = conn.execute(
+        "with product_counts as ("
+        "select artist_id,count(*)::integer product_count from product_artists group by artist_id"
+        "), fresh_product_counts as ("
+        "select pa.artist_id,count(distinct pa.product_id)::integer fresh_product_count "
+        "from product_artists pa where exists ("
+        "select 1 from product_best_prices_v1 bp "
+        "where bp.product_id=pa.product_id and bp.lowest_fresh_price is not null"
+        ") or exists ("
+        "select 1 from prices p where p.product_id=pa.product_id and p.is_active=true "
+        "and p.availability in ('in_stock','unknown') "
+        "and p.last_seen_at>=now()-interval '48 hours'"
+        ") group by pa.artist_id"
+        "), neighbors as ("
+        "select artist_low_id source_id,artist_high_id target_id from artist_edges "
+        "union select artist_high_id,artist_low_id from artist_edges "
+        "union select source_artist_id,target_artist_id from artist_similarity "
+        "where resolution_status='resolved'"
+        "), reach as ("
+        "select target_id,count(distinct source_id)::integer source_count from neighbors group by target_id"
+        ") select a.id::text,a.musicbrainz_artist_mbid::text,a.display_name "
+        "from artists a join product_counts pc on pc.artist_id=a.id "
+        "left join fresh_product_counts fp on fp.artist_id=a.id "
+        "join reach r on r.target_id=a.id "
+        "left join artist_output_status s on s.artist_id=a.id "
+        "where s.artist_id is null "
+        "order by (coalesce(fp.fresh_product_count,0)>0) desc,r.source_count desc,"
+        "fp.fresh_product_count desc nulls last,pc.product_count desc,a.musicbrainz_artist_mbid "
+        "limit %s",
+        (limit,),
+    ).fetchall()
+    return [Artist(*row) for row in rows]
+
+
 def load_local_evidence(conn: Any, artists: list[Artist], verified_at: datetime) -> list[Evidence]:
     by_mbid = {artist.mbid: artist for artist in artists}
     mbids = list(by_mbid)
@@ -283,6 +319,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--after-mbid")
     parser.add_argument("--artist-mbid", action="append", default=[])
     parser.add_argument("--pilot", action="store_true")
+    parser.add_argument("--reachable-missing-status", action="store_true")
     parser.add_argument("--refresh", action="store_true")
     parser.add_argument("--output", type=Path)
     return parser
@@ -293,6 +330,11 @@ def run(args: argparse.Namespace, *, client: MBClient | None = None) -> dict[str
         raise ValueError(f"batch-size must be 1..{MAX_BATCH_SIZE}")
     if len(args.artist_mbid) > args.batch_size:
         raise ValueError("explicit artist count exceeds batch-size")
+    reachable = bool(getattr(args, "reachable_missing_status", False))
+    if reachable and (args.artist_mbid or args.pilot or args.after_mbid or args.refresh):
+        raise ValueError("reachable-missing-status cannot be combined with another selection mode or refresh")
+    if reachable and args.write:
+        raise ValueError("write requires explicit --artist-mbid values from a reviewed dry-run")
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
         raise RuntimeError("DATABASE_URL is required")
@@ -301,7 +343,12 @@ def run(args: argparse.Namespace, *, client: MBClient | None = None) -> dict[str
     http = client or HttpJsonClient(os.getenv("MUSICBRAINZ_USER_AGENT", DEFAULT_USER_AGENT))
     with psycopg.connect(database_url, autocommit=False, prepare_threshold=None) as conn:
         conn.execute("begin isolation level repeatable read read only" if args.dry_run else "begin isolation level serializable")
-        artists = select_artists(conn, args.batch_size, args.after_mbid, args.artist_mbid, args.pilot)
+        artists = (
+            select_reachable_missing_status(conn, args.batch_size)
+            if reachable else select_artists(conn, args.batch_size, args.after_mbid, args.artist_mbid, args.pilot)
+        )
+        if args.write and args.artist_mbid and {artist.mbid for artist in artists} != set(args.artist_mbid):
+            raise ValueError("explicit artist target set is incomplete or changed")
         existing_by_artist, existing_keys, existing_status = load_existing(conn, artists)
         local = load_local_evidence(conn, artists, verified_at)
         local_by_artist = {row.artist_id: row for row in local}
