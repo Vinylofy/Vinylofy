@@ -382,22 +382,8 @@ def plan_product_matches(conn: psycopg.Connection[Any], artists: list[dict[str, 
          "credit_position": credit["credit_position"], "source_system": "musicbrainz_artist_credit"}
         for mbid, local in bridge.items() for credit in local["product_credits"] if not local.get("conflict")
     ]
-    safe_names: dict[str, set[str]] = {
-        row["musicbrainz_artist_mbid"]: {collector.normalize_name(row["display_name"])} for row in artists
-    }
-    for alias in aliases:
-        if collector.is_safe_product_alias(alias):
-            safe_names.setdefault(alias["artist_mbid"], set()).add(alias["alias_normalized"])
-    name_to_mbids: dict[str, list[str]] = {}
-    for mbid, names in safe_names.items():
-        for name in names:
-            name_to_mbids.setdefault(name, []).append(mbid)
-    direct_keys = {(row["product_id"], row["artist_mbid"]) for row in links}
-    for product_id, name in product_rows:
-        candidates = name_to_mbids.get(collector.normalize_name(str(name)), [])
-        if len(candidates) == 1 and (product_id, candidates[0]) not in direct_keys:
-            links.append({"product_id": product_id, "artist_mbid": candidates[0], "credited_name": str(name),
-                          "credit_position": None, "source_system": "vinylofy_exact"})
+    # A matching product artist string does not prove a MusicBrainz identity:
+    # homonyms such as the two Leon Thomas artists can share that string.
     return collector.dedupe(links, collector.UPSERT_KEYS["product_artists"])
 
 

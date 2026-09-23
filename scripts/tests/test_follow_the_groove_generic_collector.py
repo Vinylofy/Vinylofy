@@ -146,6 +146,28 @@ class IdentityMembershipTests(unittest.TestCase):
 
 
 class LocalResolutionTests(unittest.TestCase):
+    def test_product_name_alone_never_creates_musicbrainz_artist_link(self):
+        target = {"musicbrainz_artist_mbid": "00000000-0000-0000-0000-000000000002",
+                  "display_name": "Leon Thomas"}
+        with patch.object(generic, "load_local_bridge", return_value={}):
+            links = generic.plan_product_matches(
+                object(), [target], [], [("product-1", "Leon Thomas")],
+            )
+        self.assertEqual(links, [])
+
+    def test_musicbrainz_artist_credit_still_links_product(self):
+        target = {"musicbrainz_artist_mbid": "00000000-0000-0000-0000-000000000002",
+                  "display_name": "Leon Thomas"}
+        bridge = {target["musicbrainz_artist_mbid"]: {"conflict": False, "product_credits": [
+            {"product_id": "product-1", "credited_name": "Leon Thomas", "credit_position": 1},
+        ]}}
+        with patch.object(generic, "load_local_bridge", return_value=bridge):
+            links = generic.plan_product_matches(
+                object(), [target], [], [("product-1", "Leon Thomas")],
+            )
+        self.assertEqual(len(links), 1)
+        self.assertEqual(links[0]["source_system"], "musicbrainz_artist_credit")
+
     def test_category_a_validator_accepts_complete_local_target(self):
         row={"mbid":"00000000-0000-0000-0000-000000000002","canonical_name":"Target","entity_type":"Group","musicbrainz_type_id":collector.GROUP_TYPE_ID,"local_product_count":1}
         self.assertEqual(local_resolution.validate_target(row),[])
