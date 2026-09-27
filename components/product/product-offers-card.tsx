@@ -1,6 +1,7 @@
 import { getVisibleOfferSummary } from "@/lib/offer-summary";
 import { formatOfferDomain, formatRelativeFreshness } from "@/lib/product-page-format";
 import { formatEuro, type SearchShopOffer } from "@/lib/vinylofy-data";
+import { ShopTypeBadge } from "@/components/shop-type-badge";
 
 type ProductOffersCardProps = {
   offers: SearchShopOffer[];
@@ -53,9 +54,12 @@ export function ProductOffersCard({ offers }: ProductOffersCardProps) {
                 className="grid gap-3 rounded-xl border border-[rgba(63,38,22,0.08)] bg-[#fffdfb] px-3.5 py-3 transition hover:border-[rgba(230,126,34,0.28)] hover:bg-[#fffaf6] md:grid-cols-[minmax(0,1fr)_220px_128px] md:items-center"
               >
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-[#3f2616] md:text-[15px]">
-                    {offer.name}
-                  </p>
+                  <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="min-w-0 break-words text-sm font-semibold text-[#3f2616] md:text-[15px]">
+                      {offer.name}
+                    </span>
+                    <ShopTypeBadge type={offer.shopType} />
+                  </div>
 
                   <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-[#7d6b5d]">
                     <span>{formatOfferDomain(offer.domain)}</span>

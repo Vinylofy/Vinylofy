@@ -2,6 +2,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { enrichOffersWithShipping } from "@/lib/shipping";
 import { getShippingRulesMap } from "@/lib/shipping-repository";
 import { resolveCoverUrl } from "@/lib/cover-url";
+import { isMissingShopTypeColumn, type ShopType } from "@/lib/shop-type";
 
 type ProductRow = {
   id: string;
@@ -27,16 +28,13 @@ const DUTCH_VAT_RATE = 0.21;
 const DUTCH_VAT_MULTIPLIER = 1 + DUTCH_VAT_RATE;
 const VAT_INCLUSIVE_SHOP_DOMAIN = "atthemoviesshop.com";
 
-type ShopRelation =
-  | {
-      name: string;
-      domain: string;
-    }
-  | {
-      name: string;
-      domain: string;
-    }[]
-  | null;
+type ShopRow = {
+  name: string;
+  domain: string;
+  shop_type?: ShopType | null;
+};
+
+type ShopRelation = ShopRow | ShopRow[] | null;
 
 type PriceRow = {
   product_id: string;
@@ -70,6 +68,7 @@ export type HomeProduct = {
 export type SearchShopOffer = {
   name: string;
   domain: string;
+  shopType: ShopType | null;
   shopId: string;
   price: number;
   productUrl: string;
@@ -294,7 +293,7 @@ function amsterdamDay(iso: string): string {
   }).format(new Date(iso));
 }
 
-function normalizeShopRelation(shops: ShopRelation): { name: string; domain: string } | null {
+function normalizeShopRelation(shops: ShopRelation): ShopRow | null {
   if (!shops) return null;
   if (Array.isArray(shops)) return shops[0] ?? null;
   return shops;
@@ -359,27 +358,40 @@ async function getOffersMap(productIds: string[]) {
   const supabase = createSupabaseServerClient();
   const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
 
-  const { data, error } = await supabase
-    .from("prices")
-    .select("product_id, price, product_url, last_seen_at, availability, shop_id, shops(name, domain)")
-    .in("product_id", productIds)
-    .eq("is_active", true)
-    .in("availability", ["in_stock", "unknown"])
-    .gte("last_seen_at", cutoff)
-    .order("price", { ascending: true })
-    .order("last_seen_at", { ascending: false });
+  const fetchOffers = (columns: string) =>
+    supabase
+      .from("prices")
+      .select(columns)
+      .in("product_id", productIds)
+      .eq("is_active", true)
+      .in("availability", ["in_stock", "unknown"])
+      .gte("last_seen_at", cutoff)
+      .order("price", { ascending: true })
+      .order("last_seen_at", { ascending: false });
+
+  let result = await fetchOffers(
+    "product_id, price, product_url, last_seen_at, availability, shop_id, shops(name, domain, shop_type)",
+  );
+  if (isMissingShopTypeColumn(result.error)) {
+    result = await fetchOffers(
+      "product_id, price, product_url, last_seen_at, availability, shop_id, shops(name, domain)",
+    );
+  }
+
+  const { data, error } = result;
 
   if (error) throw error;
 
   const grouped = new Map<string, SearchShopOffer[]>();
 
-  for (const row of (data ?? []) as PriceRow[]) {
+  for (const row of (data ?? []) as unknown as PriceRow[]) {
     const shop = normalizeShopRelation(row.shops);
     if (!shop) continue;
 
     const offer: SearchShopOffer = {
       name: shop.name,
       domain: shop.domain,
+      shopType: shop.shop_type ?? null,
       shopId: row.shop_id,
       price: priceForDisplay(row.price, shop.domain) ?? 0,
       productUrl: row.product_url,
@@ -884,6 +896,7 @@ function normalizeSnapshotOffer(value: unknown): SearchShopOffer | null {
   const offer: SearchShopOffer = {
     name: typeof raw.name === "string" ? raw.name : "",
     domain: typeof raw.domain === "string" ? raw.domain : "",
+    shopType: null,
     shopId,
     price: price ?? 0,
     productUrl: typeof raw.productUrl === "string" ? raw.productUrl : "",

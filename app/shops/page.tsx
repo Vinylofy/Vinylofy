@@ -1,6 +1,8 @@
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
+import { ShopTypeBadge } from "@/components/shop-type-badge";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { isMissingShopTypeColumn, type ShopType } from "@/lib/shop-type";
 
 type ShopRow = {
   id: string;
@@ -8,6 +10,7 @@ type ShopRow = {
   domain: string;
   country: string;
   is_active: boolean;
+  shop_type?: ShopType | null;
 };
 
 const EXCLUDED_PUBLIC_SHOP_DOMAINS = new Set([
@@ -18,19 +21,26 @@ const EXCLUDED_PUBLIC_SHOP_DOMAINS = new Set([
   "soundsdelft.nl",
 ]);
 
+export const dynamic = "force-dynamic";
+
 export default async function ShopsPage() {
   const supabase = createSupabaseServerClient();
 
-  const { data, error } = await supabase
-    .from("shops")
-    .select("id, name, domain, country, is_active")
-    .order("name", { ascending: true });
+  const fetchShops = (columns: string) =>
+    supabase.from("shops").select(columns).order("name", { ascending: true });
+
+  let result = await fetchShops("id, name, domain, country, is_active, shop_type");
+  if (isMissingShopTypeColumn(result.error)) {
+    result = await fetchShops("id, name, domain, country, is_active");
+  }
+
+  const { data, error } = result;
 
   if (error) {
     throw error;
   }
 
-  const shops = ((data ?? []) as ShopRow[]).filter(
+  const shops = ((data ?? []) as unknown as ShopRow[]).filter(
     (shop) =>
       shop.is_active &&
       !EXCLUDED_PUBLIC_SHOP_DOMAINS.has(shop.domain.trim().toLowerCase()),
@@ -70,12 +80,15 @@ export default async function ShopsPage() {
                 className="rounded-2xl border border-neutral-200 bg-white p-5"
               >
                 <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <h2 className="text-lg font-semibold">{shop.name}</h2>
+                  <div className="min-w-0">
+                    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                      <h2 className="min-w-0 break-words text-lg font-semibold">{shop.name}</h2>
+                      <ShopTypeBadge type={shop.shop_type} />
+                    </div>
                     <p className="mt-1 text-sm text-neutral-500">{shop.domain}</p>
                   </div>
 
-                  <span className="inline-flex rounded-full bg-orange-50 px-3 py-1 text-xs font-medium text-orange-700">
+                  <span className="inline-flex shrink-0 rounded-full bg-orange-50 px-3 py-1 text-xs font-medium text-orange-700">
                     actief
                   </span>
                 </div>
