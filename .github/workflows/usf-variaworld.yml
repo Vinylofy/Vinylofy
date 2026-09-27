@@ -121,7 +121,7 @@ jobs:
             $priceOnly = 'false'
             $detailLimit = '500'
             $write = 'true'
-          else
+          } else {
             $listingMaxPages = '0'
             $priceOnly = 'true'
             $detailLimit = '0'
@@ -141,10 +141,10 @@ jobs:
           )
           if ($write -eq 'true') {
             $pipelineArgs += '--write'
-          fi
+          }
           if ($priceOnly -eq 'true') {
             $pipelineArgs += @('--skip-detail', '--skip-stage', '--skip-promote', '--skip-quarantine')
-          fi
+          }
           Write-Host "$python $($pipelineArgs -join ' ')"
           & $python @pipelineArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
