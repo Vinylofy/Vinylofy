@@ -70,7 +70,6 @@ jobs:
           working-directory: ${{ github.workspace }}/variaworld
           enable-cache: false
         env:
-          UV_PYTHON_INSTALL_DIR: ${{ runner.temp }}/variaworld-python
           UV_CACHE_DIR: ${{ runner.temp }}/variaworld-uv-cache
 
       - name: Install dependencies
@@ -78,6 +77,10 @@ jobs:
         working-directory: variaworld
         run: |
           $ErrorActionPreference = 'Stop'
+          # uv creates a Windows junction for its managed Python; the E: runner temp drive rejected it.
+          # Keep one pinned Python 3.11 install in the service account's local application data.
+          if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required for managed Python.' }
+          $env:UV_PYTHON_INSTALL_DIR = Join-Path $env:LOCALAPPDATA 'Vinylofy\variaworld-python'
           $venv = Join-Path $env:RUNNER_TEMP 'variaworld-venv'
           if (Test-Path -LiteralPath $venv) {
             Remove-Item -LiteralPath $venv -Recurse -Force
@@ -154,7 +157,7 @@ jobs:
         shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($name in @('variaworld-venv', 'variaworld-python', 'variaworld-uv-cache')) {
+          foreach ($name in @('variaworld-venv', 'variaworld-uv-cache')) {
             $path = Join-Path $env:RUNNER_TEMP $name
             if (Test-Path -LiteralPath $path) {
               Remove-Item -LiteralPath $path -Recurse -Force
