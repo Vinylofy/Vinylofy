@@ -1,0 +1,99 @@
+name: Apply shop type migration once
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shop-type-migration-production
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install database driver
+        run: python -m pip install 'psycopg[binary]>=3.2,<4'
+      - name: Preflight, migrate, and verify
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          import hashlib
+
+          import psycopg
+
+          db_url = os.environ.get('DATABASE_URL', '')
+          if not db_url:
+              raise SystemExit('DATABASE_URL is missing')
+
+          migration = Path('supabase/migrations/20260927120000_add_shop_type.sql')
+          sql = migration.read_text()
+          if hashlib.sha256(sql.encode()).hexdigest() != 'e021fd8db1721a55213caeb4b080f6ff8209c7f03c90e3cabc3be9d626d6920c':
+              raise SystemExit('Migration SQL differs from the reviewed file')
+          pairs = re.findall(
+              r"\('([^']+)', '(physical_record_store|online_record_store|online_retailer)'\)",
+              sql,
+          )
+          expected = dict(pairs)
+          if len(pairs) != 19 or len(expected) != 19:
+              raise SystemExit('Migration target list is not the reviewed 19 unique domains')
+
+          def normalize(domain):
+              return re.sub(r'^www[.]', '', domain.strip().lower())
+
+          def read_state():
+              with psycopg.connect(
+                  db_url,
+                  options='-c default_transaction_read_only=on',
+                  connect_timeout=15,
+              ) as conn:
+                  with conn.cursor() as cur:
+                      cur.execute(
+                          "select exists (select 1 from information_schema.columns "
+                          "where table_schema='public' and table_name='shops' "
+                          "and column_name='shop_type')"
+                      )
+                      has_column = cur.fetchone()[0]
+                      columns = 'domain, is_active, shop_type' if has_column else 'domain, is_active'
+                      cur.execute(f'select {columns} from public.shops')
+                      rows = cur.fetchall()
+                      selected = [row for row in rows if normalize(row[0]) in expected]
+                      if len(selected) != 19 or any(not row[1] for row in selected):
+                          raise SystemExit(f'Unsafe target set: {len(selected)} rows or inactive target')
+                      if has_column:
+                          wrong = [
+                              row[0] for row in selected
+                              if row[2] is not None and row[2] != expected[normalize(row[0])]
+                          ]
+                          if wrong:
+                              raise SystemExit(f'Existing classifications disagree: {wrong}')
+                      return has_column, selected
+
+          has_column, rows = read_state()
+          print(f'Preflight: {len(rows)} exact active target rows; column exists: {has_column}')
+          if has_column and all(row[2] == expected[normalize(row[0])] for row in rows):
+              print('Already applied; no database write')
+          else:
+              with psycopg.connect(db_url, autocommit=True, connect_timeout=15) as conn:
+                  conn.execute(sql, prepare=False)
+              print('Migration SQL committed')
+
+          has_column, rows = read_state()
+          if not has_column or any(row[2] != expected[normalize(row[0])] for row in rows):
+              raise SystemExit('Postcondition failed')
+          print(f'Postcondition: {len(rows)} target rows have the expected type')
+          PY
