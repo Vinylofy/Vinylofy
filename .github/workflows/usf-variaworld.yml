@@ -46,7 +46,8 @@ jobs:
 
     steps:
       - name: Verify runner
-        shell: powershell
+        # The runner blocks generated .ps1 files under its default execution policy.
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
         env:
           RUNNER_NAME: ${{ runner.name }}
         run: |
@@ -67,7 +68,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        shell: powershell
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
         working-directory: variaworld
         run: |
           $ErrorActionPreference = 'Stop'
@@ -92,7 +93,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run pipeline
-        shell: powershell
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
         working-directory: variaworld
         env:
           LISTING_MAX_PAGES_INPUT: ${{ inputs.listing_max_pages }}
@@ -142,7 +143,7 @@ jobs:
 
       - name: Clean temporary Python environment
         if: always()
-        shell: powershell
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
         run: |
           $ErrorActionPreference = 'Stop'
           $venv = Join-Path $env:RUNNER_TEMP 'variaworld-venv'
