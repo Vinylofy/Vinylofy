@@ -23,7 +23,7 @@ from scripts.scrapers.usf.core.db import get_database_url
 SHOP_ID = "imusic"
 SHOP_NAME = "iMusic"
 SHOP_DOMAIN = "imusic.nl"
-SHOP_COUNTRY = "NL"
+SHOP_COUNTRY = "DK"
 CURRENCY = "EUR"
 
 

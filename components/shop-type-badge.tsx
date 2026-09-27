@@ -17,6 +17,10 @@ const SHOP_TYPE_BADGES: Record<ShopType, { label: string; className: string }> =
     label: "Platenmaatschappij",
     className: "border-violet-200 bg-violet-50 text-violet-800",
   },
+  online_shop: {
+    label: "Online shop",
+    className: "border-slate-200 bg-slate-50 text-slate-700",
+  },
 };
 
 export function ShopTypeBadge({ type }: { type: ShopType | null | undefined }) {

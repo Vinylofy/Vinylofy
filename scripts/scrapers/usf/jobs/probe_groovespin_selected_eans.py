@@ -32,7 +32,7 @@ from scripts.scrapers.usf.core.listing_price_sync import (
 
 SHOP_NAME = "Groovespin"
 SHOP_DOMAIN = "groovespin.nl"
-SHOP_COUNTRY = "NL"
+SHOP_COUNTRY = "CZ"
 BASE_URL = "https://www.groovespin.nl"
 
 DEFAULT_SEARCH_URL_TEMPLATES = [

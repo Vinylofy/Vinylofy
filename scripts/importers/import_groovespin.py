@@ -24,7 +24,7 @@ from scripts.importers.runner import run_registered_importer  # noqa: E402
 CONFIG = ImportConfig(
     shop_name="Groovespin",
     shop_domain="groovespin.nl",
-    shop_country="NL",
+    shop_country="CZ",
     currency="EUR",
 )
 
