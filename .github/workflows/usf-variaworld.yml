@@ -62,10 +62,42 @@ jobs:
           path: variaworld
           persist-credentials: false
 
+      - name: Allow Python setup scripts temporarily
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $policyFile = Join-Path $env:GITHUB_WORKSPACE '.variaworld-python-policy'
+          if (Test-Path -LiteralPath $policyFile) {
+            $previous = (Get-Content -LiteralPath $policyFile -Raw).Trim()
+            Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy $previous -Force
+            Remove-Item -LiteralPath $policyFile -Force
+          }
+          $previous = (Get-ExecutionPolicy -Scope CurrentUser).ToString()
+          Set-Content -LiteralPath $policyFile -Value $previous -Encoding Ascii
+          Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy Bypass -Force
+          if ((Get-ExecutionPolicy).ToString() -ne 'Bypass') {
+            throw 'PowerShell policy could not be set for Python setup.'
+          }
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Restore PowerShell execution policy
+        if: always()
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $policyFile = Join-Path $env:GITHUB_WORKSPACE '.variaworld-python-policy'
+          if (Test-Path -LiteralPath $policyFile) {
+            $previous = (Get-Content -LiteralPath $policyFile -Raw).Trim()
+            Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy $previous -Force
+            if ((Get-ExecutionPolicy -Scope CurrentUser).ToString() -ne $previous) {
+              throw 'PowerShell policy could not be restored.'
+            }
+            Remove-Item -LiteralPath $policyFile -Force
+          }
 
       - name: Install dependencies
         shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
