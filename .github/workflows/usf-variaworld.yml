@@ -62,42 +62,16 @@ jobs:
           path: variaworld
           persist-credentials: false
 
-      - name: Allow Python setup scripts temporarily
-        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $policyFile = Join-Path $env:GITHUB_WORKSPACE '.variaworld-python-policy'
-          if (Test-Path -LiteralPath $policyFile) {
-            $previous = (Get-Content -LiteralPath $policyFile -Raw).Trim()
-            Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy $previous -Force
-            Remove-Item -LiteralPath $policyFile -Force
-          }
-          $previous = (Get-ExecutionPolicy -Scope CurrentUser).ToString()
-          Set-Content -LiteralPath $policyFile -Value $previous -Encoding Ascii
-          Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy Bypass -Force
-          if ((Get-ExecutionPolicy).ToString() -ne 'Bypass') {
-            throw 'PowerShell policy could not be set for Python setup.'
-          }
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Setup uv and Python 3.11
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
+          version: "0.12.15"
           python-version: "3.11"
-
-      - name: Restore PowerShell execution policy
-        if: always()
-        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $policyFile = Join-Path $env:GITHUB_WORKSPACE '.variaworld-python-policy'
-          if (Test-Path -LiteralPath $policyFile) {
-            $previous = (Get-Content -LiteralPath $policyFile -Raw).Trim()
-            Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy $previous -Force
-            if ((Get-ExecutionPolicy -Scope CurrentUser).ToString() -ne $previous) {
-              throw 'PowerShell policy could not be restored.'
-            }
-            Remove-Item -LiteralPath $policyFile -Force
-          }
+          working-directory: ${{ github.workspace }}/variaworld
+          enable-cache: false
+        env:
+          UV_PYTHON_INSTALL_DIR: ${{ runner.temp }}/variaworld-python
+          UV_CACHE_DIR: ${{ runner.temp }}/variaworld-uv-cache
 
       - name: Install dependencies
         shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
@@ -108,9 +82,11 @@ jobs:
           if (Test-Path -LiteralPath $venv) {
             Remove-Item -LiteralPath $venv -Recurse -Force
           }
-          python -m venv $venv
+          uv venv --no-project --seed --managed-python --python 3.11 $venv
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $python = Join-Path $venv 'Scripts/python.exe'
+          & $python --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $python -m pip install --upgrade pip
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (Test-Path -LiteralPath requirements.txt) {
@@ -178,7 +154,9 @@ jobs:
         shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
         run: |
           $ErrorActionPreference = 'Stop'
-          $venv = Join-Path $env:RUNNER_TEMP 'variaworld-venv'
-          if (Test-Path -LiteralPath $venv) {
-            Remove-Item -LiteralPath $venv -Recurse -Force
+          foreach ($name in @('variaworld-venv', 'variaworld-python', 'variaworld-uv-cache')) {
+            $path = Join-Path $env:RUNNER_TEMP $name
+            if (Test-Path -LiteralPath $path) {
+              Remove-Item -LiteralPath $path -Recurse -Force
+            }
           }
