@@ -37,16 +37,29 @@ permissions:
 jobs:
   run:
     name: Run Variaworld USF
-    # Variaworld geo-blocks GitHub-hosted runner IPs; use the NL/EU self-hosted runner.
-    runs-on: [self-hosted, linux, x64]
+    runs-on: [self-hosted, Windows, X64, vinylofy-windows]
     timeout-minutes: 180
 
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PIP_NO_CACHE_DIR: "1"
 
     steps:
+      - name: Verify runner
+        shell: pwsh
+        env:
+          RUNNER_NAME: ${{ runner.name }}
+        run: |
+          if ($env:RUNNER_NAME -ne 'vinylofy-windows-01') {
+            throw "Unexpected runner: $env:RUNNER_NAME"
+          }
+          Write-Host "Runner: $env:RUNNER_NAME"
+
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          path: variaworld
+          persist-credentials: false
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -54,59 +67,85 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        shell: bash
+        shell: pwsh
+        working-directory: variaworld
         run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then
-            python -m pip install -r requirements.txt
-          fi
-          if [ -f requirements-scrapers.txt ]; then
-            python -m pip install -r requirements-scrapers.txt
-          fi
-          python -m pip install requests beautifulsoup4 "psycopg[binary]" python-dotenv
+          $ErrorActionPreference = 'Stop'
+          $venv = Join-Path $env:RUNNER_TEMP 'variaworld-venv'
+          if (Test-Path -LiteralPath $venv) {
+            Remove-Item -LiteralPath $venv -Recurse -Force
+          }
+          python -m venv $venv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $python = Join-Path $venv 'Scripts/python.exe'
+          & $python -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Test-Path -LiteralPath requirements.txt) {
+            & $python -m pip install -r requirements.txt
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          if (Test-Path -LiteralPath requirements-scrapers.txt) {
+            & $python -m pip install -r requirements-scrapers.txt
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          & $python -m pip install requests beautifulsoup4 'psycopg[binary]' python-dotenv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run pipeline
-        shell: bash
+        shell: pwsh
+        working-directory: variaworld
+        env:
+          LISTING_MAX_PAGES_INPUT: ${{ inputs.listing_max_pages }}
+          PRICE_ONLY_INPUT: ${{ inputs.price_only }}
+          DETAIL_LIMIT_INPUT: ${{ inputs.detail_limit }}
+          WRITE_INPUT: ${{ inputs.write }}
+          VARIAWORLD_SCHEDULE: ${{ github.event.schedule }}
         run: |
-          set -euo pipefail
-
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            LISTING_MAX_PAGES="${{ inputs.listing_max_pages }}"
-            PRICE_ONLY="${{ inputs.price_only }}"
-            DETAIL_LIMIT="${{ inputs.detail_limit }}"
-            WRITE="${{ inputs.write }}"
-          elif [[ "${{ github.event.schedule }}" == "50 2 * * 2,5" ]]; then
-            LISTING_MAX_PAGES="0"
-            PRICE_ONLY="false"
-            DETAIL_LIMIT="500"
-            WRITE="true"
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
+            $listingMaxPages = $env:LISTING_MAX_PAGES_INPUT
+            $priceOnly = $env:PRICE_ONLY_INPUT
+            $detailLimit = $env:DETAIL_LIMIT_INPUT
+            $write = $env:WRITE_INPUT
+          } elseif ($env:VARIAWORLD_SCHEDULE -eq '50 2 * * 2,5') {
+            $listingMaxPages = '0'
+            $priceOnly = 'false'
+            $detailLimit = '500'
+            $write = 'true'
           else
-            LISTING_MAX_PAGES="0"
-            PRICE_ONLY="true"
-            DETAIL_LIMIT="0"
-            WRITE="true"
-          fi
-
-          cmd=(
-            python -u -m scripts.scrapers.usf.jobs.run_variaworld_pipeline
-            --listing-start-page 1
-            --listing-max-pages "${LISTING_MAX_PAGES}"
-            --listing-sleep 0.30
-            --fast-price-sync
-            --detail-limit "${DETAIL_LIMIT}"
-            --stage-limit "${DETAIL_LIMIT}"
-            --promote-limit "${DETAIL_LIMIT}"
-            --quarantine-limit "${DETAIL_LIMIT}"
+            $listingMaxPages = '0'
+            $priceOnly = 'true'
+            $detailLimit = '0'
+            $write = 'true'
+          }
+          $python = Join-Path $env:RUNNER_TEMP 'variaworld-venv/Scripts/python.exe'
+          $pipelineArgs = @(
+            '-u', '-m', 'scripts.scrapers.usf.jobs.run_variaworld_pipeline',
+            '--listing-start-page', '1',
+            '--listing-max-pages', $listingMaxPages,
+            '--listing-sleep', '0.30',
+            '--fast-price-sync',
+            '--detail-limit', $detailLimit,
+            '--stage-limit', $detailLimit,
+            '--promote-limit', $detailLimit,
+            '--quarantine-limit', $detailLimit
           )
-
-          if [[ "${WRITE}" == "true" ]]; then
-            cmd+=(--write)
+          if ($write -eq 'true') {
+            $pipelineArgs += '--write'
           fi
-
-          if [[ "${PRICE_ONLY}" == "true" ]]; then
-            cmd+=(--skip-detail --skip-stage --skip-promote --skip-quarantine)
+          if ($priceOnly -eq 'true') {
+            $pipelineArgs += @('--skip-detail', '--skip-stage', '--skip-promote', '--skip-quarantine')
           fi
+          Write-Host "$python $($pipelineArgs -join ' ')"
+          & $python @pipelineArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          echo "${cmd[@]}"
-          "${cmd[@]}"
+      - name: Clean temporary Python environment
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $venv = Join-Path $env:RUNNER_TEMP 'variaworld-venv'
+          if (Test-Path -LiteralPath $venv) {
+            Remove-Item -LiteralPath $venv -Recurse -Force
+          }
