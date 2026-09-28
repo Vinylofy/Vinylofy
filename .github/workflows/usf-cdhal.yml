@@ -130,119 +130,160 @@ jobs:
     needs: validate
     # CD Hal blokkeert verkeer vanaf GitHub-hosted runner-IP's.
     # Gebruik dezelfde NL/EU self-hosted runner als Variaworld.
-    runs-on: [self-hosted, linux, x64]
+    runs-on: [self-hosted, Windows, X64, vinylofy-windows]
     timeout-minutes: 360
 
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PIP_NO_CACHE_DIR: "1"
+      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/cdhal-playwright
 
     steps:
+      - name: Verify runner
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        env:
+          RUNNER_NAME: ${{ runner.name }}
+        run: |
+          if ($env:RUNNER_NAME -ne 'vinylofy-windows-01') {
+            throw "Unexpected runner: $env:RUNNER_NAME"
+          }
+          Write-Host "Runner: $env:RUNNER_NAME"
+
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
         with:
+          path: cdhal
+          persist-credentials: false
+
+      - name: Setup uv and Python 3.11
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.15"
           python-version: "3.11"
+          working-directory: ${{ github.workspace }}/cdhal
+          enable-cache: false
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/cdhal-uv-cache
 
       - name: Install dependencies
-        shell: bash
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: cdhal
         run: |
-          set -euo pipefail
-
-          python -m pip install --upgrade pip
-
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required for managed Python.' }
+          $env:UV_PYTHON_INSTALL_DIR = Join-Path $env:LOCALAPPDATA 'Vinylofy\cdhal-python'
+          $venv = Join-Path $env:RUNNER_TEMP 'cdhal-venv'
+          if (Test-Path -LiteralPath $venv) {
+            Remove-Item -LiteralPath $venv -Recurse -Force
           fi
-
-          if [ -f requirements-scrapers.txt ]; then
-            pip install -r requirements-scrapers.txt
+          uv venv --no-project --seed --managed-python --python 3.11 $venv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $python = Join-Path $venv 'Scripts/python.exe'
+          & $python --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $python -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Test-Path -LiteralPath requirements.txt) {
+            & $python -m pip install -r requirements.txt
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           fi
-
-          pip install \
-            requests \
-            beautifulsoup4 \
-            "psycopg[binary]" \
-            python-dotenv \
-            playwright
+          if (Test-Path -LiteralPath requirements-scrapers.txt) {
+            & $python -m pip install -r requirements-scrapers.txt
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          & $python -m pip install requests beautifulsoup4 'psycopg[binary]' python-dotenv playwright
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install Playwright Chromium
-        shell: bash
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
         run: |
-          set -euo pipefail
-          python -m playwright install --with-deps chromium
+          $ErrorActionPreference = 'Stop'
+          $python = Join-Path $env:RUNNER_TEMP 'cdhal-venv/Scripts/python.exe'
+          & $python -m playwright install chromium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Validate database secret
-        shell: bash
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
         run: |
-          set -euo pipefail
-
-          if [ -z "${DATABASE_URL:-}" ]; then
-            echo "[ERROR] DATABASE_URL secret ontbreekt."
-            exit 1
+          if (-not $env:DATABASE_URL) {
+            throw 'DATABASE_URL secret ontbreekt.'
           fi
 
       - name: Run CD Hal Ruinen pipeline
-        shell: bash
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: cdhal
+        env:
+          LISTING_MAX_PAGES_INPUT: ${{ inputs.listing_max_pages }}
+          RUN_DETAIL_INPUT: ${{ inputs.run_detail }}
+          DETAIL_LIMIT_INPUT: ${{ inputs.detail_limit }}
+          DEBUG_LISTING_INPUT: ${{ inputs.debug_listing }}
+          WRITE_INPUT: ${{ inputs.write }}
         run: |
-          set -euo pipefail
+          $ErrorActionPreference = 'Stop'
+          $logDir = Join-Path $PWD 'output/usf-cdhal'
+          New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 
-          mkdir -p output/usf-cdhal
-
-          if [ "${{ github.event_name }}" = "schedule" ]; then
-            LISTING_MAX_PAGES="0"
-            RUN_DETAIL="true"
-            DETAIL_LIMIT="500"
-            DEBUG_LISTING="false"
-            WRITE="true"
+          if ($env:GITHUB_EVENT_NAME -eq 'schedule') {
+            $listingMaxPages = '0'
+            $runDetail = 'true'
+            $detailLimit = '500'
+            $debugListing = 'false'
+            $write = 'true'
           else
-            LISTING_MAX_PAGES="${{ inputs.listing_max_pages }}"
-            RUN_DETAIL="${{ inputs.run_detail }}"
-            DETAIL_LIMIT="${{ inputs.detail_limit }}"
-            DEBUG_LISTING="${{ inputs.debug_listing }}"
-            WRITE="${{ inputs.write }}"
+            $listingMaxPages = $env:LISTING_MAX_PAGES_INPUT
+            $runDetail = $env:RUN_DETAIL_INPUT
+            $detailLimit = $env:DETAIL_LIMIT_INPUT
+            $debugListing = $env:DEBUG_LISTING_INPUT
+            $write = $env:WRITE_INPUT
           fi
-
-          COMMAND=(
-            python -u -m
-            scripts.scrapers.usf.jobs.run_cdhal_pipeline
-            --listing-start-page 1
-            --listing-max-pages "$LISTING_MAX_PAGES"
-            --listing-sleep 0.35
-            --max-page-failures 3
-            --detail-limit "$DETAIL_LIMIT"
-            --detail-sleep 0.50
-            --detail-retry-days 30
-            --stage-limit "$DETAIL_LIMIT"
-            --promote-limit "$DETAIL_LIMIT"
-            --quarantine-limit 100
+          $python = Join-Path $env:RUNNER_TEMP 'cdhal-venv/Scripts/python.exe'
+          $pipelineArgs = @(
+            '-u', '-m', 'scripts.scrapers.usf.jobs.run_cdhal_pipeline',
+            '--listing-start-page', '1',
+            '--listing-max-pages', $listingMaxPages,
+            '--listing-sleep', '0.35',
+            '--max-page-failures', '3',
+            '--detail-limit', $detailLimit,
+            '--detail-sleep', '0.50',
+            '--detail-retry-days', '30',
+            '--stage-limit', $detailLimit,
+            '--promote-limit', $detailLimit,
+            '--quarantine-limit', '100'
           )
-
-          if [ "$RUN_DETAIL" = "true" ]; then
-            COMMAND+=(--run-detail)
+          if ($runDetail -eq 'true') {
+            $pipelineArgs += '--run-detail'
           fi
-
-          if [ "$DEBUG_LISTING" = "true" ]; then
-            COMMAND+=(--debug-listing)
+          if ($debugListing -eq 'true') {
+            $pipelineArgs += '--debug-listing'
           fi
-
-          if [ "$WRITE" = "true" ]; then
-            COMMAND+=(--write)
+          if ($write -eq 'true') {
+            $pipelineArgs += '--write'
           fi
-
-          printf '[WORKFLOW] Command:'
-          printf ' %q' "${COMMAND[@]}"
-          printf '\n'
-
-          "${COMMAND[@]}" 2>&1 |
-            tee output/usf-cdhal/pipeline.log
+          Write-Host "$python $($pipelineArgs -join ' ')"
+          $log = Join-Path $logDir 'pipeline.log'
+          $ErrorActionPreference = 'Continue'
+          & $python @pipelineArgs 2>&1 | Tee-Object -FilePath $log
+          $pipelineExitCode = $LASTEXITCODE
+          $ErrorActionPreference = 'Stop'
+          if ($pipelineExitCode -ne 0) { exit $pipelineExitCode }
 
       - name: Upload pipeline log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: usf-cdhal-${{ github.run_id }}
-          path: output/usf-cdhal/**
+          path: cdhal/output/usf-cdhal/**
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Clean temporary CD Hal files
+        if: always()
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($name in @('cdhal-venv', 'cdhal-uv-cache', 'cdhal-playwright')) {
+            $path = Join-Path $env:RUNNER_TEMP $name
+            if (Test-Path -LiteralPath $path) {
+              Remove-Item -LiteralPath $path -Recurse -Force
+            }
+          }
