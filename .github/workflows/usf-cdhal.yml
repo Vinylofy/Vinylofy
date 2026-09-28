@@ -174,7 +174,7 @@ jobs:
           $venv = Join-Path $env:RUNNER_TEMP 'cdhal-venv'
           if (Test-Path -LiteralPath $venv) {
             Remove-Item -LiteralPath $venv -Recurse -Force
-          fi
+          }
           uv venv --no-project --seed --managed-python --python 3.11 $venv
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $python = Join-Path $venv 'Scripts/python.exe'
@@ -185,7 +185,7 @@ jobs:
           if (Test-Path -LiteralPath requirements.txt) {
             & $python -m pip install -r requirements.txt
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          fi
+          }
           if (Test-Path -LiteralPath requirements-scrapers.txt) {
             & $python -m pip install -r requirements-scrapers.txt
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -208,7 +208,7 @@ jobs:
         run: |
           if (-not $env:DATABASE_URL) {
             throw 'DATABASE_URL secret ontbreekt.'
-          fi
+          }
 
       - name: Run CD Hal Ruinen pipeline
         shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
@@ -254,13 +254,13 @@ jobs:
           )
           if ($runDetail -eq 'true') {
             $pipelineArgs += '--run-detail'
-          fi
+          }
           if ($debugListing -eq 'true') {
             $pipelineArgs += '--debug-listing'
-          fi
+          }
           if ($write -eq 'true') {
             $pipelineArgs += '--write'
-          fi
+          }
           Write-Host "$python $($pipelineArgs -join ' ')"
           $log = Join-Path $logDir 'pipeline.log'
           $ErrorActionPreference = 'Continue'
