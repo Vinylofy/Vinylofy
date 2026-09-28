@@ -1,9 +1,9 @@
 name: USF - CD Hal Ruinen
 
 on:
-  schedule:
-    - cron: "37 1 * * *"
-
+  # Paused after the bounded Windows run on 2026-09-28: CD Hal returned 403
+  # to both requests and Playwright. Restore the 37 1 * * * schedule only
+  # after a bounded listing dry-run succeeds without bypassing the block.
   workflow_dispatch:
     inputs:
       listing_max_pages:
