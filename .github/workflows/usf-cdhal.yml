@@ -195,10 +195,11 @@ jobs:
 
       - name: Install Playwright Chromium
         shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
-        env:
-          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/cdhal-playwright
         run: |
           $ErrorActionPreference = 'Stop'
+          if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required for Chromium.' }
+          # The E: runner temp drive does not support Playwright's browser install lock.
+          $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $env:LOCALAPPDATA 'Vinylofy\cdhal-playwright'
           $python = Join-Path $env:RUNNER_TEMP 'cdhal-venv/Scripts/python.exe'
           & $python -m playwright install chromium
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -219,9 +220,10 @@ jobs:
           DETAIL_LIMIT_INPUT: ${{ inputs.detail_limit }}
           DEBUG_LISTING_INPUT: ${{ inputs.debug_listing }}
           WRITE_INPUT: ${{ inputs.write }}
-          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/cdhal-playwright
         run: |
           $ErrorActionPreference = 'Stop'
+          if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required for Chromium.' }
+          $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $env:LOCALAPPDATA 'Vinylofy\cdhal-playwright'
           $logDir = Join-Path $PWD 'output/usf-cdhal'
           New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 
@@ -283,7 +285,7 @@ jobs:
         shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($name in @('cdhal-venv', 'cdhal-uv-cache', 'cdhal-playwright')) {
+          foreach ($name in @('cdhal-venv', 'cdhal-uv-cache')) {
             $path = Join-Path $env:RUNNER_TEMP $name
             if (Test-Path -LiteralPath $path) {
               Remove-Item -LiteralPath $path -Recurse -Force
