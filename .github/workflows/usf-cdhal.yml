@@ -136,7 +136,6 @@ jobs:
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       PIP_NO_CACHE_DIR: "1"
-      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/cdhal-playwright
 
     steps:
       - name: Verify runner
@@ -196,6 +195,8 @@ jobs:
 
       - name: Install Playwright Chromium
         shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/cdhal-playwright
         run: |
           $ErrorActionPreference = 'Stop'
           $python = Join-Path $env:RUNNER_TEMP 'cdhal-venv/Scripts/python.exe'
@@ -218,6 +219,7 @@ jobs:
           DETAIL_LIMIT_INPUT: ${{ inputs.detail_limit }}
           DEBUG_LISTING_INPUT: ${{ inputs.debug_listing }}
           WRITE_INPUT: ${{ inputs.write }}
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/cdhal-playwright
         run: |
           $ErrorActionPreference = 'Stop'
           $logDir = Join-Path $PWD 'output/usf-cdhal'
@@ -229,13 +231,13 @@ jobs:
             $detailLimit = '500'
             $debugListing = 'false'
             $write = 'true'
-          else
+          } else {
             $listingMaxPages = $env:LISTING_MAX_PAGES_INPUT
             $runDetail = $env:RUN_DETAIL_INPUT
             $detailLimit = $env:DETAIL_LIMIT_INPUT
             $debugListing = $env:DEBUG_LISTING_INPUT
             $write = $env:WRITE_INPUT
-          fi
+          }
           $python = Join-Path $env:RUNNER_TEMP 'cdhal-venv/Scripts/python.exe'
           $pipelineArgs = @(
             '-u', '-m', 'scripts.scrapers.usf.jobs.run_cdhal_pipeline',
