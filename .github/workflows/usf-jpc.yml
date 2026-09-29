@@ -1,11 +1,9 @@
 name: USF - JPC
 
 on:
-  schedule:
-    # Twee keer per dag een listingpagina-shard; 4 shards = volledige page-cyclus binnen 48 uur.
-    - cron: "17 4,16 * * *"
-    # Tijdelijke detailburst: 4x per dag 500 missende EAN-detailpagina's.
-    - cron: "47 1,7,13,19 * * *"
+  # Automatic runs are handled by usf-jpc-windows.yml. Keep this workflow as
+  # the GitHub-hosted manual fallback. Restore the schedule block from the
+  # Windows workflow here if the local runner is unavailable long-term.
   workflow_dispatch:
     inputs:
       routes:

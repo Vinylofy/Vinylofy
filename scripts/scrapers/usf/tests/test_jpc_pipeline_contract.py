@@ -59,9 +59,12 @@ def run_tests() -> None:
     requeue = files["requeue"].read_text(encoding="utf-8")
     promote = files["promote"].read_text(encoding="utf-8")
     price_sync = files["price_sync"].read_text(encoding="utf-8")
-    workflow = (REPO_ROOT / ".github" / "workflows" / "usf-jpc.yml").read_text(
+    cloud_workflow = (REPO_ROOT / ".github" / "workflows" / "usf-jpc.yml").read_text(
         encoding="utf-8"
     )
+    local_workflow = (
+        REPO_ROOT / ".github" / "workflows" / "usf-jpc-windows.yml"
+    ).read_text(encoding="utf-8")
     migration = (
         REPO_ROOT
         / "supabase"
@@ -103,16 +106,21 @@ def run_tests() -> None:
     assert "public.prices pr" in price_sync
     assert "Nieuwe JPC offers worden niet" in price_sync
     assert "listing_availability' = 'in_stock'" in price_sync
-    assert 'cron: "17 4,16 * * *"' in workflow
-    assert 'cron: "47 1,7,13,19 * * *"' in workflow
-    assert 'DETAIL_BURST_START_DATE: "2026-08-31"' in workflow
-    assert 'DETAIL_BURST_END_DATE_EXCLUSIVE: "2026-09-28"' in workflow
-    assert "--detail-limit 500" in workflow
-    assert "--skip-requeue" in workflow
-    assert "--sync-listing-prices" in workflow
-    assert "--listing-page-shard-count \"$SHARD_COUNT\"" in workflow
-    assert "SHARD_COUNT=4" in workflow
-    assert "/ 43200" in workflow
+    assert 'cron: "17 4,16 * * *"' in local_workflow
+    assert 'cron: "47 1,7,13,19 * * *"' in local_workflow
+    assert 'DETAIL_BURST_START_DATE: "2026-08-31"' in local_workflow
+    assert 'DETAIL_BURST_END_DATE_EXCLUSIVE: "2026-09-28"' in local_workflow
+    assert "--detail-limit', '500'" in local_workflow
+    assert "--skip-requeue" in local_workflow
+    assert "--sync-listing-prices" in local_workflow
+    assert "listing-page-shard-count" in local_workflow
+    assert "$shardCount = 4" in local_workflow
+    assert "43200" in local_workflow
+    assert "runs-on: [self-hosted, Windows, X64, vinylofy-windows]" in local_workflow
+    assert "group: usf-jpc-production" in cloud_workflow
+    assert "group: usf-jpc-production" in local_workflow
+    assert "workflow_dispatch:" in cloud_workflow
+    assert "schedule:" not in cloud_workflow
 
     listing_html = """
     <html><body>

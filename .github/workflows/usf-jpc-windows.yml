@@ -1,0 +1,221 @@
+name: USF - JPC (Windows local)
+
+on:
+  schedule:
+    # Twee keer per dag een listingpagina-shard; 4 shards = volledige page-cyclus binnen 48 uur.
+    - cron: "17 4,16 * * *"
+    # Tijdelijke detailburst: 4x per dag 500 missende EAN-detailpagina's.
+    - cron: "47 1,7,13,19 * * *"
+  workflow_dispatch:
+    inputs:
+      routes:
+        description: "Een JPC route voor de begrensde handmatige pilot"
+        required: true
+        default: "pilot=https://www.jpc.de/s/1238692_66733?searchtype=cid"
+        type: string
+      write:
+        description: "Voer databasewrites uit; standaard false voor een veilige pilot"
+        required: true
+        default: false
+        type: boolean
+      max_pages:
+        description: "Aantal listingpagina's voor handmatige dry-run; 0 = stopconditie"
+        required: true
+        default: "1"
+        type: string
+      detail_limit:
+        description: "Maximaal aantal detail/EAN-lookups voor handmatige run"
+        required: true
+        default: "1"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usf-jpc-production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate JPC USF pipeline on Windows
+    runs-on: [self-hosted, Windows, X64, vinylofy-windows]
+    timeout-minutes: 20
+
+    steps:
+      - name: Verify runner
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        env:
+          RUNNER_NAME: ${{ runner.name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -ne 'vinylofy-windows-01') {
+            throw "Unexpected runner: $env:RUNNER_NAME"
+          }
+          Write-Host "Runner: $env:RUNNER_NAME"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: jpc
+          persist-credentials: false
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/jpc-uv-cache
+        with:
+          version: "0.12.15"
+          python-version: "3.11"
+          working-directory: ${{ github.workspace }}/jpc
+          enable-cache: false
+
+      - name: Install dependencies and validate
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: jpc
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required for managed Python.' }
+          $env:UV_PYTHON_INSTALL_DIR = Join-Path $env:LOCALAPPDATA 'Vinylofy\jpc-python'
+          $venv = Join-Path $env:RUNNER_TEMP 'jpc-venv'
+          if (Test-Path -LiteralPath $venv) { Remove-Item -LiteralPath $venv -Recurse -Force }
+          uv venv --no-project --seed --managed-python --python 3.11 $venv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $python = Join-Path $venv 'Scripts/python.exe'
+          & $python --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Test-Path -LiteralPath 'requirements.txt') { & $python -m pip install -r requirements.txt; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          if (Test-Path -LiteralPath 'requirements-scrapers.txt') { & $python -m pip install -r requirements-scrapers.txt; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          & $python -m pip install requests beautifulsoup4 'psycopg[binary]' python-dotenv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $modules = @(
+            'scripts/scrapers/usf/core/db.py',
+            'scripts/scrapers/usf/core/link_registry.py',
+            'scripts/scrapers/usf/core/staging.py',
+            'scripts/scrapers/usf/core/promotion.py',
+            'scripts/scrapers/usf/core/promotion_writer.py',
+            'scripts/scrapers/usf/core/quarantine.py',
+            'scripts/scrapers/usf/jobs/discover_jpc_vinyl.py',
+            'scripts/scrapers/usf/jobs/detail_jpc.py',
+            'scripts/scrapers/usf/jobs/sync_jpc_listing_prices.py',
+            'scripts/scrapers/usf/jobs/stage_jpc.py',
+            'scripts/scrapers/usf/jobs/promote_jpc.py',
+            'scripts/scrapers/usf/jobs/quarantine_jpc.py',
+            'scripts/scrapers/usf/jobs/run_jpc_pipeline.py'
+          )
+          & $python -m py_compile @modules
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $python scripts/scrapers/usf/tests/test_jpc_pipeline_contract.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  run:
+    name: Run JPC USF pipeline on Windows
+    needs: validate
+    runs-on: [self-hosted, Windows, X64, vinylofy-windows]
+    timeout-minutes: 180
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PIP_NO_CACHE_DIR: "1"
+
+    steps:
+      - name: Verify runner
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        env:
+          RUNNER_NAME: ${{ runner.name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -ne 'vinylofy-windows-01') { throw "Unexpected runner: $env:RUNNER_NAME" }
+          Write-Host "Runner: $env:RUNNER_NAME"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: jpc
+          persist-credentials: false
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/jpc-uv-cache
+        with:
+          version: "0.12.15"
+          python-version: "3.11"
+          working-directory: ${{ github.workspace }}/jpc
+          enable-cache: false
+
+      - name: Install dependencies
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: jpc
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required for managed Python.' }
+          $env:UV_PYTHON_INSTALL_DIR = Join-Path $env:LOCALAPPDATA 'Vinylofy\jpc-python'
+          $venv = Join-Path $env:RUNNER_TEMP 'jpc-venv'
+          if (Test-Path -LiteralPath $venv) { Remove-Item -LiteralPath $venv -Recurse -Force }
+          uv venv --no-project --seed --managed-python --python 3.11 $venv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $python = Join-Path $venv 'Scripts/python.exe'
+          if (Test-Path -LiteralPath 'requirements.txt') { & $python -m pip install -r requirements.txt; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          if (Test-Path -LiteralPath 'requirements-scrapers.txt') { & $python -m pip install -r requirements-scrapers.txt; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          & $python -m pip install requests beautifulsoup4 'psycopg[binary]' python-dotenv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Validate configuration
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:DATABASE_URL) { throw 'GitHub secret DATABASE_URL ontbreekt' }
+          Write-Host '[CONFIG] DATABASE_URL is ingesteld'
+
+      - name: Run JPC USF pipeline
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: jpc
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          DETAIL_BURST_START_DATE: "2026-08-31"
+          DETAIL_BURST_END_DATE_EXCLUSIVE: "2026-09-28"
+          WRITE_INPUT: ${{ inputs.write }}
+          ROUTES_INPUT: ${{ inputs.routes }}
+          MAX_PAGES_INPUT: ${{ inputs.max_pages }}
+          DETAIL_LIMIT_INPUT: ${{ inputs.detail_limit }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path 'output/usf-jpc' | Out-Null
+          $python = Join-Path $env:RUNNER_TEMP 'jpc-venv/Scripts/python.exe'
+          $base = @('-u', '-m', 'scripts.scrapers.usf.jobs.run_jpc_pipeline')
+          if ($env:EVENT_NAME -eq 'schedule' -and $env:EVENT_SCHEDULE -eq '17 4,16 * * *') {
+            $epoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+            $shardCount = 4
+            $shardIndex = [Math]::Floor($epoch / 43200) % $shardCount
+            $args = $base + @('--routes', 'default', '--include-route-index', '--max-pages-per-route', '0', '--listing-page-shard-index', "$shardIndex", '--listing-page-shard-count', "$shardCount", '--pagination-fallback', 'ff', '--discovery-sleep', '2.0', '--discovery-write', '--sync-listing-prices', '--price-sync-limit', '200000', '--price-sync-write', '--skip-requeue', '--skip-detail', '--skip-stage', '--skip-promote', '--skip-quarantine')
+          } elseif ($env:EVENT_NAME -eq 'schedule' -and $env:EVENT_SCHEDULE -eq '47 1,7,13,19 * * *') {
+            $today = [DateTime]::UtcNow.ToString('yyyy-MM-dd')
+            if ($today -lt $env:DETAIL_BURST_START_DATE -or $today -ge $env:DETAIL_BURST_END_DATE_EXCLUSIVE) { Write-Host "[WORKFLOW] JPC detailburst buiten datumvenster: today=$today"; exit 0 }
+            $args = $base + @('--skip-discovery', '--skip-requeue', '--detail-limit', '500', '--detail-sleep', '4.0', '--detail-write', '--stage-limit', '500', '--stage-write', '--promote-limit', '500', '--promote-write', '--quarantine-limit', '500', '--quarantine-write')
+          } else {
+            $args = $base + @('--routes', $env:ROUTES_INPUT, '--max-pages-per-route', $env:MAX_PAGES_INPUT, '--route-shard-index', '0', '--route-shard-count', '1', '--pagination-fallback', 'ff', '--discovery-sleep', '2.0', '--detail-limit', $env:DETAIL_LIMIT_INPUT, '--skip-requeue')
+            if ($env:WRITE_INPUT -eq 'true') { $args += '--write' } else { $args += @('--skip-detail', '--skip-stage', '--skip-promote', '--skip-quarantine') }
+          }
+          Write-Host "$python $($args -join ' ')"
+          & $python @args
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload JPC logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usf-jpc-windows-logs
+          path: jpc/output/usf-jpc/
+          if-no-files-found: ignore
+
+      - name: Clean temporary JPC environment
+        if: always()
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($name in @('jpc-venv', 'jpc-uv-cache')) {
+            $path = Join-Path $env:RUNNER_TEMP $name
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+          }
