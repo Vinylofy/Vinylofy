@@ -648,7 +648,6 @@ def fetch_html_with_playwright(
             browser = playwright.chromium.launch(headless=True)
             try:
                 page = browser.new_page(
-                    user_agent=HEADERS["User-Agent"],
                     locale="nl-NL",
                     extra_http_headers={
                         "Accept-Language": HEADERS["Accept-Language"],
