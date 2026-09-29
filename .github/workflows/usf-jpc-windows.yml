@@ -28,6 +28,14 @@ on:
         required: true
         default: "1"
         type: string
+      availability_filter:
+        description: "JPC-filter voor handmatige diagnose; gebruik none alleen met write=false"
+        required: true
+        default: "fast_delivery"
+        type: choice
+        options:
+          - "fast_delivery"
+          - "none"
 
 permissions:
   contents: read
@@ -180,6 +188,7 @@ jobs:
           ROUTES_INPUT: ${{ inputs.routes }}
           MAX_PAGES_INPUT: ${{ inputs.max_pages }}
           DETAIL_LIMIT_INPUT: ${{ inputs.detail_limit }}
+          AVAILABILITY_FILTER_INPUT: ${{ inputs.availability_filter }}
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path 'output/usf-jpc' | Out-Null
@@ -195,7 +204,11 @@ jobs:
             if ($today -lt $env:DETAIL_BURST_START_DATE -or $today -ge $env:DETAIL_BURST_END_DATE_EXCLUSIVE) { Write-Host "[WORKFLOW] JPC detailburst buiten datumvenster: today=$today"; exit 0 }
             $args = $base + @('--skip-discovery', '--skip-requeue', '--detail-limit', '500', '--detail-sleep', '4.0', '--detail-write', '--stage-limit', '500', '--stage-write', '--promote-limit', '500', '--promote-write', '--quarantine-limit', '500', '--quarantine-write')
           } else {
+            if ($env:AVAILABILITY_FILTER_INPUT -eq 'none' -and $env:WRITE_INPUT -eq 'true') {
+              throw 'availability_filter=none is alleen toegestaan met write=false'
+            }
             $args = $base + @('--routes', $env:ROUTES_INPUT, '--max-pages-per-route', $env:MAX_PAGES_INPUT, '--route-shard-index', '0', '--route-shard-count', '1', '--pagination-fallback', 'ff', '--discovery-sleep', '2.0', '--detail-limit', $env:DETAIL_LIMIT_INPUT, '--skip-requeue')
+            $args += @('--availability-filter', $env:AVAILABILITY_FILTER_INPUT)
             if ($env:WRITE_INPUT -eq 'true') { $args += '--write' } else { $args += @('--skip-detail', '--skip-stage', '--skip-promote', '--skip-quarantine') }
           }
           Write-Host "$python $($args -join ' ')"

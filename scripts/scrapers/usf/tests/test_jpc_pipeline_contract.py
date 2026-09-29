@@ -121,6 +121,9 @@ def run_tests() -> None:
     assert "group: usf-jpc-production" in local_workflow
     assert "workflow_dispatch:" in cloud_workflow
     assert "schedule:" not in cloud_workflow
+    assert "availability_filter:" in local_workflow
+    assert "--availability-filter" in local_workflow
+    assert "availability_filter=none is alleen toegestaan met write=false" in local_workflow
 
     listing_html = """
     <html><body>
