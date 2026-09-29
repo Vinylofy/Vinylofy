@@ -1,9 +1,9 @@
 name: USF - CD Hal Ruinen
 
 on:
-  # Paused after the bounded Windows run on 2026-09-28: CD Hal returned 403
-  # to both requests and Playwright. Restore the 37 1 * * * schedule only
-  # after a bounded listing dry-run succeeds without bypassing the block.
+  schedule:
+    - cron: "30 0 * * *"
+      timezone: "Europe/Amsterdam"
   workflow_dispatch:
     inputs:
       listing_max_pages:
@@ -96,7 +96,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m unittest tests.test_cdhal_listing
+          python -m unittest tests.test_cdhal_listing tests.test_cdhal_detail_transport
 
       - name: Verify CD Hal Ruinen HTML-only price authority
         shell: bash

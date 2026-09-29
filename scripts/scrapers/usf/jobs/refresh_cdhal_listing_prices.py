@@ -634,12 +634,11 @@ def fetch_html_with_playwright(
     referer: str | None = None,
     timeout_ms: int = 45_000,
 ) -> str:
-    """Fetch CD Hal listing HTML through a normal Chromium context.
+    """Fetch CD Hal page HTML through a normal Chromium context.
 
-    CD Hal currently returns HTTP 403 to the Python requests transport from
-    GitHub-hosted runners, while the public page remains reachable through a
-    browser-like client. This is a transport fallback only: no CAPTCHA or
-    authentication bypass is attempted.
+    The Windows runner's Python requests transport receives HTTP 403, while
+    Chromium can fetch the public listing. This is a transport fallback only:
+    no CAPTCHA or authentication bypass is attempted.
     """
     try:
         from playwright.sync_api import sync_playwright
