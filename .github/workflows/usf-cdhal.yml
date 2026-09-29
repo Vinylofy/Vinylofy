@@ -277,6 +277,8 @@ jobs:
         shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
         working-directory: cdhal
         run: |
+          if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required for Chromium.' }
+          $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $env:LOCALAPPDATA 'Vinylofy\cdhal-playwright'
           $python = Join-Path $env:RUNNER_TEMP 'cdhal-venv/Scripts/python.exe'
           & $python -m scripts.scrapers.usf.jobs.detail_cdhal --sample-url 'https://www.cdhal.nl/davina-michelle-my-own-world-coloured-vinyl-lp'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
