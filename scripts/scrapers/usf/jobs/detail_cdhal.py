@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import re
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -17,6 +18,9 @@ from scripts.scrapers.usf.core.link_registry import (
     insert_raw_shop_scrape,
     mark_detail_scraped,
 )
+from scripts.scrapers.usf.jobs.refresh_cdhal_listing_prices import (
+    fetch_html_with_playwright,
+)
 
 
 SHOP_ID = "cdhal"
@@ -29,6 +33,17 @@ DEFAULT_USER_AGENT = (
 )
 
 SUPPORTED_EAN_LENGTHS = {8, 12, 13, 14}
+
+
+@dataclass(frozen=True)
+class DetailPage:
+    status_code: int
+    text: str
+    transport: str
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"HTTP {self.status_code}")
 
 
 def clean(value: object) -> str:
@@ -156,7 +171,7 @@ def request_detail_page(
     source_url: str,
     *,
     max_attempts: int = 4,
-) -> requests.Response:
+) -> DetailPage:
     """
     Haal een CDHAL-detailpagina op met begrensde retry bij HTTP 429.
 
@@ -193,8 +208,24 @@ def request_detail_page(
 
         last_response = response
 
+        if response.status_code == 403:
+            print(
+                "[DETAIL-WARN] requests returned 403; using Playwright",
+                {"url": source_url},
+                flush=True,
+            )
+            return DetailPage(
+                status_code=200,
+                text=fetch_html_with_playwright(source_url),
+                transport="playwright",
+            )
+
         if response.status_code != 429:
-            return response
+            return DetailPage(
+                status_code=response.status_code,
+                text=response.text,
+                transport="requests",
+            )
 
         retry_after_raw = clean(
             response.headers.get("Retry-After")
@@ -232,7 +263,11 @@ def request_detail_page(
             "CDHAL-detailrequest leverde geen response."
         )
 
-    return last_response
+    return DetailPage(
+        status_code=last_response.status_code,
+        text=last_response.text,
+        transport="requests",
+    )
 
 
 def fetch_detail_queue(
@@ -603,6 +638,7 @@ def fetch_live_sample(
         **parsed,
         "status_code": response.status_code,
         "html_length": len(response.text),
+        "transport": response.transport,
     }
 
 
@@ -674,6 +710,7 @@ def main() -> int:
                 "source_url": sample["source_url"],
                 "status_code": sample["status_code"],
                 "html_length": sample["html_length"],
+                "transport": sample["transport"],
                 "title_raw": sample["title_raw"],
                 "ean_raw": sample["ean_raw"],
                 "price_raw": sample["price_raw"],
@@ -777,7 +814,7 @@ def main() -> int:
                 session,
                 source_url,
             )
-        except requests.RequestException as exc:
+        except (requests.RequestException, RuntimeError) as exc:
             skipped += 1
 
             print(
@@ -913,6 +950,7 @@ def main() -> int:
                 "status_code": (
                     response.status_code
                 ),
+                "transport": response.transport,
             },
         )
 
