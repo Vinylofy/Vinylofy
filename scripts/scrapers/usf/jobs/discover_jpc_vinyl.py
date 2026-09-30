@@ -399,11 +399,39 @@ def fast_delivery_filter_params(html: str) -> list[tuple[str, str]] | None:
         params.append((name, value))
         facets.add(facet)
 
-    return params if facets == FAST_DELIVERY_FACETS else None
+    if facets == FAST_DELIVERY_FACETS:
+        return params
+
+    # JPC currently renders the availability facet as links on some listing
+    # responses instead of checkbox inputs. Keep the query contract source
+    # controlled by extracting the actual availability value from each link.
+    link_params: dict[str, tuple[str, str]] = {}
+    for link in soup.find_all("a", href=True):
+        facet = fast_delivery_facet(
+            normalized_filter_label(link.get_text(" ", strip=True))
+        )
+        if not facet:
+            continue
+
+        for name, value in parse_qsl(
+            urlparse(clean(link.get("href"))).query,
+            keep_blank_values=True,
+        ):
+            if name.lower() != "availability" or not value:
+                continue
+            link_params[facet] = (name, value)
+            break
+
+    if set(link_params) != FAST_DELIVERY_FACETS:
+        return None
+    return [link_params[facet] for facet in ("stock", "24h", "3d")]
 
 
 def fast_delivery_filter_is_applied(
-    html: str, expected_params: list[tuple[str, str]]
+    html: str,
+    expected_params: list[tuple[str, str]],
+    *,
+    page_url: str | None = None,
 ) -> bool:
     soup = BeautifulSoup(html, "html.parser")
     expected = set(expected_params)
@@ -417,7 +445,14 @@ def fast_delivery_filter_is_applied(
         if (name, value) in expected and control.has_attr("checked"):
             selected.add((name, value))
 
-    return selected == expected
+    if selected == expected:
+        return True
+
+    if page_url:
+        applied = set(parse_qsl(urlparse(page_url).query, keep_blank_values=True))
+        return set(expected_params).issubset(applied)
+
+    return False
 
 
 def apply_query_params(url: str, params: list[tuple[str, str]]) -> str:
@@ -491,7 +526,11 @@ def build_fast_delivery_routes(
 
     if (
         filtered_response.status_code != 200
-        or not fast_delivery_filter_is_applied(filtered_response.text, params)
+        or not fast_delivery_filter_is_applied(
+            filtered_response.text,
+            params,
+            page_url=filtered_response.url,
+        )
     ):
         print(
             "[JPC-DISCOVER-FILTER-STOP]",

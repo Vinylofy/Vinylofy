@@ -180,6 +180,26 @@ def run_tests() -> None:
         confirmed_filtered_listing_html, filter_params
     )
     assert not fast_delivery_filter_is_applied(filtered_listing_html, filter_params)
+    link_filter_html = """
+    <html><body><nav>
+      <a href="/s/example?availability=stock">Artikel am Lager (8)</a>
+      <a href="/s/example?availability=24h">innerhalb 24 Stunden (3)</a>
+      <a href="/s/example?availability=3d">innerhalb von 3 Tagen (4)</a>
+    </nav></body></html>
+    """
+    assert fast_delivery_filter_params(link_filter_html) == [
+        ("availability", "stock"),
+        ("availability", "24h"),
+        ("availability", "3d"),
+    ]
+    assert fast_delivery_filter_is_applied(
+        "<html><body></body></html>",
+        filter_params,
+        page_url=(
+            "https://www.jpc.de/s/example?"
+            "availability=stock&availability=24h&availability=3d"
+        ),
+    )
 
     slow_listing_html = """
     <html><body>
