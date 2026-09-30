@@ -1,9 +1,9 @@
 name: USF - RecordsonVinyl
 
 on:
-  schedule:
-    - cron: "17 3 * * *"
-
+  # Automatic runs are handled by usf-recordsonvinyl-windows.yml. Keep this
+  # workflow as the GitHub-hosted manual fallback. Restore the schedule block
+  # here if the local Windows runner is unavailable long-term.
   workflow_dispatch:
     inputs:
       listing_max_pages:

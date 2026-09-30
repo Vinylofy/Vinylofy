@@ -1,0 +1,249 @@
+name: USF - RecordsonVinyl (Windows local)
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+
+  workflow_dispatch:
+    inputs:
+      listing_max_pages:
+        description: "Aantal listingpagina's; 0 = volledige catalogus"
+        required: true
+        default: "1"
+      fast_price_sync:
+        description: "Gebruik snelle bulk price sync vanuit de link registry"
+        required: true
+        default: true
+        type: boolean
+      price_only:
+        description: "Alleen snelle listing-prijsupdate; sla detail/stage/promote/quarantine over"
+        required: true
+        default: true
+        type: boolean
+      detail_limit:
+        description: "Maximaal aantal detailpagina's"
+        required: true
+        default: "500"
+      stage_limit:
+        description: "Maximaal aantal raw records naar staged_offers"
+        required: true
+        default: "500"
+      promote_limit:
+        description: "Maximaal aantal staged offers promoveren"
+        required: true
+        default: "500"
+      quarantine_limit:
+        description: "Maximaal aantal incomplete records quarantinen"
+        required: true
+        default: "100"
+      write:
+        description: "Werkelijke databasewrites uitvoeren"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usf-recordsonvinyl-production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate ROV USF pipeline on Windows
+    runs-on: [self-hosted, Windows, X64, vinylofy-windows]
+    timeout-minutes: 20
+
+    steps:
+      - name: Verify runner
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        env:
+          RUNNER_NAME: ${{ runner.name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -ne 'vinylofy-windows-01') {
+            throw "Unexpected runner: $env:RUNNER_NAME"
+          }
+          Write-Host "Runner: $env:RUNNER_NAME"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: recordsonvinyl
+          persist-credentials: false
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/recordsonvinyl-uv-cache
+        with:
+          version: "0.12.15"
+          python-version: "3.11"
+          working-directory: ${{ github.workspace }}/recordsonvinyl
+          enable-cache: false
+
+      - name: Install dependencies and validate
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: recordsonvinyl
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required for managed Python.' }
+          $env:UV_PYTHON_INSTALL_DIR = Join-Path $env:LOCALAPPDATA 'Vinylofy\recordsonvinyl-python'
+          $venv = Join-Path $env:RUNNER_TEMP 'recordsonvinyl-venv'
+          if (Test-Path -LiteralPath $venv) { Remove-Item -LiteralPath $venv -Recurse -Force }
+          uv venv --no-project --seed --managed-python --python 3.11 $venv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $python = Join-Path $venv 'Scripts/python.exe'
+          & $python --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Test-Path -LiteralPath 'requirements.txt') { & $python -m pip install -r requirements.txt; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          if (Test-Path -LiteralPath 'requirements-scrapers.txt') { & $python -m pip install -r requirements-scrapers.txt; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          & $python -m pip install requests beautifulsoup4 'psycopg[binary]' python-dotenv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $modules = @(
+            'scripts/scrapers/usf/core/fast_listing_price_sync.py',
+            'scripts/scrapers/usf/jobs/refresh_recordsonvinyl_listing_prices.py',
+            'scripts/scrapers/usf/jobs/detail_recordsonvinyl.py',
+            'scripts/scrapers/usf/jobs/stage_recordsonvinyl.py',
+            'scripts/scrapers/usf/jobs/promote_staged_offers.py',
+            'scripts/scrapers/usf/jobs/quarantine_recordsonvinyl.py',
+            'scripts/scrapers/usf/jobs/run_recordsonvinyl_pipeline.py'
+          )
+          & $python -m py_compile @modules
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $python -m scripts.scrapers.usf.jobs.refresh_recordsonvinyl_listing_prices --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $python -m scripts.scrapers.usf.jobs.detail_recordsonvinyl --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $python -m scripts.scrapers.usf.jobs.stage_recordsonvinyl --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $python -m scripts.scrapers.usf.jobs.promote_staged_offers --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $python -m scripts.scrapers.usf.jobs.quarantine_recordsonvinyl --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $python -m scripts.scrapers.usf.jobs.run_recordsonvinyl_pipeline --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  run:
+    name: Run ROV USF pipeline on Windows
+    needs: validate
+    runs-on: [self-hosted, Windows, X64, vinylofy-windows]
+    timeout-minutes: 360
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PIP_NO_CACHE_DIR: "1"
+
+    steps:
+      - name: Verify runner
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        env:
+          RUNNER_NAME: ${{ runner.name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -ne 'vinylofy-windows-01') { throw "Unexpected runner: $env:RUNNER_NAME" }
+          Write-Host "Runner: $env:RUNNER_NAME"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: recordsonvinyl
+          persist-credentials: false
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/recordsonvinyl-uv-cache
+        with:
+          version: "0.12.15"
+          python-version: "3.11"
+          working-directory: ${{ github.workspace }}/recordsonvinyl
+          enable-cache: false
+
+      - name: Install dependencies
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: recordsonvinyl
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required for managed Python.' }
+          $env:UV_PYTHON_INSTALL_DIR = Join-Path $env:LOCALAPPDATA 'Vinylofy\recordsonvinyl-python'
+          $venv = Join-Path $env:RUNNER_TEMP 'recordsonvinyl-venv'
+          if (Test-Path -LiteralPath $venv) { Remove-Item -LiteralPath $venv -Recurse -Force }
+          uv venv --no-project --seed --managed-python --python 3.11 $venv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $python = Join-Path $venv 'Scripts/python.exe'
+          if (Test-Path -LiteralPath 'requirements.txt') { & $python -m pip install -r requirements.txt; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          if (Test-Path -LiteralPath 'requirements-scrapers.txt') { & $python -m pip install -r requirements-scrapers.txt; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          & $python -m pip install requests beautifulsoup4 'psycopg[binary]' python-dotenv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Validate configuration
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:DATABASE_URL) { throw 'GitHub secret DATABASE_URL ontbreekt' }
+          Write-Host '[CONFIG] DATABASE_URL is ingesteld'
+
+      - name: Run RecordsonVinyl USF pipeline
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: recordsonvinyl
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          LISTING_MAX_PAGES_INPUT: ${{ inputs.listing_max_pages }}
+          FAST_PRICE_SYNC_INPUT: ${{ inputs.fast_price_sync }}
+          PRICE_ONLY_INPUT: ${{ inputs.price_only }}
+          DETAIL_LIMIT_INPUT: ${{ inputs.detail_limit }}
+          STAGE_LIMIT_INPUT: ${{ inputs.stage_limit }}
+          PROMOTE_LIMIT_INPUT: ${{ inputs.promote_limit }}
+          QUARANTINE_LIMIT_INPUT: ${{ inputs.quarantine_limit }}
+          WRITE_INPUT: ${{ inputs.write }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path 'output/usf-recordsonvinyl' | Out-Null
+
+          if ($env:EVENT_NAME -eq 'schedule') {
+            $listingMaxPages = '0'
+            $detailLimit = '500'
+            $stageLimit = '500'
+            $promoteLimit = '500'
+            $quarantineLimit = '100'
+            $write = 'true'
+            $fastPriceSync = 'true'
+            $priceOnly = 'true'
+          } else {
+            $listingMaxPages = if ($env:LISTING_MAX_PAGES_INPUT) { $env:LISTING_MAX_PAGES_INPUT } else { '0' }
+            $detailLimit = if ($env:DETAIL_LIMIT_INPUT) { $env:DETAIL_LIMIT_INPUT } else { '500' }
+            $stageLimit = if ($env:STAGE_LIMIT_INPUT) { $env:STAGE_LIMIT_INPUT } else { '500' }
+            $promoteLimit = if ($env:PROMOTE_LIMIT_INPUT) { $env:PROMOTE_LIMIT_INPUT } else { '500' }
+            $quarantineLimit = if ($env:QUARANTINE_LIMIT_INPUT) { $env:QUARANTINE_LIMIT_INPUT } else { '100' }
+            $write = if ($env:WRITE_INPUT) { $env:WRITE_INPUT } else { 'true' }
+            $fastPriceSync = if ($env:FAST_PRICE_SYNC_INPUT) { $env:FAST_PRICE_SYNC_INPUT } else { 'true' }
+            $priceOnly = if ($env:PRICE_ONLY_INPUT) { $env:PRICE_ONLY_INPUT } else { 'false' }
+          }
+          $python = Join-Path $env:RUNNER_TEMP 'recordsonvinyl-venv/Scripts/python.exe'
+          $args = @('-u', '-m', 'scripts.scrapers.usf.jobs.run_recordsonvinyl_pipeline', '--listing-max-pages', $listingMaxPages, '--detail-limit', $detailLimit, '--stage-limit', $stageLimit, '--promote-limit', $promoteLimit, '--quarantine-limit', $quarantineLimit)
+          if ($fastPriceSync -eq 'true') { $args += '--fast-price-sync' }
+          if ($priceOnly -eq 'true') { $args += @('--skip-detail', '--skip-stage', '--skip-promote', '--skip-quarantine') }
+          if ($write -eq 'true') { $args += '--write' }
+          Write-Host "[WORKFLOW] $python $($args -join ' ')"
+          & $python @args 2>&1 | Tee-Object -FilePath 'output/usf-recordsonvinyl/pipeline.log'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload pipeline log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usf-recordsonvinyl-windows-${{ github.run_id }}
+          path: recordsonvinyl/output/usf-recordsonvinyl/
+          if-no-files-found: ignore
+
+      - name: Clean temporary RecordsonVinyl environment
+        if: always()
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($name in @('recordsonvinyl-venv', 'recordsonvinyl-uv-cache')) {
+            $path = Join-Path $env:RUNNER_TEMP $name
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+          }
