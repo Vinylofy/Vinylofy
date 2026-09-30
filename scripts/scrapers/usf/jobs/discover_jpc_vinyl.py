@@ -70,6 +70,7 @@ class RouteSpec:
     name: str
     url: str
     source: str = "configured"
+    post_params: tuple[tuple[str, str], ...] = ()
 
 
 def clean(value: object) -> str:
@@ -402,6 +403,21 @@ def fast_delivery_filter_params(html: str) -> list[tuple[str, str]] | None:
     if facets == FAST_DELIVERY_FACETS:
         return params
 
+    # JPC's current filter UI uses a custom element. Its JavaScript submits
+    # one hidden POST field named filter_<data-filter> for the selected value.
+    component_params: dict[str, tuple[str, str]] = {}
+    for control in soup.find_all(attrs={"data-filter": "availability"}):
+        facet = fast_delivery_facet(
+            normalized_filter_label(control.get_text(" ", strip=True))
+        )
+        value = clean(control.get("data-value"))
+        if not facet or not value:
+            continue
+        component_params[facet] = ("filter_availability", value)
+
+    if set(component_params) == FAST_DELIVERY_FACETS:
+        return [component_params[facet] for facet in ("stock", "24h", "3d")]
+
     # JPC currently renders the availability facet as links on some listing
     # responses instead of checkbox inputs. Keep the query contract source
     # controlled by extracting the actual availability value from each link.
@@ -446,6 +462,16 @@ def fast_delivery_filter_is_applied(
             selected.add((name, value))
 
     if selected == expected:
+        return True
+
+    component_selected = {
+        ("filter_availability", clean(control.get("data-value")))
+        for control in soup.find_all(attrs={"data-filter": "availability"})
+        if fast_delivery_facet(
+            normalized_filter_label(control.get_text(" ", strip=True))
+        )
+    }
+    if component_selected.intersection(expected):
         return True
 
     if page_url:
@@ -505,61 +531,67 @@ def build_fast_delivery_routes(
         )
         return None
 
-    filtered_probe_url = apply_query_params(response.url, params)
-    try:
-        filtered_response = session.get(
-            filtered_probe_url,
-            timeout=timeout_seconds,
-            allow_redirects=True,
-        )
-    except requests.RequestException as exc:
-        print(
-            "[JPC-DISCOVER-FILTER-STOP]",
-            {
-                "url": filtered_probe_url,
-                "reason": "filtered_probe_error",
-                "error": str(exc),
-            },
-            flush=True,
-        )
-        return None
+    filtered_routes: list[RouteSpec] = []
+    for route in routes:
+        for filter_param in params:
+            try:
+                filtered_response = session.post(
+                    route.url,
+                    data=[filter_param, ("refresh", "2"), ("page", "1")],
+                    timeout=timeout_seconds,
+                    allow_redirects=True,
+                )
+            except requests.RequestException as exc:
+                print(
+                    "[JPC-DISCOVER-FILTER-STOP]",
+                    {
+                        "url": route.url,
+                        "reason": "filtered_probe_error",
+                        "error": str(exc),
+                    },
+                    flush=True,
+                )
+                return None
 
-    if (
-        filtered_response.status_code != 200
-        or not fast_delivery_filter_is_applied(
-            filtered_response.text,
-            params,
-            page_url=filtered_response.url,
-        )
-    ):
-        print(
-            "[JPC-DISCOVER-FILTER-STOP]",
-            {
-                "url": filtered_response.url,
-                "reason": "fast_delivery_filter_not_confirmed",
-                "status_code": filtered_response.status_code,
-            },
-            flush=True,
-        )
-        return None
+            if (
+                filtered_response.status_code != 200
+                or not fast_delivery_filter_is_applied(
+                    filtered_response.text,
+                    [filter_param],
+                    page_url=filtered_response.url,
+                )
+            ):
+                print(
+                    "[JPC-DISCOVER-FILTER-STOP]",
+                    {
+                        "url": filtered_response.url,
+                        "reason": "fast_delivery_filter_not_confirmed",
+                        "status_code": filtered_response.status_code,
+                        "filter": filter_param,
+                    },
+                    flush=True,
+                )
+                return None
+
+            filtered_routes.append(
+                RouteSpec(
+                    name=f"{route.name}-fast-{filter_param[1]}",
+                    url=route.url,
+                    source=route.source,
+                    post_params=(filter_param,),
+                )
+            )
 
     print(
         "[JPC-DISCOVER-FILTER]",
         {
-            "probe_url": filtered_response.url,
+            "routes": len(filtered_routes),
             "selected_facet_values": len(params),
             "mode": "fast_delivery",
         },
         flush=True,
     )
-    return [
-        RouteSpec(
-            name=route.name,
-            url=apply_query_params(route.url, params),
-            source=route.source,
-        )
-        for route in routes
-    ]
+    return filtered_routes
 
 
 def parse_listing_links(
@@ -714,10 +746,10 @@ def add_page_fallback(url: str, *, page_number: int, mode: str) -> str | None:
 
 
 def merge_routes(*route_lists: list[RouteSpec]) -> list[RouteSpec]:
-    merged: dict[str, RouteSpec] = {}
+    merged: dict[tuple[str, tuple[tuple[str, str], ...]], RouteSpec] = {}
     for routes in route_lists:
         for route in routes:
-            merged.setdefault(route.url, route)
+            merged.setdefault((route.url, route.post_params), route)
     return list(merged.values())
 
 
@@ -734,7 +766,10 @@ def select_route_shard(
     if shard_count == 1:
         return routes
 
-    ordered = sorted(routes, key=lambda route: (route.url, route.name, route.source))
+    ordered = sorted(
+        routes,
+        key=lambda route: (route.url, route.name, route.source, route.post_params),
+    )
     return [
         route
         for index, route in enumerate(ordered)
@@ -758,6 +793,24 @@ def listing_page_numbers_for_shard(
     first_page = shard_index + 1
     stop_page = max_pages_per_route + 1 if max_pages_per_route else 2**31
     return range(first_page, stop_page, shard_count)
+
+
+def request_listing_page(
+    *,
+    session: requests.Session,
+    route: RouteSpec,
+    url: str,
+    page_number: int,
+    timeout_seconds: float,
+) -> requests.Response:
+    if route.post_params:
+        return session.post(
+            url,
+            data=[*route.post_params, ("refresh", "2"), ("page", str(page_number))],
+            timeout=timeout_seconds,
+            allow_redirects=True,
+        )
+    return session.get(url, timeout=timeout_seconds, allow_redirects=True)
 
 
 def discover_links(
@@ -835,10 +888,12 @@ def discover_links(
                 break
 
             try:
-                response = session.get(
-                    current_url,
-                    timeout=timeout_seconds,
-                    allow_redirects=True,
+                response = request_listing_page(
+                    session=session,
+                    route=route,
+                    url=current_url,
+                    page_number=page_number,
+                    timeout_seconds=timeout_seconds,
                 )
             except requests.RequestException as exc:
                 print(

@@ -200,6 +200,28 @@ def run_tests() -> None:
             "availability=stock&availability=24h&availability=3d"
         ),
     )
+    custom_filter_html = """
+    <html><body><ul id="filter_availability">
+      <jpc-button-pseudo-filter-link data-filter="availability" data-value="al">
+        <em>Artikel am Lager</em><i>(8)</i>
+      </jpc-button-pseudo-filter-link>
+      <jpc-button-pseudo-filter-link data-filter="availability" data-value="d1">
+        <em>innerhalb 24 Stunden</em><i>(3)</i>
+      </jpc-button-pseudo-filter-link>
+      <jpc-button-pseudo-filter-link data-filter="availability" data-value="d3">
+        <em>innerhalb von 3 Tagen</em><i>(4)</i>
+      </jpc-button-pseudo-filter-link>
+    </ul></body></html>
+    """
+    assert fast_delivery_filter_params(custom_filter_html) == [
+        ("filter_availability", "al"),
+        ("filter_availability", "d1"),
+        ("filter_availability", "d3"),
+    ]
+    assert fast_delivery_filter_is_applied(
+        custom_filter_html,
+        [("filter_availability", "d3")],
+    )
 
     slow_listing_html = """
     <html><body>
