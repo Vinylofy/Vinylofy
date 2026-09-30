@@ -38,6 +38,56 @@ The workflow pins uv to `0.12.15` and the setup action to a reviewed commit SHA.
 - The bounded tests skipped detail enrichment. Windows execution of the detail path therefore still requires its own bounded verification before relying on it.
 - No earlier successful-run baseline was available for a meaningful catalog-count comparison.
 
+## JPC migration learnings
+
+The JPC migration uses the same single pipeline on two execution routes:
+
+- Normal scheduled execution: `.github/workflows/usf-jpc-windows.yml` on `vinylofy-windows-01`.
+- Fallback execution: `.github/workflows/usf-jpc.yml` on `ubuntu-latest`, started with `workflow_dispatch`.
+
+The cloud fallback has no automatic schedule. A failed or unavailable Windows run therefore does not automatically start a second GitHub-hosted run and does not create an unexpected fallback run or associated Actions usage. The fallback can be started manually, and its schedule can be restored deliberately if the Windows machine is unavailable for a longer period.
+
+Both workflows use the concurrency group `usf-jpc-production` with `cancel-in-progress: false`. The validate and run jobs are sequential within one workflow, and the shared group prevents the local and fallback workflows from running the JPC pipeline at the same time. The Windows runner itself executes one job at a time; a queued job means that the runner is busy, offline, or the job is waiting on the concurrency group.
+
+### Windows-specific JPC findings
+
+- The correct runner target is `[self-hosted, Windows, X64, vinylofy-windows]`; the workflow additionally verifies the runner name `vinylofy-windows-01` before doing work.
+- `powershell` with process-scoped `ExecutionPolicy Bypass` is required on this runner. `pwsh` was not available.
+- Python 3.11 is created through pinned `astral-sh/setup-uv`. The managed Python installation belongs under `%LOCALAPPDATA%\Vinylofy\jpc-python`; the run-specific virtual environment and uv cache belong under `$RUNNER_TEMP` and are removed in an unconditional cleanup step.
+- PowerShell external commands require explicit `$LASTEXITCODE` checks. Python arguments are passed as PowerShell arrays so paths and flags do not depend on Bash syntax.
+- `DATABASE_URL` is passed from the existing GitHub Secret. No database credential is stored in the workflow or scraper code.
+
+### JPC filter and price-sync findings
+
+The JPC availability controls are custom elements. The working implementation submits the site's POST form field `filter_availability` for the selected facet; a GET query parameter is not equivalent. The filter implementation remains fail-closed when the expected facet cannot be confirmed.
+
+The scheduled Windows listing route is deliberately price-focused. It runs discovery and listing-price sync, then skips detail, staging, promotion and quarantine. In run `36703121038` this path reported:
+
+- 21,465 listing links inspected;
+- 21,416 known-EAN links;
+- 21,388 price rows refreshed;
+- 14 price rows whose value actually changed;
+- 14 history rows written.
+
+The `prices_updated` counter is therefore a refreshed price-link count in this pipeline output; `changed_rows` is the count of actual price changes. These are different metrics and should both be recorded when assessing a run.
+
+Do not use the manual `write=true` full pipeline as a substitute for the scheduled price route when only prices are required. A bounded full write in run `36694896294` discovered 40 listings and inserted or updated them, but the cover promotion step hit a PostgreSQL statement timeout in `cover_lookup_queue`. This did not affect the price-only route because that route explicitly skips cover-related stages.
+
+### Database and run interpretation
+
+- A green Windows price route proves that the listing-price sync completed; it does not prove that detail enrichment or cover promotion completed.
+- A scheduled detail-burst run can finish successfully without work when its configured date window is closed. Run `36727597470` was such a no-op: it reported success, but performed no price or detail writes because the detail-burst window had ended.
+- The observed `cover_lookup_queue` timeout was a shared database/queue-path issue, not evidence of a Windows-specific scraper failure. Read-only inspection showed queue and candidate-table bloat plus long-lived idle-in-transaction sessions, but no blocking lock at the inspection instant. The root cause was therefore not conclusively established and no database change was made as part of the runner migration.
+- Ubuntu runs inspected before this migration did not show the same timeout in their logs. The underlying database path is shared, so that comparison does not prove that Ubuntu is immune to the issue.
+
+### Operational checklist learned from JPC
+
+- For price verification, use the scheduled Windows listing route or a manual run with the explicit price-sync flags and all detail/stage/promote/quarantine steps disabled.
+- Record both `prices_updated` and `changed_rows` from the pipeline output.
+- Treat a full manual write as a separate bounded test with an explicit write scope.
+- Check the event and schedule before interpreting a green run; a detail-burst no-op is not a price refresh.
+- If the Windows runner fails, inspect the failure and start the cloud fallback manually only when needed. The current configuration intentionally does not auto-fallback.
+
 ## Reusable checklist for the next scraper
 
 - [ ] Inspect its workflow, imports, wrappers, requirements, env/secrets, data writes, schedules, concurrency, output/download paths, and subprocess usage before editing.
