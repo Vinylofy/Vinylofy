@@ -1,0 +1,229 @@
+name: USF - Sounds Venlo (Windows local)
+
+on:
+  schedule:
+    - cron: "35 2 * * *"
+  workflow_dispatch:
+    inputs:
+      skip_listing:
+        description: "Skip live listing fetch; use existing shop_product_links payload prices"
+        required: true
+        default: false
+        type: boolean
+      listing_max_pages:
+        description: "Listing pages; 0 = all pages"
+        required: true
+        default: "1"
+        type: string
+      run_detail:
+        description: "Also run detail enrichment"
+        required: true
+        default: false
+        type: boolean
+      run_stage_promote:
+        description: "Run stage and promote"
+        required: true
+        default: false
+        type: boolean
+      detail_limit:
+        description: "Detail limit"
+        required: true
+        default: "500"
+        type: string
+      stage_limit:
+        description: "Stage limit"
+        required: true
+        default: "100"
+        type: string
+      promote_limit:
+        description: "Promote limit"
+        required: true
+        default: "100"
+        type: string
+      fast_price_sync:
+        description: "Run fast listing price sync"
+        required: true
+        default: false
+        type: boolean
+      write:
+        description: "Write to database"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usf-soundsvenlo-production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate Sounds Venlo USF on Windows
+    runs-on: [self-hosted, Windows, X64, vinylofy-windows]
+    timeout-minutes: 30
+    steps:
+      - name: Verify runner
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        env:
+          RUNNER_NAME: ${{ runner.name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -ne 'vinylofy-windows-01') { throw "Unexpected runner: $env:RUNNER_NAME" }
+          Write-Host "Runner: $env:RUNNER_NAME"
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: soundsvenlo
+          persist-credentials: false
+      - name: Setup uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/soundsvenlo-uv-cache
+        with:
+          version: "0.12.15"
+          python-version: "3.11"
+          working-directory: ${{ github.workspace }}/soundsvenlo
+          enable-cache: false
+      - name: Install dependencies and validate
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: soundsvenlo
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required for managed Python.' }
+          $env:UV_PYTHON_INSTALL_DIR = Join-Path $env:LOCALAPPDATA 'Vinylofy\soundsvenlo-python'
+          $venv = Join-Path $env:RUNNER_TEMP 'soundsvenlo-venv'
+          if (Test-Path -LiteralPath $venv) { Remove-Item -LiteralPath $venv -Recurse -Force }
+          uv venv --no-project --seed --managed-python --python 3.11 $venv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $python = Join-Path $venv 'Scripts/python.exe'
+          & $python --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Test-Path -LiteralPath 'requirements.txt') { & $python -m pip install -r requirements.txt; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          if (Test-Path -LiteralPath 'requirements-scrapers.txt') { & $python -m pip install -r requirements-scrapers.txt; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          & $python -m pip install requests beautifulsoup4 'psycopg[binary]' python-dotenv playwright
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $python -m playwright install chromium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $modules = @('scripts/scrapers/usf/jobs/refresh_soundsvenlo_listing_prices.py', 'scripts/scrapers/usf/jobs/detail_soundsvenlo.py', 'scripts/scrapers/usf/jobs/stage_soundsvenlo.py', 'scripts/scrapers/usf/jobs/promote_soundsvenlo.py', 'scripts/scrapers/usf/jobs/quarantine_soundsvenlo.py', 'scripts/scrapers/usf/jobs/run_soundsvenlo_pipeline.py', 'scripts/scrapers/usf/jobs/bootstrap_soundsvenlo_from_csv.py')
+          & $python -m py_compile @modules
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($module in @('refresh_soundsvenlo_listing_prices', 'detail_soundsvenlo', 'stage_soundsvenlo', 'promote_soundsvenlo', 'quarantine_soundsvenlo', 'run_soundsvenlo_pipeline')) {
+            & $python -m "scripts.scrapers.usf.jobs.$module" --help
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+  run:
+    name: Run Sounds Venlo USF pipeline on Windows
+    needs: validate
+    runs-on: [self-hosted, Windows, X64, vinylofy-windows]
+    timeout-minutes: 360
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PIP_NO_CACHE_DIR: "1"
+    steps:
+      - name: Verify runner
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        env:
+          RUNNER_NAME: ${{ runner.name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -ne 'vinylofy-windows-01') { throw "Unexpected runner: $env:RUNNER_NAME" }
+          Write-Host "Runner: $env:RUNNER_NAME"
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: soundsvenlo
+          persist-credentials: false
+      - name: Setup uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/soundsvenlo-uv-cache
+        with:
+          version: "0.12.15"
+          python-version: "3.11"
+          working-directory: ${{ github.workspace }}/soundsvenlo
+          enable-cache: false
+      - name: Install dependencies
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: soundsvenlo
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required for managed Python.' }
+          $env:UV_PYTHON_INSTALL_DIR = Join-Path $env:LOCALAPPDATA 'Vinylofy\soundsvenlo-python'
+          $venv = Join-Path $env:RUNNER_TEMP 'soundsvenlo-venv'
+          if (Test-Path -LiteralPath $venv) { Remove-Item -LiteralPath $venv -Recurse -Force }
+          uv venv --no-project --seed --managed-python --python 3.11 $venv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $python = Join-Path $venv 'Scripts/python.exe'
+          if (Test-Path -LiteralPath 'requirements.txt') { & $python -m pip install -r requirements.txt; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          if (Test-Path -LiteralPath 'requirements-scrapers.txt') { & $python -m pip install -r requirements-scrapers.txt; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          & $python -m pip install requests beautifulsoup4 'psycopg[binary]' python-dotenv playwright
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $python -m playwright install chromium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Validate configuration
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:DATABASE_URL) { throw 'GitHub secret DATABASE_URL ontbreekt' }
+          Write-Host '[CONFIG] DATABASE_URL is ingesteld'
+      - name: Run Sounds Venlo pipeline
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: soundsvenlo
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SKIP_LISTING_INPUT: ${{ inputs.skip_listing }}
+          LISTING_MAX_PAGES_INPUT: ${{ inputs.listing_max_pages }}
+          RUN_DETAIL_INPUT: ${{ inputs.run_detail }}
+          RUN_STAGE_PROMOTE_INPUT: ${{ inputs.run_stage_promote }}
+          DETAIL_LIMIT_INPUT: ${{ inputs.detail_limit }}
+          STAGE_LIMIT_INPUT: ${{ inputs.stage_limit }}
+          PROMOTE_LIMIT_INPUT: ${{ inputs.promote_limit }}
+          FAST_PRICE_SYNC_INPUT: ${{ inputs.fast_price_sync }}
+          WRITE_INPUT: ${{ inputs.write }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path 'output/usf-soundsvenlo' | Out-Null
+          if ($env:EVENT_NAME -eq 'schedule') {
+            $skipListing = 'false'; $listingMaxPages = '0'; $fastPriceSync = 'true'; $write = 'true'; $runStagePromote = 'true'; $detailLimit = '500'; $stageLimit = '10000'; $promoteLimit = '10000'
+            $dayOfWeek = [int]([DateTime]::UtcNow.DayOfWeek)
+            $runDetail = if ($dayOfWeek -eq 1 -or $dayOfWeek -eq 4) { 'true' } else { 'false' }
+          } else {
+            $skipListing = if ($env:SKIP_LISTING_INPUT) { $env:SKIP_LISTING_INPUT } else { 'false' }
+            $listingMaxPages = if ($env:LISTING_MAX_PAGES_INPUT) { $env:LISTING_MAX_PAGES_INPUT } else { '1' }
+            $runDetail = if ($env:RUN_DETAIL_INPUT) { $env:RUN_DETAIL_INPUT } else { 'false' }
+            $runStagePromote = if ($env:RUN_STAGE_PROMOTE_INPUT) { $env:RUN_STAGE_PROMOTE_INPUT } else { 'false' }
+            $detailLimit = if ($env:DETAIL_LIMIT_INPUT) { $env:DETAIL_LIMIT_INPUT } else { '500' }
+            $stageLimit = if ($env:STAGE_LIMIT_INPUT) { $env:STAGE_LIMIT_INPUT } else { '100' }
+            $promoteLimit = if ($env:PROMOTE_LIMIT_INPUT) { $env:PROMOTE_LIMIT_INPUT } else { '100' }
+            $fastPriceSync = if ($env:FAST_PRICE_SYNC_INPUT) { $env:FAST_PRICE_SYNC_INPUT } else { 'false' }
+            $write = if ($env:WRITE_INPUT) { $env:WRITE_INPUT } else { 'false' }
+          }
+          $python = Join-Path $env:RUNNER_TEMP 'soundsvenlo-venv/Scripts/python.exe'
+          $args = @('-u', '-m', 'scripts.scrapers.usf.jobs.run_soundsvenlo_pipeline', '--listing-start-page', '1', '--listing-max-pages', $listingMaxPages, '--listing-sleep', '0.35', '--max-page-failures', '3', '--detail-limit', $detailLimit, '--detail-sleep', '0.50', '--detail-retry-days', '30', '--stage-limit', $stageLimit, '--promote-limit', $promoteLimit, '--quarantine-limit', '100')
+          if ($skipListing -eq 'true') { $args += '--skip-listing' }
+          if ($fastPriceSync -eq 'true') { $args += '--fast-price-sync' }
+          if ($runDetail -eq 'true') { $args += '--run-detail' }
+          if ($runStagePromote -eq 'true') { $args += '--run-stage-promote' }
+          if ($write -eq 'true') { $args += '--write' }
+          Write-Host "[WORKFLOW] $python $($args -join ' ')"
+          & $python @args 2>&1 | Tee-Object -FilePath 'output/usf-soundsvenlo/pipeline.log'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload pipeline log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usf-soundsvenlo-windows-${{ github.run_id }}
+          path: soundsvenlo/output/usf-soundsvenlo/
+          if-no-files-found: ignore
+      - name: Clean temporary Sounds Venlo environment
+        if: always()
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($name in @('soundsvenlo-venv', 'soundsvenlo-uv-cache')) {
+            $path = Join-Path $env:RUNNER_TEMP $name
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+          }
