@@ -93,16 +93,24 @@ jobs:
           $ErrorActionPreference = 'Stop'
           if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required for managed Python.' }
           $env:UV_PYTHON_INSTALL_DIR = Join-Path $env:LOCALAPPDATA 'Vinylofy\soundsvenlo-python'
-          $venv = Join-Path $env:RUNNER_TEMP 'soundsvenlo-venv'
-          if (Test-Path -LiteralPath $venv) { Remove-Item -LiteralPath $venv -Recurse -Force }
-          uv venv --no-project --seed --managed-python --python 3.11 $venv
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $venv = Join-Path $env:LOCALAPPDATA 'Vinylofy\soundsvenlo-venv'
           $python = Join-Path $venv 'Scripts/python.exe'
+          if (-not (Test-Path -LiteralPath $python)) {
+            Write-Host "Creating persistent Sounds Venlo environment: $venv"
+            uv venv --no-project --seed --managed-python --python 3.11 $venv
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else {
+            Write-Host "Reusing persistent Sounds Venlo environment: $venv"
+          }
           & $python --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (Test-Path -LiteralPath 'requirements.txt') { & $python -m pip install -r requirements.txt; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
           if (Test-Path -LiteralPath 'requirements-scrapers.txt') { & $python -m pip install -r requirements-scrapers.txt; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
           & $python -m pip install requests beautifulsoup4 'psycopg[binary]' python-dotenv playwright
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $env:LOCALAPPDATA 'Vinylofy\playwright-browsers'
+          New-Item -ItemType Directory -Force -Path $env:PLAYWRIGHT_BROWSERS_PATH | Out-Null
+          & $python -m playwright --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $python -m playwright install chromium
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -152,14 +160,22 @@ jobs:
           $ErrorActionPreference = 'Stop'
           if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required for managed Python.' }
           $env:UV_PYTHON_INSTALL_DIR = Join-Path $env:LOCALAPPDATA 'Vinylofy\soundsvenlo-python'
-          $venv = Join-Path $env:RUNNER_TEMP 'soundsvenlo-venv'
-          if (Test-Path -LiteralPath $venv) { Remove-Item -LiteralPath $venv -Recurse -Force }
-          uv venv --no-project --seed --managed-python --python 3.11 $venv
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $venv = Join-Path $env:LOCALAPPDATA 'Vinylofy\soundsvenlo-venv'
           $python = Join-Path $venv 'Scripts/python.exe'
+          if (-not (Test-Path -LiteralPath $python)) {
+            Write-Host "Creating persistent Sounds Venlo environment: $venv"
+            uv venv --no-project --seed --managed-python --python 3.11 $venv
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else {
+            Write-Host "Reusing persistent Sounds Venlo environment: $venv"
+          }
           if (Test-Path -LiteralPath 'requirements.txt') { & $python -m pip install -r requirements.txt; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
           if (Test-Path -LiteralPath 'requirements-scrapers.txt') { & $python -m pip install -r requirements-scrapers.txt; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
           & $python -m pip install requests beautifulsoup4 'psycopg[binary]' python-dotenv playwright
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $env:LOCALAPPDATA 'Vinylofy\playwright-browsers'
+          New-Item -ItemType Directory -Force -Path $env:PLAYWRIGHT_BROWSERS_PATH | Out-Null
+          & $python -m playwright --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $python -m playwright install chromium
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -201,7 +217,8 @@ jobs:
             $fastPriceSync = if ($env:FAST_PRICE_SYNC_INPUT) { $env:FAST_PRICE_SYNC_INPUT } else { 'false' }
             $write = if ($env:WRITE_INPUT) { $env:WRITE_INPUT } else { 'false' }
           }
-          $python = Join-Path $env:RUNNER_TEMP 'soundsvenlo-venv/Scripts/python.exe'
+          $python = Join-Path $env:LOCALAPPDATA 'Vinylofy/soundsvenlo-venv/Scripts/python.exe'
+          $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $env:LOCALAPPDATA 'Vinylofy\playwright-browsers'
           $args = @('-u', '-m', 'scripts.scrapers.usf.jobs.run_soundsvenlo_pipeline', '--listing-start-page', '1', '--listing-max-pages', $listingMaxPages, '--listing-sleep', '0.35', '--max-page-failures', '3', '--detail-limit', $detailLimit, '--detail-sleep', '0.50', '--detail-retry-days', '30', '--stage-limit', $stageLimit, '--promote-limit', $promoteLimit, '--quarantine-limit', '100')
           if ($skipListing -eq 'true') { $args += '--skip-listing' }
           if ($fastPriceSync -eq 'true') { $args += '--fast-price-sync' }
@@ -223,7 +240,7 @@ jobs:
         shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($name in @('soundsvenlo-venv', 'soundsvenlo-uv-cache')) {
+          foreach ($name in @('soundsvenlo-uv-cache')) {
             $path = Join-Path $env:RUNNER_TEMP $name
             if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
           }
