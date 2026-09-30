@@ -2,11 +2,15 @@ import Image from "next/image";
 import { SearchAutocompleteForm } from "@/components/search/search-autocomplete-form";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
+import { redirectInactiveMarket, resolveMarket } from "@/lib/markets";
 
-export default function FollowTheGrooveStartPage() {
+export default async function FollowTheGrooveStartPage({ searchParams }: { searchParams: Promise<{ market?: string }> }) {
+  const requestedMarket = (await searchParams).market;
+  const market = await resolveMarket(requestedMarket);
+  redirectInactiveMarket(requestedMarket, market, "/follow-the-groove");
   return (
     <div className="min-h-screen bg-[#f8f7f4] text-neutral-900">
-      <SiteHeader searchSlot={null} />
+      <SiteHeader searchSlot={null} marketCode={market.country_code} />
       <main className="mx-auto max-w-6xl px-6 py-8 md:py-12">
         <div className="mx-auto max-w-3xl overflow-hidden rounded-3xl border border-neutral-200 bg-white shadow-sm">
           <Image
@@ -30,6 +34,7 @@ export default function FollowTheGrooveStartPage() {
             </label>
             <SearchAutocompleteForm
               initialValue=""
+              marketCode={market.country_code}
               placeholder="Zoek een artiest..."
               variant="global"
               suggestionMode="follow-the-groove"
@@ -41,7 +46,7 @@ export default function FollowTheGrooveStartPage() {
           </div>
         </section>
       </main>
-      <SiteFooter />
+      <SiteFooter marketCode={market.country_code} />
     </div>
   );
 }

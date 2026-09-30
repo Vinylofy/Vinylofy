@@ -1,4 +1,6 @@
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { DEFAULT_MARKET, type PublicMarket } from "@/lib/markets";
+import { marketHref } from "@/lib/market-url";
 import { getReasonCodes, rankCandidates, type FtgRankingCandidate } from "./ranking";
 import {
   selectDedicatedDestinations,
@@ -84,12 +86,12 @@ function isAllowedProduct(product: ProductRow): boolean {
   return !BLACKLISTED_FORMAT_LABELS.has((product.format_label ?? "").trim().toUpperCase());
 }
 
-function buildSearchHref(searchArtist: string): string {
+function buildSearchHref(searchArtist: string, marketCode: string): string {
   const params = new URLSearchParams({
     q: searchArtist,
     artist_filter: searchArtist,
   });
-  return `/search?${params.toString()}`;
+  return marketHref(`/search?${params.toString()}`, marketCode);
 }
 
 function chunks<T>(values: T[], size: number): T[][] {
@@ -126,6 +128,7 @@ function getFactualTarget(edge: EdgeRow, sourceArtistId: string): string {
 
 async function loadPresentationData(
   artists: ArtistRow[],
+  market: PublicMarket,
 ): Promise<Map<string, FtgArtistView>> {
   const supabase = createSupabaseAdminClient();
   const artistIds = artists.map((artist) => artist.id);
@@ -139,7 +142,7 @@ async function loadPresentationData(
   const productIds = [...new Set(links.map((link) => link.product_id))];
   const productChunks = chunks(productIds, 150);
 
-  const [productPages, bestPricePages, freshPricePages] = await Promise.all([
+  const [productPages, bestPricePages] = await Promise.all([
     Promise.all(
       productChunks.map((ids) =>
         unwrap<ProductRow>(
@@ -156,25 +159,10 @@ async function loadPresentationData(
       productChunks.map((ids) =>
         unwrap<{ product_id: string; lowest_fresh_price: number | string | null }>(
           supabase
-            .from("product_best_prices_v1")
+            .from("market_product_best_prices_v1")
             .select("product_id, lowest_fresh_price")
+            .eq("market_code", market.country_code)
             .in("product_id", ids),
-        ),
-      ),
-    ),
-    Promise.all(
-      productChunks.map((ids) =>
-        unwrap<{ product_id: string }>(
-          supabase
-            .from("prices")
-            .select("product_id")
-            .in("product_id", ids)
-            .eq("is_active", true)
-            .in("availability", ["in_stock", "unknown"])
-            .gte(
-              "last_seen_at",
-              new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(),
-            ),
         ),
       ),
     ),
@@ -183,11 +171,7 @@ async function loadPresentationData(
   const products = productPages.flat();
   const productsById = new Map(products.map((product) => [product.id, product]));
   const currentlyAvailableProductIds = new Set([
-    ...bestPricePages
-      .flat()
-      .filter((row) => row.lowest_fresh_price !== null)
-      .map((row) => row.product_id),
-    ...freshPricePages.flat().map((row) => row.product_id),
+    ...bestPricePages.flat().map((row) => row.product_id),
   ]);
   const coverLinks: ArtistProductLink[] = links.map((link) => ({
     artistId: link.artist_id,
@@ -252,7 +236,7 @@ async function loadPresentationData(
       representativeCover: covers.get(artist.id)!,
       productCount: selected?.productIds.size ?? 0,
       searchArtist,
-      searchHref: searchArtist ? buildSearchHref(searchArtist) : null,
+      searchHref: searchArtist ? buildSearchHref(searchArtist, market.country_code) : null,
     });
   }
   return result;
@@ -446,6 +430,7 @@ export async function getFollowTheGroovePage(input: {
   mode?: "trail" | "search";
   limit?: number;
   artistName?: string;
+  market?: PublicMarket;
 }): Promise<FollowTheGroovePageData | null> {
   const mode = input.mode ?? "trail";
   const limit = Math.min(Math.max(input.limit ?? FTG_MAX_CANDIDATES, 0), FTG_MAX_CANDIDATES);
@@ -595,7 +580,7 @@ export async function getFollowTheGroovePage(input: {
     activeArtist,
     ...candidateArtists,
     ...onwardArtists,
-  ]);
+  ], input.market ?? DEFAULT_MARKET);
   const similaritiesByTarget = new Map(similarities.map((row) => [row.target_artist_id, row]));
   const edgeTargetIds = new Set(edges.map((edge) => getFactualTarget(edge, activeArtist.id)));
 

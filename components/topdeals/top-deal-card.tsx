@@ -2,10 +2,12 @@ import Link from "next/link";
 
 import { CoverImage } from "@/components/cover-image";
 import { formatEuro, type TopDealItem } from "@/lib/vinylofy-data";
+import { marketHref } from "@/lib/market-url";
 
 type TopDealCardProps = {
   deal: TopDealItem;
   rank: number;
+  marketCode?: string;
 };
 
 
@@ -14,11 +16,11 @@ function formatOfferCount(count: number): string {
 }
 
 
-export function TopDealCard({ deal, rank }: TopDealCardProps) {
+export function TopDealCard({ deal, rank, marketCode = "NL" }: TopDealCardProps) {
 
   return (
     <Link
-      href={`/product/${deal.id}`}
+      href={marketHref(`/product/${deal.id}`, marketCode)}
       className="group flex h-full flex-col overflow-hidden rounded-3xl border border-neutral-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:border-neutral-300 hover:shadow-md"
     >
       <div className="flex gap-4 p-4">
@@ -50,10 +52,10 @@ export function TopDealCard({ deal, rank }: TopDealCardProps) {
           </div>
 
           <p className="mt-4 text-lg font-semibold text-neutral-950">
-            Vanaf {formatEuro(deal.lowestPrice)}
+            Vanaf {formatEuro(deal.lowestPrice, deal.lowestOffer.currency)}
           </p>
           <p className="mt-1 text-sm font-medium text-emerald-700">
-            Tot {formatEuro(deal.priceDifference)} voordeliger dan elders
+            Tot {formatEuro(deal.priceDifference, deal.lowestOffer.currency)} voordeliger dan elders
           </p>
         </div>
       </div>
@@ -63,13 +65,13 @@ export function TopDealCard({ deal, rank }: TopDealCardProps) {
           <div className="flex items-center justify-between gap-3">
             <dt className="text-neutral-500">Laagste prijs</dt>
             <dd className="truncate text-right font-medium text-neutral-900">
-              {deal.lowestOffer.name} · {formatEuro(deal.lowestOffer.price)}
+              {deal.lowestOffer.name} · {formatEuro(deal.lowestOffer.price, deal.lowestOffer.currency)}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-3">
             <dt className="text-neutral-500">Hoogste gevonden</dt>
             <dd className="truncate text-right font-medium text-neutral-900">
-              {deal.highestOffer.name} · {formatEuro(deal.highestOffer.price)}
+              {deal.highestOffer.name} · {formatEuro(deal.highestOffer.price, deal.highestOffer.currency)}
             </dd>
           </div>
         </dl>

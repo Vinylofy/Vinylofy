@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent, KeyboardEvent } from "react";
 import { useRouter } from "next/navigation";
+import { marketHref } from "@/lib/market-url";
 
 type SearchSuggestion = {
   id: string;
@@ -14,6 +15,7 @@ type SearchSuggestion = {
 };
 
 type SearchAutocompleteFormProps = {
+  marketCode?: string;
   initialValue?: string;
   placeholder: string;
   variant: "global" | "search";
@@ -37,6 +39,7 @@ function buildSearchHref(query: string) {
 }
 
 export function SearchAutocompleteForm({
+  marketCode = "NL",
   initialValue = "",
   placeholder,
   variant,
@@ -98,7 +101,7 @@ export function SearchAutocompleteForm({
         setIsLoading(true);
 
         const response = await fetch(
-          `/api/search-suggest?q=${encodeURIComponent(trimmed)}&mode=${encodeURIComponent(suggestionMode)}`,
+          `/api/search-suggest?q=${encodeURIComponent(trimmed)}&mode=${encodeURIComponent(suggestionMode)}&market=${encodeURIComponent(marketCode)}`,
           {
             method: "GET",
             signal: controller.signal,
@@ -138,7 +141,7 @@ export function SearchAutocompleteForm({
       window.clearTimeout(timeoutId);
       controller.abort();
     };
-  }, [canSuggest, noResultsLabel, query, suggestionMode]);
+  }, [canSuggest, noResultsLabel, query, suggestionMode, marketCode]);
 
   const activeSuggestion = useMemo(() => {
     if (activeIndex < 0 || activeIndex >= suggestions.length) {
@@ -170,14 +173,14 @@ export function SearchAutocompleteForm({
   function goToSearch(nextQuery: string) {
     setCanSuggest(false);
     closeAutocomplete();
-    router.push(buildSearchHref(nextQuery));
+    router.push(marketHref(buildSearchHref(nextQuery), marketCode));
   }
 
   function chooseSuggestion(suggestion: SearchSuggestion) {
     setQuery(suggestion.searchValue);
     setCanSuggest(false);
     closeAutocomplete();
-    router.push(suggestion.href);
+    router.push(marketHref(suggestion.href, marketCode));
   }
 
   function submitSearch(event?: FormEvent) {
@@ -260,6 +263,7 @@ export function SearchAutocompleteForm({
                 compact ? "px-3 py-1 text-sm" : "px-3 py-2 text-sm md:text-base",
               ].join(" ")}
               aria-autocomplete="list"
+              role="combobox"
               aria-expanded={open}
               aria-controls="vinylofy-search-suggestions"
             />
@@ -293,6 +297,7 @@ export function SearchAutocompleteForm({
               placeholder={placeholder}
               className="h-11 w-full rounded-full border border-neutral-300 bg-white pl-5 pr-28 text-sm text-neutral-900 shadow-sm outline-none transition focus:border-neutral-400"
               aria-autocomplete="list"
+              role="combobox"
               aria-expanded={open}
               aria-controls="vinylofy-search-suggestions"
             />

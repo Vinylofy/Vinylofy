@@ -1038,7 +1038,7 @@ class FrontendSourceContractTests(unittest.TestCase):
 
     def test_start_again_returns_to_ftg_entrypoint_without_ui_redesign(self) -> None:
         page = (ROOT / "app/follow-the-groove/[...trail]/page.tsx").read_text()
-        self.assertIn('href="/follow-the-groove"', page)
+        self.assertIn('href={marketHref("/follow-the-groove", market.country_code)}', page)
         self.assertIn("Start opnieuw", page)
 
     def test_start_page_and_search_suggestions_have_no_external_api_or_admin_client(self) -> None:
@@ -1053,7 +1053,7 @@ class FrontendSourceContractTests(unittest.TestCase):
         homepage = (ROOT / "components/home/hero-search.tsx").read_text()
         cards = (ROOT / "components/home/home-action-cards.tsx").read_text()
         self.assertEqual(cards.count('href: "/follow-the-groove"'), 1)
-        self.assertIn('imageSrc: "/follow-the-groove/ftg4.png"', cards)
+        self.assertIn('imageSrc: "/home-cards/blok4.png"', cards)
         self.assertIn("grid-cols-2", cards)
         self.assertIn("md:grid-cols-4", cards)
         self.assertIn("GlobalSearchBar", homepage)

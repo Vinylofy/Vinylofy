@@ -8,25 +8,32 @@ import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { getFollowTheGroovePage } from "@/lib/follow-the-groove/data";
 import { isValidTrail } from "@/lib/follow-the-groove/presentation";
+import { redirectInactiveMarket, resolveMarket } from "@/lib/markets";
+import { marketHref } from "@/lib/market-url";
 
 type FollowTheGroovePageProps = {
   params: Promise<{ trail?: string[] }>;
+  searchParams: Promise<{ market?: string }>;
 };
 
-export default async function FollowTheGroovePage({ params }: FollowTheGroovePageProps) {
+export default async function FollowTheGroovePage({ params, searchParams }: FollowTheGroovePageProps) {
   const { trail = [] } = await params;
+  const requestedMarket = (await searchParams).market;
+  const market = await resolveMarket(requestedMarket);
+  redirectInactiveMarket(requestedMarket, market, `/follow-the-groove/${trail.join("/")}`);
   if (!isValidTrail(trail)) notFound();
 
   const data = await getFollowTheGroovePage({
     trailMbids: trail,
     mode: "trail",
     limit: 5,
+    market,
   });
   if (!data) notFound();
 
   return (
     <div className="min-h-screen bg-[#f8f7f4] text-neutral-900">
-      <SiteHeader />
+      <SiteHeader marketCode={market.country_code} />
       <main className="mx-auto max-w-7xl px-4 py-6 md:px-6 md:py-10">
         <div className="grid gap-8 lg:grid-cols-[220px_minmax(0,1fr)] lg:gap-10">
           <aside className="space-y-5 lg:sticky lg:top-28 lg:self-start">
@@ -38,9 +45,9 @@ export default async function FollowTheGroovePage({ params }: FollowTheGroovePag
             </div>
             <div className="space-y-3">
               <h2 className="border-l-2 border-orange-500 pl-3 text-base font-semibold text-neutral-950">Jouw groove</h2>
-              <GrooveTrail trail={data.trail} />
+              <GrooveTrail trail={data.trail} marketCode={market.country_code} />
               <Link
-                href="/follow-the-groove"
+                href={marketHref("/follow-the-groove", market.country_code)}
                 className="inline-flex rounded-full px-3 py-2 text-sm text-neutral-600 transition hover:bg-neutral-50 hover:text-neutral-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300"
               >
                 Start opnieuw
@@ -70,6 +77,7 @@ export default async function FollowTheGroovePage({ params }: FollowTheGroovePag
                     key={candidate.id}
                     candidate={candidate}
                     trailMbids={trail}
+                    marketCode={market.country_code}
                   />
                 ))}
               </div>
@@ -78,7 +86,7 @@ export default async function FollowTheGroovePage({ params }: FollowTheGroovePag
           </div>
         </div>
       </main>
-      <SiteFooter />
+      <SiteFooter marketCode={market.country_code} />
     </div>
   );
 }

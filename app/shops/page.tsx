@@ -4,6 +4,7 @@ import { ShopTypeBadge } from "@/components/shop-type-badge";
 import { getShopHighlights, type ShopHighlights } from "@/lib/shop-highlights";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isMissingShopTypeColumn, type ShopType } from "@/lib/shop-type";
+import { getEligibleShopIds, redirectInactiveMarket, resolveMarket } from "@/lib/markets";
 
 type ShopRow = {
   id: string;
@@ -24,8 +25,12 @@ const EXCLUDED_PUBLIC_SHOP_DOMAINS = new Set([
 
 export const dynamic = "force-dynamic";
 
-export default async function ShopsPage() {
+export default async function ShopsPage({ searchParams }: { searchParams: Promise<{ market?: string }> }) {
+  const requestedMarket = (await searchParams).market;
+  const market = await resolveMarket(requestedMarket);
+  redirectInactiveMarket(requestedMarket, market, "/shops");
   const supabase = createSupabaseServerClient();
+  const eligibleShopIds = new Set(await getEligibleShopIds(market));
 
   const fetchShops = (columns: string) =>
     supabase.from("shops").select(columns).order("name", { ascending: true });
@@ -44,16 +49,17 @@ export default async function ShopsPage() {
   const shops = ((data ?? []) as unknown as ShopRow[]).filter(
     (shop) =>
       shop.is_active &&
+      eligibleShopIds.has(shop.id) &&
       !EXCLUDED_PUBLIC_SHOP_DOMAINS.has(shop.domain.trim().toLowerCase()),
   );
 
   const highlights = shops.length > 0
-    ? await getShopHighlights()
+    ? await getShopHighlights(market)
     : new Map<string, ShopHighlights>();
 
   return (
     <div className="min-h-screen bg-white text-neutral-900">
-      <SiteHeader />
+      <SiteHeader marketCode={market.country_code} />
 
       <main className="mx-auto max-w-5xl px-6 py-12">
         <div className="mb-8">
@@ -114,7 +120,7 @@ export default async function ShopsPage() {
                   ) : null}
 
                   <p className="mt-3 text-sm text-neutral-500">
-                    Land: {shop.country}
+                    Vestigingsland: {shop.country}
                   </p>
                 </article>
               );
@@ -123,7 +129,7 @@ export default async function ShopsPage() {
         )}
       </main>
 
-      <SiteFooter />
+      <SiteFooter marketCode={market.country_code} />
     </div>
   );
 }

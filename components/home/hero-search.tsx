@@ -2,11 +2,16 @@ import Image from "next/image";
 
 import { GlobalSearchBar } from "@/components/global-search-bar";
 import { HomeActionCards } from "@/components/home/home-action-cards";
+import { MarketSelector } from "@/components/market-selector";
+import type { PublicMarket } from "@/lib/markets";
 
-export function HeroSearch() {
+export function HeroSearch({ marketCode, markets }: { marketCode: string; markets: PublicMarket[] }) {
   return (
-    <section className="px-6 pb-4 pt-4 md:pb-6 md:pt-6">
-      <div className="mx-auto flex max-w-6xl flex-col items-center text-center">
+    <section className="px-4 pb-4 pt-3 sm:px-6 md:pb-6">
+      <div className="mx-auto flex max-w-6xl justify-end">
+        <MarketSelector markets={markets} selected={marketCode} />
+      </div>
+      <div className="mx-auto mt-5 flex max-w-6xl flex-col items-center text-center">
         <div className="mb-3 w-full max-w-[220px] md:mb-4 md:max-w-[270px]">
           <Image
             src="/vinylofy-hero-logo-white3.png"
@@ -19,7 +24,7 @@ export function HeroSearch() {
         </div>
 
         <div className="w-full max-w-[920px]">
-          <GlobalSearchBar />
+          <GlobalSearchBar marketCode={marketCode} />
         </div>
 
         <p className="mt-2 text-sm text-neutral-500">
@@ -27,7 +32,7 @@ export function HeroSearch() {
         </p>
 
         <div className="mt-6 w-full max-w-[920px] md:mt-8">
-          <HomeActionCards />
+          <HomeActionCards marketCode={marketCode} />
         </div>
 
       </div>

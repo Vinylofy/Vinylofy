@@ -1,5 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
+import { marketHref } from "@/lib/market-url";
 
 type QuickLink = {
   href: string;
@@ -35,7 +36,7 @@ const links: QuickLink[] = [
   },
 ];
 
-export function HomeActionCards() {
+export function HomeActionCards({ marketCode = "NL" }: { marketCode?: string }) {
   return (
     <nav
       aria-label="Snelle navigatie"
@@ -44,7 +45,7 @@ export function HomeActionCards() {
       {links.map(({ href, label, subtitle, imageSrc }) => (
         <Link
           key={href}
-          href={href}
+          href={marketHref(href, marketCode)}
           aria-label={label}
           className="group flex flex-col items-center justify-start text-center"
         >

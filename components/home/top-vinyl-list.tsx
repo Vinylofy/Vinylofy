@@ -37,7 +37,7 @@ export function TopVinylList({ items }: TopVinylListProps) {
               </div>
 
               <div className="whitespace-nowrap text-sm font-semibold text-orange-600 md:text-[15px]">
-                vanaf {formatEuro(item.lowestPrice)}
+                vanaf {formatEuro(item.lowestPrice, item.currency)}
               </div>
             </div>
           ))}

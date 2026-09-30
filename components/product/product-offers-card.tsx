@@ -1,4 +1,4 @@
-import { getVisibleOfferSummary } from "@/lib/offer-summary";
+import { getVisibleBasePriceOfferSummary } from "@/lib/offer-summary";
 import { formatOfferDomain, formatRelativeFreshness } from "@/lib/product-page-format";
 import { formatEuro, type SearchShopOffer } from "@/lib/vinylofy-data";
 import { ShopTypeBadge } from "@/components/shop-type-badge";
@@ -8,7 +8,7 @@ type ProductOffersCardProps = {
 };
 
 export function ProductOffersCard({ offers }: ProductOffersCardProps) {
-  const sortedOffers = getVisibleOfferSummary(offers, offers.length);
+  const sortedOffers = getVisibleBasePriceOfferSummary(offers, offers.length);
 
   return (
     <section className="rounded-xl border border-[rgba(230,126,34,0.16)] bg-white p-4 shadow-sm md:p-5">
@@ -40,9 +40,9 @@ export function ProductOffersCard({ offers }: ProductOffersCardProps) {
               offer.estimatedShippingPrice === null
                 ? "Verzendkosten onbekend"
                 : [
-                    `Geschatte verzendkosten zijn ${formatEuro(offer.estimatedShippingPrice)}.`,
+                    `Geschatte verzendkosten zijn ${formatEuro(offer.estimatedShippingPrice, offer.currency)}.`,
                     offer.freeShippingThresholdPrice !== null
-                      ? `Deze webshop verzendt bij bestellingen vanaf ${formatEuro(offer.freeShippingThresholdPrice)} gratis.`
+                      ? `Deze webshop verzendt bij bestellingen vanaf ${formatEuro(offer.freeShippingThresholdPrice, offer.currency)} gratis.`
                       : null,
                   ]
                     .filter(Boolean)
@@ -77,7 +77,7 @@ export function ProductOffersCard({ offers }: ProductOffersCardProps) {
                     className="text-lg font-semibold tracking-tight text-[#3f2616] md:text-xl"
                     title={shippingTitle}
                   >
-                    {formatEuro(offer.price)}
+                    {formatEuro(offer.price, offer.currency)}
                   </p>
                   {offer.estimatedShippingPrice !== null ? (
                     <p
@@ -86,7 +86,7 @@ export function ProductOffersCard({ offers }: ProductOffersCardProps) {
                     >
                       {offer.freeShippingApplied
                         ? "Gratis"
-                        : `+ ${formatEuro(offer.estimatedShippingPrice)}`}
+                        : `+ ${formatEuro(offer.estimatedShippingPrice, offer.currency)}`}
                     </p>
                   ) : (
                     <p
@@ -101,7 +101,7 @@ export function ProductOffersCard({ offers }: ProductOffersCardProps) {
                       className="mt-0.5 whitespace-nowrap text-xs font-medium text-[#7d6b5d]"
                       title={shippingTitle}
                     >
-                      ± {formatEuro(offer.estimatedTotalPrice)} totaal
+                      ± {formatEuro(offer.estimatedTotalPrice, offer.currency)} totaal
                     </p>
                   ) : null}
                 </div>

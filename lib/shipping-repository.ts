@@ -1,7 +1,7 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { ShippingRule } from "./shipping";
 
-export async function getShippingRulesMap(): Promise<Map<string, ShippingRule>> {
+export async function getShippingRulesMap(countryCode = "NL"): Promise<Map<string, ShippingRule>> {
   const supabase = createSupabaseServerClient();
 
   const { data, error } = await supabase
@@ -14,7 +14,7 @@ export async function getShippingRulesMap(): Promise<Map<string, ShippingRule>> 
       confidence
     `)
     .eq("active", true)
-    .eq("country_code", "NL");
+    .eq("country_code", countryCode);
 
   if (error) {
     console.error("[shipping] failed to load shipping rules");

@@ -2,13 +2,16 @@ import Link from "next/link";
 import { CoverImage } from "@/components/cover-image";
 import { buildGrooveHref, formatEntityType } from "@/lib/follow-the-groove/presentation";
 import type { FtgCandidateView } from "@/lib/follow-the-groove/types";
+import { marketHref } from "@/lib/market-url";
 
 export function GrooveCandidateCard({
   candidate,
   trailMbids,
+  marketCode = "NL",
 }: {
   candidate: FtgCandidateView;
   trailMbids: string[];
+  marketCode?: string;
 }) {
   return (
     <article className="flex h-full flex-col rounded-3xl border border-neutral-200 bg-white p-4 shadow-sm md:p-5">
@@ -44,7 +47,7 @@ export function GrooveCandidateCard({
 
       <div className="mt-5 flex min-h-11 flex-col items-stretch justify-end">
         <Link
-          href={buildGrooveHref(trailMbids, candidate.mbid)}
+          href={marketHref(buildGrooveHref(trailMbids, candidate.mbid), marketCode)}
           prefetch={false}
           className="inline-flex min-h-11 items-center justify-center rounded-full border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-800 transition hover:border-orange-300 hover:bg-orange-50 hover:text-orange-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 focus-visible:ring-offset-2"
         >

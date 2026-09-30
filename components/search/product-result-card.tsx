@@ -7,9 +7,11 @@ import {
 } from "@/lib/offer-summary";
 import { getShopCountryCode } from "@/lib/shop-country";
 import { formatEuro, type SearchResultItem } from "@/lib/vinylofy-data";
+import { marketHref } from "@/lib/market-url";
 
 type ProductResultCardProps = {
   item: SearchResultItem;
+  marketCode?: string;
 };
 
 function formatCtaLabel(count: number): string {
@@ -20,8 +22,8 @@ function OfferCountLabel({ count }: { count: number }) {
   return count === 1 ? <p>1 aanbieder gevonden</p> : <p>{count} aanbieders gevonden</p>;
 }
 
-export function ProductResultCard({ item }: ProductResultCardProps) {
-  const visibleOffers = getVisibleBasePriceOfferSummary(item.shops, 3);
+export function ProductResultCard({ item, marketCode = "NL" }: ProductResultCardProps) {
+  const visibleOffers = getVisibleBasePriceOfferSummary(item.shops, 1);
   const visibleShopCount = item.shops.length;
   const effectiveOfferCount = Math.max(item.foundIn ?? 0, visibleShopCount);
   const ctaLabel = formatCtaLabel(effectiveOfferCount);
@@ -64,7 +66,7 @@ export function ProductResultCard({ item }: ProductResultCardProps) {
                   </div>
 
                   <div className="shrink-0 text-right text-sm font-medium text-neutral-950">
-                    {formatEuro(shop.price)}
+                    {formatEuro(shop.price, shop.currency)}
                   </div>
                 </div>
               );
@@ -79,7 +81,7 @@ export function ProductResultCard({ item }: ProductResultCardProps) {
               </div>
 
               <Link
-                href={`/product/${item.id}`}
+                href={marketHref(`/product/${item.id}`, marketCode)}
                 className="inline-flex items-center justify-center rounded-full bg-orange-500 px-4 py-2 text-sm font-medium transition hover:bg-orange-600 md:ml-4 !text-white hover:!text-white"
               >
                 {ctaLabel}

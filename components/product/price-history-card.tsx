@@ -11,6 +11,7 @@ type PriceHistoryCardProps = {
   currentPrice: number | null;
   points: ProductPriceHistoryPoint[];
   asOfDay?: string;
+  currency?: string;
 };
 
 const CHART_DAYS = 30;
@@ -127,6 +128,7 @@ export function PriceHistoryCard({
   currentPrice,
   points,
   asOfDay,
+  currency = "EUR",
 }: PriceHistoryCardProps) {
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
 
@@ -330,7 +332,7 @@ export function PriceHistoryCard({
                       fill={isActive ? "#e67e22" : "#fffaf6"}
                       stroke="#e67e22"
                       strokeWidth="4"
-                      aria-label={`${formatDayLabel(point.day)} — ${formatEuro(point.price)}`}
+                      aria-label={`${formatDayLabel(point.day)} — ${formatEuro(point.price, currency)}`}
                       onMouseEnter={() => setActiveIndex(index)}
                       onFocus={() => setActiveIndex(index)}
                       onMouseLeave={() => setActiveIndex(null)}
@@ -361,7 +363,7 @@ export function PriceHistoryCard({
             <div className="mt-3 rounded-xl border border-[rgba(63,38,22,0.08)] bg-[#fffdfb] px-3.5 py-3">
               <p className="text-sm font-medium text-[#3f2616]">
                 {formatDayLabel(activePoint.day)} • Laagste dagprijs{" "}
-                {formatEuro(activePoint.price)}
+                {formatEuro(activePoint.price, currency)}
               </p>
               <p className="mt-1 text-xs text-[#8a7769]">
                 Gezien bij {activePoint.shopCount}{" "}
@@ -376,7 +378,7 @@ export function PriceHistoryCard({
         <div className="rounded-xl border border-[rgba(230,126,34,0.18)] bg-[#fffaf6] px-3 py-3">
           <p className="text-xs uppercase tracking-[0.08em] text-[#8a7769]">Nu</p>
           <p className="mt-1.5 text-lg font-semibold text-[#3f2616]">
-            {formatEuro(currentPrice ?? latestPoint?.price ?? null)}
+            {formatEuro(currentPrice ?? latestPoint?.price ?? null, currency)}
           </p>
         </div>
         <div className="rounded-xl border border-[rgba(230,126,34,0.18)] bg-[#fffaf6] px-3 py-3">
@@ -384,7 +386,7 @@ export function PriceHistoryCard({
             Laagste prijs in {CHART_LABEL}
           </p>
           <p className="mt-1.5 text-lg font-semibold text-[#3f2616]">
-            {formatEuro(lowestInWindow)}
+            {formatEuro(lowestInWindow, currency)}
           </p>
         </div>
         <div className="rounded-xl border border-[rgba(230,126,34,0.18)] bg-[#fffaf6] px-3 py-3">

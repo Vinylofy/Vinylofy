@@ -2,6 +2,7 @@
 
 import type { ChangeEvent } from "react";
 import { useRouter } from "next/navigation";
+import { marketHref } from "@/lib/market-url";
 
 import {
   SEARCH_SORT_OPTIONS,
@@ -12,12 +13,14 @@ type SearchSortSelectProps = {
   value: SearchSort;
   query: string;
   artistFilter: string;
+  marketCode?: string;
 };
 
 export function SearchSortSelect({
   value,
   query,
   artistFilter,
+  marketCode = "NL",
 }: SearchSortSelectProps) {
   const router = useRouter();
 
@@ -38,7 +41,7 @@ export function SearchSortSelect({
     params.set("sort", nextSort);
 
     router.replace(
-      `/search?${params.toString()}`,
+      marketHref(`/search?${params.toString()}`, marketCode),
       {
         scroll: false,
       },

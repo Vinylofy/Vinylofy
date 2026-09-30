@@ -2,8 +2,9 @@ import Link from "next/link";
 import { buildGrooveHref } from "@/lib/follow-the-groove/presentation";
 import { trailPrefix } from "@/lib/follow-the-groove/trail";
 import type { FtgTrailItem } from "@/lib/follow-the-groove/types";
+import { marketHref } from "@/lib/market-url";
 
-function TrailItems({ trail, vertical = false }: { trail: FtgTrailItem[]; vertical?: boolean }) {
+function TrailItems({ trail, vertical = false, marketCode }: { trail: FtgTrailItem[]; vertical?: boolean; marketCode: string }) {
   return (
     <ol className={vertical ? "relative space-y-1" : "flex min-w-max items-center gap-2 text-sm text-neutral-500"}>
       {trail.map((item, index) => {
@@ -23,7 +24,7 @@ function TrailItems({ trail, vertical = false }: { trail: FtgTrailItem[]; vertic
                 </span>
               ) : (
                 <Link
-                  href={buildGrooveHref(trailPrefix(trail, index).map((entry) => entry.mbid))}
+                  href={marketHref(buildGrooveHref(trailPrefix(trail, index).map((entry) => entry.mbid)), marketCode)}
                   prefetch={false}
                   className={vertical ? "min-w-0 flex-1 rounded-xl px-3 py-2 text-neutral-600 transition hover:bg-neutral-50 hover:text-neutral-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300" : "rounded-sm transition hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300"}
                 >
@@ -43,14 +44,14 @@ function TrailItems({ trail, vertical = false }: { trail: FtgTrailItem[]; vertic
   );
 }
 
-export function GrooveTrail({ trail }: { trail: FtgTrailItem[] }) {
+export function GrooveTrail({ trail, marketCode = "NL" }: { trail: FtgTrailItem[]; marketCode?: string }) {
   return (
     <>
       <nav aria-label="Jouw groove" className="hidden lg:block">
-        <TrailItems trail={trail} vertical />
+        <TrailItems trail={trail} vertical marketCode={marketCode} />
       </nav>
       <nav aria-label="Gevolgde groove" className="overflow-x-auto pb-1 lg:hidden">
-        <TrailItems trail={trail} />
+        <TrailItems trail={trail} marketCode={marketCode} />
       </nav>
     </>
   );

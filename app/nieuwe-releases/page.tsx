@@ -12,6 +12,8 @@ import {
   getUpcomingReleaseCalendarItems,
   type ReleaseCalendarItem,
 } from "@/lib/vinylofy-data";
+import { redirectInactiveMarket, resolveMarket } from "@/lib/markets";
+import { marketHref } from "@/lib/market-url";
 
 export const dynamic = "force-dynamic";
 
@@ -36,9 +38,9 @@ function formatCompactReleaseDate(value: string): string {
   }).format(new Date(`${value}T00:00:00Z`));
 }
 
-function formatVanafPrice(value: number | null | undefined): string | null {
+function formatVanafPrice(value: number | null | undefined, currency = "EUR"): string | null {
   if (value === null || value === undefined) return null;
-  return `Vanaf ${formatEuro(value)}`;
+  return `Vanaf ${formatEuro(value, currency)}`;
 }
 
 function groupByReleaseDate(releases: ReleaseCalendarItem[]) {
@@ -62,13 +64,13 @@ function cleanReleaseTitle(value: string): string {
     .trim();
 }
 
-function ReleaseTitleLink({ release }: { release: ReleaseCalendarItem }) {
+function ReleaseTitleLink({ release, marketCode }: { release: ReleaseCalendarItem; marketCode: string }) {
   const displayTitle = cleanReleaseTitle(release.title);
 
   if (release.productId) {
     return (
       <Link
-        href={`/product/${release.productId}`}
+        href={marketHref(`/product/${release.productId}`, marketCode)}
         className="font-medium text-neutral-950 transition hover:text-orange-600"
       >
         {displayTitle}
@@ -88,10 +90,10 @@ function ReleaseTitleLink({ release }: { release: ReleaseCalendarItem }) {
   );
 }
 
-function ReleaseCard({ release }: { release: ReleaseCalendarItem }) {
-  const href = release.productId ? `/product/${release.productId}` : release.sourceUrl;
+function ReleaseCard({ release, marketCode }: { release: ReleaseCalendarItem; marketCode: string }) {
+  const href = release.productId ? marketHref(`/product/${release.productId}`, marketCode) : release.sourceUrl;
   const displayTitle = cleanReleaseTitle(release.title);
-  const displayPrice = formatVanafPrice(release.lowestPrice);
+  const displayPrice = formatVanafPrice(release.lowestPrice, release.currency);
 
   const card = (
     <article className="h-full overflow-hidden rounded-3xl border border-neutral-200 bg-white shadow-sm">
@@ -157,9 +159,12 @@ function ReleaseCard({ release }: { release: ReleaseCalendarItem }) {
     </a>
   );
 }
-export default async function NieuweReleasesPage() {
+export default async function NieuweReleasesPage({ searchParams }: { searchParams: Promise<{ market?: string }> }) {
+  const requestedMarket = (await searchParams).market;
+  const market = await resolveMarket(requestedMarket);
+  redirectInactiveMarket(requestedMarket, market, "/nieuwe-releases");
   const [releases, upcomingReleases] = await Promise.all([
-    getReleaseCalendarItems(180),
+    getReleaseCalendarItems(180, market),
     getUpcomingReleaseCalendarItems(500),
   ]);
   const groupedReleases = groupByReleaseDate(releases);
@@ -167,7 +172,7 @@ export default async function NieuweReleasesPage() {
 
   return (
     <main className="min-h-screen bg-neutral-50 text-neutral-950">
-      <SiteHeader searchSlot={<SearchControls initialQuery="" />} />
+      <SiteHeader marketCode={market.country_code} searchSlot={<SearchControls initialQuery="" marketCode={market.country_code} />} />
 
       <section className="mx-auto max-w-6xl px-6 pb-6 pt-8 md:pt-10">
         <div className="max-w-3xl">
@@ -217,7 +222,7 @@ export default async function NieuweReleasesPage() {
 
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                   {group.items.map((release) => (
-                    <ReleaseCard key={release.id} release={release} />
+                    <ReleaseCard key={release.id} release={release} marketCode={market.country_code} />
                   ))}
                 </div>
               </section>
@@ -267,7 +272,7 @@ export default async function NieuweReleasesPage() {
                         {release.artist}
                       </td>
                       <td className="px-4 py-3">
-                        <ReleaseTitleLink release={release} />
+                        <ReleaseTitleLink release={release} marketCode={market.country_code} />
                       </td>
                     </tr>
                   ))}
@@ -285,7 +290,7 @@ export default async function NieuweReleasesPage() {
                     {release.artist}
                   </h3>
                   <p className="mt-1 text-sm leading-6 text-neutral-700">
-                    <ReleaseTitleLink release={release} />
+                    <ReleaseTitleLink release={release} marketCode={market.country_code} />
                   </p>
                 </article>
               ))}
@@ -294,7 +299,7 @@ export default async function NieuweReleasesPage() {
         )}
       </section>
 
-      <SiteFooter />
+      <SiteFooter marketCode={market.country_code} />
     </main>
   );
 }

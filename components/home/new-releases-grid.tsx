@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { CoverImage } from "@/components/cover-image";
 import { formatEuro, type HomeProduct } from "@/lib/vinylofy-data";
+import { marketHref } from "@/lib/market-url";
 
 type NewReleasesGridProps = {
   items: HomeProduct[];
@@ -25,7 +26,7 @@ export function NewReleasesGrid({ items }: NewReleasesGridProps) {
           {items.map((item) => (
             <Link
               key={item.id}
-              href={`/search?q=${encodeURIComponent(`${item.artist} ${item.title}`)}`}
+              href={marketHref(`/search?q=${encodeURIComponent(`${item.artist} ${item.title}`)}`, item.marketCode)}
               className="rounded-2xl border border-neutral-200 bg-white p-4 transition hover:border-orange-300"
             >
               <CoverImage
@@ -41,7 +42,7 @@ export function NewReleasesGrid({ items }: NewReleasesGridProps) {
                   {item.title}
                 </p>
                 <p className="mt-2 text-sm font-semibold text-orange-600">
-                  vanaf {formatEuro(item.lowestPrice)}
+                  vanaf {formatEuro(item.lowestPrice, item.currency)}
                 </p>
               </div>
             </Link>

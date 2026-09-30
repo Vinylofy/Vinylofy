@@ -3,6 +3,7 @@ import { enrichOffersWithShipping } from "@/lib/shipping";
 import { getShippingRulesMap } from "@/lib/shipping-repository";
 import { resolveCoverUrl } from "@/lib/cover-url";
 import { isMissingShopTypeColumn, type ShopType } from "@/lib/shop-type";
+import { DEFAULT_MARKET, getEligibleShopIds, type PublicMarket } from "@/lib/markets";
 
 type ProductRow = {
   id: string;
@@ -40,15 +41,11 @@ type PriceRow = {
   product_id: string;
   shop_id: string;
   price: number | string;
+  currency: string;
   product_url: string;
   last_seen_at: string;
   availability: string | null;
   shops: ShopRelation;
-};
-
-type FreshInstockShopRow = {
-  product_id: string;
-  shop_id: string;
 };
 
 export type HomeProduct = {
@@ -60,6 +57,8 @@ export type HomeProduct = {
   coverUrl: string | null;
   coverStoragePath: string | null;
   lowestPrice: number | null;
+  currency: string;
+  marketCode: string;
   freshShopCount: number;
   totalShopCount: number;
   lastSeenAt: string | null;
@@ -71,6 +70,7 @@ export type SearchShopOffer = {
   shopType: ShopType | null;
   shopId: string;
   price: number;
+  currency: string;
   productUrl: string;
   lastSeenAt: string;
   availability: "in_stock" | "unknown";
@@ -108,6 +108,7 @@ export type ProductDetail = {
   coverUrl: string | null;
   coverStoragePath: string | null;
   lowestPrice: number | null;
+  currency: string;
   freshShopCount: number;
   totalShopCount: number;
   lastSeenAt: string | null;
@@ -185,8 +186,8 @@ function isBlacklistedFormat(formatLabel: string | null | undefined): boolean {
   return BLACKLISTED_FORMAT_LABELS.has(normalizeFormatLabel(formatLabel));
 }
 
-function isAllowedProduct(product: Pick<ProductRow, "format_label">): boolean {
-  return !isBlacklistedFormat(product.format_label);
+function isAllowedProduct(product: Pick<ProductRow, "format_label" | "gtin_normalized">): boolean {
+  return Boolean(product.gtin_normalized) && !isBlacklistedFormat(product.format_label);
 }
 
 function preferProductIdentity(a: ProductRow, b: ProductRow): ProductRow {
@@ -249,12 +250,15 @@ export function priceForDisplay(
   return Math.round((price * DUTCH_VAT_MULTIPLIER + Number.EPSILON) * 100) / 100;
 }
 
-export function formatEuro(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "€--,--";
+export function formatEuro(value: number | null | undefined, currency = "EUR"): string {
+  if (value === null || value === undefined) {
+    const symbol = { EUR: "€", GBP: "£", USD: "$" }[currency] ?? currency;
+    return `${symbol}--,--`;
+  }
 
   return new Intl.NumberFormat("nl-NL", {
     style: "currency",
-    currency: "EUR",
+    currency,
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(value);
@@ -328,14 +332,15 @@ async function getProductsByIds(ids: string[]): Promise<ProductRow[]> {
   return (data ?? []) as ProductRow[];
 }
 
-async function getBestPriceMap(productIds?: string[]) {
+async function getBestPriceMap(productIds?: string[], market: PublicMarket = DEFAULT_MARKET) {
   const supabase = createSupabaseServerClient();
 
   let query = supabase
-    .from("product_best_prices_v1")
+    .from("market_product_best_prices_v1")
     .select(
       "product_id, lowest_fresh_price, fresh_instock_shop_count, total_active_shop_count, best_price_last_seen_at",
-    );
+    )
+    .eq("market_code", market.country_code);
 
   if (productIds && productIds.length > 0) {
     query = query.in("product_id", productIds);
@@ -352,10 +357,12 @@ async function getBestPriceMap(productIds?: string[]) {
   return map;
 }
 
-async function getOffersMap(productIds: string[]) {
+async function getOffersMap(productIds: string[], market: PublicMarket = DEFAULT_MARKET) {
   if (productIds.length === 0) return new Map<string, SearchShopOffer[]>();
 
   const supabase = createSupabaseServerClient();
+  const shopIds = await getEligibleShopIds(market);
+  if (shopIds.length === 0) return new Map<string, SearchShopOffer[]>();
   const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
 
   const fetchOffers = (columns: string) =>
@@ -363,18 +370,21 @@ async function getOffersMap(productIds: string[]) {
       .from("prices")
       .select(columns)
       .in("product_id", productIds)
+      .in("shop_id", shopIds)
       .eq("is_active", true)
+      .eq("currency", market.currency)
+      .gt("price", 0)
       .in("availability", ["in_stock", "unknown"])
       .gte("last_seen_at", cutoff)
       .order("price", { ascending: true })
       .order("last_seen_at", { ascending: false });
 
   let result = await fetchOffers(
-    "product_id, price, product_url, last_seen_at, availability, shop_id, shops(name, domain, shop_type)",
+    "product_id, price, currency, product_url, last_seen_at, availability, shop_id, shops(name, domain, shop_type)",
   );
   if (isMissingShopTypeColumn(result.error)) {
     result = await fetchOffers(
-      "product_id, price, product_url, last_seen_at, availability, shop_id, shops(name, domain)",
+      "product_id, price, currency, product_url, last_seen_at, availability, shop_id, shops(name, domain)",
     );
   }
 
@@ -394,6 +404,7 @@ async function getOffersMap(productIds: string[]) {
       shopType: shop.shop_type ?? null,
       shopId: row.shop_id,
       price: priceForDisplay(row.price, shop.domain) ?? 0,
+      currency: row.currency,
       productUrl: row.product_url,
       lastSeenAt: row.last_seen_at,
       availability: normalizeOfferAvailability(row.availability),
@@ -410,7 +421,7 @@ async function getOffersMap(productIds: string[]) {
     grouped.set(row.product_id, existing);
   }
 
-  const shippingRules = await getShippingRulesMap();
+  const shippingRules = await getShippingRulesMap(market.country_code);
 
   for (const [productId, offers] of grouped.entries()) {
     grouped.set(
@@ -423,41 +434,6 @@ async function getOffersMap(productIds: string[]) {
   }
 
   return grouped;
-}
-
-async function getFreshInstockShopCountMap(productIds: string[]) {
-  const counts = new Map<string, Set<string>>();
-  if (productIds.length === 0) return new Map<string, number>();
-
-  const supabase = createSupabaseServerClient();
-  const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-  const batchSize = 200;
-
-  for (let offset = 0; offset < productIds.length; offset += batchSize) {
-    const batchProductIds = productIds.slice(offset, offset + batchSize);
-    const { data, error } = await supabase
-      .from("prices")
-      .select("product_id, shop_id")
-      .in("product_id", batchProductIds)
-      .eq("is_active", true)
-      .eq("availability", "in_stock")
-      .gte("last_seen_at", cutoff);
-
-    if (error) throw error;
-
-    for (const row of (data ?? []) as FreshInstockShopRow[]) {
-      const shopIds = counts.get(row.product_id) ?? new Set<string>();
-      shopIds.add(row.shop_id);
-      counts.set(row.product_id, shopIds);
-    }
-  }
-
-  return new Map(
-    Array.from(counts.entries()).map(([productId, shopIds]) => [
-      productId,
-      shopIds.size,
-    ]),
-  );
 }
 
 function scoreProductMatch(product: ProductRow, query: string, best: BestPriceRow | undefined): number {
@@ -507,18 +483,19 @@ function scoreProductMatch(product: ProductRow, query: string, best: BestPriceRo
   return score;
 }
 
-export async function getHomePageData(): Promise<{
+export async function getHomePageData(market: PublicMarket = DEFAULT_MARKET): Promise<{
   top25: HomeProduct[];
   newReleases: HomeProduct[];
 }> {
   const supabase = createSupabaseServerClient();
 
   const { data: topRows, error: topError } = await supabase
-    .from("product_best_prices_v1")
+    .from("market_product_best_prices_v1")
     .select(
       "product_id, lowest_fresh_price, fresh_instock_shop_count, total_active_shop_count, best_price_last_seen_at",
     )
     .gt("fresh_instock_shop_count", 0)
+    .eq("market_code", market.country_code)
     .order("fresh_instock_shop_count", { ascending: false })
     .order("lowest_fresh_price", { ascending: true })
     .limit(100);
@@ -529,7 +506,7 @@ export async function getHomePageData(): Promise<{
   const topIds = topBestRows.map((row) => row.product_id);
   const topProducts = (await getProductsByIds(topIds)).filter(isAllowedProduct);
   const topProductsMap = new Map(topProducts.map((row) => [row.id, row]));
-  const topOffersMap = await getOffersMap(topIds);
+  const topOffersMap = await getOffersMap(topIds, market);
 
   const top25: HomeProduct[] = topBestRows
     .map((row) => {
@@ -544,7 +521,9 @@ export async function getHomePageData(): Promise<{
         formatLabel: product.format_label,
         coverUrl: toPublicCoverUrl(product),
   coverStoragePath: product.cover_storage_path,
-        lowestPrice: topOffersMap.get(row.product_id)?.[0]?.price ?? toNumber(row.lowest_fresh_price),
+        lowestPrice: topOffersMap.get(row.product_id)?.[0]?.price ?? null,
+        currency: topOffersMap.get(row.product_id)?.[0]?.currency ?? market.currency,
+        marketCode: market.country_code,
         freshShopCount: row.fresh_instock_shop_count ?? 0,
         totalShopCount: row.total_active_shop_count ?? 0,
         lastSeenAt: row.best_price_last_seen_at,
@@ -563,8 +542,8 @@ export async function getHomePageData(): Promise<{
 
   const latestProducts = ((latestProductsData ?? []) as ProductRow[]).filter(isAllowedProduct);
   const latestIds = latestProducts.map((row) => row.id);
-  const latestBestMap = await getBestPriceMap(latestIds);
-  const latestOffersMap = await getOffersMap(latestIds);
+  const latestBestMap = await getBestPriceMap(latestIds, market);
+  const latestOffersMap = await getOffersMap(latestIds, market);
 
   const newReleases: HomeProduct[] = latestProducts
     .map((product) => {
@@ -578,7 +557,9 @@ export async function getHomePageData(): Promise<{
         formatLabel: product.format_label,
         coverUrl: toPublicCoverUrl(product),
   coverStoragePath: product.cover_storage_path,
-        lowestPrice: latestOffersMap.get(product.id)?.[0]?.price ?? toNumber(best?.lowest_fresh_price),
+        lowestPrice: latestOffersMap.get(product.id)?.[0]?.price ?? null,
+        currency: latestOffersMap.get(product.id)?.[0]?.currency ?? market.currency,
+        marketCode: market.country_code,
         freshShopCount: best?.fresh_instock_shop_count ?? 0,
         totalShopCount: best?.total_active_shop_count ?? 0,
         lastSeenAt: best?.best_price_last_seen_at ?? null,
@@ -623,19 +604,17 @@ async function resolveProductRowByRouteKey(routeKey: unknown): Promise<ProductRo
   return null;
 }
 
-export async function getProductDetail(id: unknown): Promise<ProductDetail | null> {
+export async function getProductDetail(id: unknown, market: PublicMarket = DEFAULT_MARKET): Promise<ProductDetail | null> {
   const product = await resolveProductRowByRouteKey(id);
   if (!product) return null;
   if (!isAllowedProduct(product)) return null;
 
-  const bestMap = await getBestPriceMap([product.id]);
-  const offersMap = await getOffersMap([product.id]);
-  const best = bestMap.get(product.id);
+  const offersMap = await getOffersMap([product.id], market);
   const offers = offersMap.get(product.id) ?? [];
-  const lowestPrice = offers[0]?.price ?? toNumber(best?.lowest_fresh_price) ?? null;
-  const freshShopCount = offers.length > 0 ? offers.length : (best?.fresh_instock_shop_count ?? 0);
-  const totalShopCount = Math.max(best?.total_active_shop_count ?? 0, offers.length);
-  const lastSeenAt = offers[0]?.lastSeenAt ?? best?.best_price_last_seen_at ?? null;
+  const lowestPrice = offers[0]?.price ?? null;
+  const freshShopCount = offers.length;
+  const totalShopCount = offers.length;
+  const lastSeenAt = offers[0]?.lastSeenAt ?? null;
 
   return {
     id: product.id,
@@ -646,6 +625,7 @@ export async function getProductDetail(id: unknown): Promise<ProductDetail | nul
     coverUrl: toPublicCoverUrl(product),
     coverStoragePath: product.cover_storage_path,
     lowestPrice,
+    currency: market.currency,
     freshShopCount,
     totalShopCount,
     lastSeenAt,
@@ -656,7 +636,7 @@ export async function getProductDetail(id: unknown): Promise<ProductDetail | nul
 
 export async function searchProducts(
   query: string,
-  options: { limit?: number | null } = {},
+  options: { limit?: number | null; market?: PublicMarket } = {},
 ): Promise<SearchResultItem[]> {
   const normalizedQuery = query.trim();
   if (!normalizedQuery) return [];
@@ -701,17 +681,18 @@ export async function searchProducts(
   if (productList.length === 0) return [];
 
   const ids = productList.map((row) => row.id);
-  const bestMap = await getBestPriceMap(ids);
-  const offersMap = await getOffersMap(ids);
+  const market = options.market ?? DEFAULT_MARKET;
+  const bestMap = await getBestPriceMap(ids, market);
+  const offersMap = await getOffersMap(ids, market);
 
   const ranked: RankedSearchResult[] = productList
     .map((product) => {
       const best = bestMap.get(product.id);
       const offers = offersMap.get(product.id) ?? [];
-      const lowestPrice = offers[0]?.price ?? toNumber(best?.lowest_fresh_price) ?? null;
-      const freshShopCount = offers.length > 0 ? offers.length : (best?.fresh_instock_shop_count ?? 0);
-      const totalShopCount = Math.max(best?.total_active_shop_count ?? 0, offers.length);
-      const lastSeenAt = offers[0]?.lastSeenAt ?? best?.best_price_last_seen_at ?? null;
+      const lowestPrice = offers[0]?.price ?? null;
+      const freshShopCount = offers.length;
+      const totalShopCount = offers.length;
+      const lastSeenAt = offers[0]?.lastSeenAt ?? null;
 
       return {
         id: product.id,
@@ -730,7 +711,7 @@ export async function searchProducts(
         _score: scoreProductMatch(product, normalizedQuery, best),
       };
     })
-    .filter((item) => item.lowestPrice !== null || item.shops.length > 0)
+    .filter((item) => item.shops.length > 0)
     .filter((item) => item._score > 0)
     .sort((a, b) => {
       if (b._score !== a._score) return b._score - a._score;
@@ -761,8 +742,11 @@ export async function searchProducts(
 export async function getProductPriceHistory(
   productId: string,
   maxDays = 30,
+  market: PublicMarket = DEFAULT_MARKET,
 ): Promise<ProductPriceHistoryPoint[]> {
   const supabase = createSupabaseServerClient();
+  const shopIds = await getEligibleShopIds(market);
+  if (shopIds.length === 0) return [];
 
   const cutoff = new Date();
   cutoff.setUTCHours(0, 0, 0, 0);
@@ -773,6 +757,8 @@ export async function getProductPriceHistory(
     .from("price_history")
     .select("shop_id, price, availability, captured_at, shops(domain)")
     .eq("product_id", productId)
+    .in("shop_id", shopIds)
+    .eq("currency", market.currency)
     .gte("captured_at", cutoff.toISOString())
     .order("captured_at", { ascending: false });
 
@@ -849,19 +835,12 @@ export type TopDealItem = {
 };
 
 type TopDealsSnapshotRow = {
-  rank: number;
   product_id: string;
   ean: string | null;
   artist: string;
   title: string;
   format_label: string | null;
   cover_url: string | null;
-  lowest_price: number | string;
-  highest_price: number | string;
-  price_difference: number | string;
-  shop_count: number;
-  lowest_offer: unknown;
-  highest_offer: unknown;
   offers: unknown;
   last_seen_at: string | null;
 };
@@ -899,6 +878,7 @@ function normalizeSnapshotOffer(value: unknown): SearchShopOffer | null {
     shopType: null,
     shopId,
     price: price ?? 0,
+    currency: typeof raw.currency === "string" ? raw.currency : "EUR",
     productUrl: typeof raw.productUrl === "string" ? raw.productUrl : "",
     lastSeenAt: typeof raw.lastSeenAt === "string" ? raw.lastSeenAt : "",
     availability,
@@ -913,18 +893,14 @@ function normalizeSnapshotOffer(value: unknown): SearchShopOffer | null {
   return isSnapshotOffer(offer) ? offer : null;
 }
 
-export async function getTopDeals(limit = 45): Promise<TopDealItem[]> {
+export async function getTopDeals(limit = 45, market: PublicMarket = DEFAULT_MARKET): Promise<TopDealItem[]> {
   const supabase = createSupabaseServerClient();
   const safeLimit = Math.max(1, Math.min(limit, 45));
 
-  const { data, error } = await supabase
-    .from("top_deals_snapshot")
-    .select(
-      "rank, product_id, ean, artist, title, format_label, cover_url, lowest_price, highest_price, price_difference, shop_count, lowest_offer, highest_offer, offers, last_seen_at",
-    )
-    .eq("snapshot_key", "current")
-    .order("rank", { ascending: true })
-    .limit(safeLimit);
+  const { data, error } = await supabase.rpc("market_top_deals_v1", {
+    p_country_code: market.country_code,
+    p_limit: safeLimit,
+  });
 
   if (error) throw error;
 
@@ -985,7 +961,7 @@ export async function getTopDeals(limit = 45): Promise<TopDealItem[]> {
         lowestPrice,
         highestPrice,
         priceDifference,
-        shopCount: row.shop_count,
+        shopCount: offers.length,
         lowestOffer,
         highestOffer,
         offers,
@@ -1009,6 +985,7 @@ export type ReleaseCalendarItem = {
   label: string | null;
   productId: string | null;
   lowestPrice: number | null;
+  currency?: string;
 };
 
 type ReleaseCalendarRow = {
@@ -1031,7 +1008,7 @@ function isoDateDaysFromToday(days: number): string {
   return value.toISOString().slice(0, 10);
 }
 
-export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalendarItem[]> {
+export async function getReleaseCalendarItems(limit = 120, market: PublicMarket = DEFAULT_MARKET): Promise<ReleaseCalendarItem[]> {
   const supabase = createSupabaseServerClient();
 
   const minDate = isoDateDaysFromToday(-14);
@@ -1087,7 +1064,7 @@ export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalen
       offset,
       offset + productBatchSize,
     );
-    const batchMap = await getBestPriceMap(batchProductIds);
+    const batchMap = await getBestPriceMap(batchProductIds, market);
     const batchProducts = await getProductsByIds(batchProductIds);
 
     for (const [productId, bestPrice] of batchMap) {
@@ -1098,10 +1075,7 @@ export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalen
     }
   }
 
-  const releaseOffersMap = await getOffersMap(Array.from(productIds));
-  const freshInstockShopCountMap = await getFreshInstockShopCountMap(
-    Array.from(productIds),
-  );
+  const releaseOffersMap = await getOffersMap(Array.from(productIds), market);
 
   const seenProductIds = new Set<string>();
   const safeLimit = Math.max(0, Math.floor(limit));
@@ -1111,7 +1085,7 @@ export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalen
       if (!row.product_id) return false;
       if (seenProductIds.has(row.product_id)) return false;
 
-      const freshShopCount = freshInstockShopCountMap.get(row.product_id) ?? 0;
+      const freshShopCount = bestPriceMap.get(row.product_id)?.fresh_instock_shop_count ?? 0;
 
       if (freshShopCount < 1) return false;
 
@@ -1120,9 +1094,6 @@ export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalen
     })
     .slice(0, safeLimit)
     .map((row) => {
-      const bestPrice = row.product_id
-        ? bestPriceMap.get(row.product_id)
-        : undefined;
       const product = row.product_id
         ? productMap.get(row.product_id)
         : undefined;
@@ -1140,9 +1111,8 @@ export async function getReleaseCalendarItems(limit = 120): Promise<ReleaseCalen
         format: row.format,
         label: row.label,
         productId: row.product_id,
-        lowestPrice:
-          releaseOffersMap.get(row.product_id ?? "")?.[0]?.price ??
-          toNumber(bestPrice?.lowest_fresh_price),
+        lowestPrice: releaseOffersMap.get(row.product_id ?? "")?.[0]?.price ?? null,
+        currency: market.currency,
       };
     });
 }

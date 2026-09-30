@@ -10,6 +10,8 @@ import {
   type DutchchartsVinylTop33Item,
 } from "@/lib/dutchcharts-vinyl-top33";
 import top33Visual from "./Top33new.png";
+import { redirectInactiveMarket, resolveMarket } from "@/lib/markets";
+import { marketHref } from "@/lib/market-url";
 
 export const dynamic = "force-dynamic";
 
@@ -24,8 +26,8 @@ function buildAlbumSearchHref(title: string): string {
   return `/search?${params.toString()}`;
 }
 
-function Top33Row({ item }: { item: DutchchartsVinylTop33Item }) {
-  const href = buildAlbumSearchHref(item.title);
+function Top33Row({ item, marketCode }: { item: DutchchartsVinylTop33Item; marketCode: string }) {
+  const href = marketHref(buildAlbumSearchHref(item.title), marketCode);
 
   return (
     <li className="group rounded-3xl border border-neutral-200 bg-white p-4 shadow-sm transition hover:border-orange-200 hover:shadow-md sm:p-5">
@@ -60,7 +62,10 @@ function Top33Row({ item }: { item: DutchchartsVinylTop33Item }) {
   );
 }
 
-export default async function Top33Page() {
+export default async function Top33Page({ searchParams }: { searchParams: Promise<{ market?: string }> }) {
+  const requestedMarket = (await searchParams).market;
+  const market = await resolveMarket(requestedMarket);
+  redirectInactiveMarket(requestedMarket, market, "/top-33");
   let items: DutchchartsVinylTop33Item[] = [];
   let loadError = false;
 
@@ -75,7 +80,7 @@ export default async function Top33Page() {
 
   return (
     <>
-      <SiteHeader searchSlot={<SearchControls initialQuery="" />} />
+      <SiteHeader marketCode={market.country_code} searchSlot={<SearchControls initialQuery="" marketCode={market.country_code} />} />
 
       <main className="mx-auto max-w-5xl px-4 py-10 sm:px-6 lg:px-8">
         <section>
@@ -108,6 +113,7 @@ export default async function Top33Page() {
                 <Top33Row
                   key={`${item.rank}-${item.artist}-${item.title}`}
                   item={item}
+                  marketCode={market.country_code}
                 />
               ))}
             </ol>
@@ -121,7 +127,7 @@ export default async function Top33Page() {
         </section>
       </main>
 
-      <SiteFooter />
+      <SiteFooter marketCode={market.country_code} />
     </>
   );
 }

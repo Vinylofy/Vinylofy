@@ -2,13 +2,16 @@ import Link from "next/link";
 import { CoverImage } from "@/components/cover-image";
 import { buildGrooveHref, formatEntityType } from "@/lib/follow-the-groove/presentation";
 import type { FtgCandidateView } from "@/lib/follow-the-groove/types";
+import { marketHref } from "@/lib/market-url";
 
 export function GrooveSearchBlock({
   activeArtistMbid,
   candidates,
+  marketCode = "NL",
 }: {
   activeArtistMbid: string;
   candidates: FtgCandidateView[];
+  marketCode?: string;
 }) {
   if (candidates.length === 0) return null;
 
@@ -37,7 +40,7 @@ export function GrooveSearchBlock({
               <p className="mt-1 min-h-5 text-xs text-neutral-600">{candidate.reasonLabel}</p>
               <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
                 <Link
-                  href={buildGrooveHref([activeArtistMbid], candidate.mbid)}
+                  href={marketHref(buildGrooveHref([activeArtistMbid], candidate.mbid), marketCode)}
                   prefetch={false}
                   className="text-xs font-medium text-neutral-800 underline-offset-4 hover:text-orange-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300"
                 >

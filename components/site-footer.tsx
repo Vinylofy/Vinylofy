@@ -1,9 +1,10 @@
 import Link from "next/link";
+import { marketHref } from "@/lib/market-url";
 
 const footerLinkClassName =
   "hover:text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-600";
 
-export function SiteFooter() {
+export function SiteFooter({ marketCode = "NL" }: { marketCode?: string }) {
   return (
     <footer className="mt-16 border-t border-neutral-200 bg-white">
       <div className="mx-auto flex max-w-6xl flex-col gap-4 px-6 py-8 md:flex-row md:items-center md:justify-between">
@@ -15,7 +16,7 @@ export function SiteFooter() {
           <Link href="/over" className={footerLinkClassName}>
             Over
           </Link>
-          <Link href="/shops" className={footerLinkClassName}>
+          <Link href={marketHref("/shops", marketCode)} className={footerLinkClassName}>
             Shops
           </Link>
           <Link href="/privacy" className={footerLinkClassName}>

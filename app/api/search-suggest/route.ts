@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isValidArtistMbid } from "@/lib/follow-the-groove/presentation";
+import { resolveMarket } from "@/lib/markets";
 
 type ProductSuggestionRow = {
   id: string;
@@ -90,7 +91,7 @@ function scoreArtistSuggestion(
   return { bucket: 9, score: 0 };
 }
 
-async function collectRows(query: string): Promise<ProductSuggestionRow[]> {
+async function collectRows(query: string, marketCode: string): Promise<ProductSuggestionRow[]> {
   const supabase = createSupabaseServerClient();
   const trimmed = query.trim();
   const baseSelect = "id, artist, format_label";
@@ -131,7 +132,16 @@ async function collectRows(query: string): Promise<ProductSuggestionRow[]> {
     ),
   ]);
 
-  return Array.from(rows.values()).filter(isAllowedProduct);
+  const candidates = Array.from(rows.values()).filter(isAllowedProduct);
+  if (candidates.length === 0) return [];
+  const { data, error } = await supabase
+    .from("market_product_best_prices_v1")
+    .select("product_id")
+    .eq("market_code", marketCode)
+    .in("product_id", candidates.map((row) => row.id));
+  if (error) throw error;
+  const availableIds = new Set((data ?? []).map((row) => row.product_id));
+  return candidates.filter((row) => availableIds.has(row.id));
 }
 
 function buildArtistSuggestions(
@@ -241,11 +251,18 @@ export async function GET(request: Request) {
       return NextResponse.json({ suggestions });
     }
 
-    const rows = await collectRows(query);
+    const market = await resolveMarket(searchParams.get("market"));
+    const rows = await collectRows(query, market.country_code);
     const suggestions = buildArtistSuggestions(rows, query)
       .sort(sortSuggestions)
       .slice(0, 5)
-      .map(({ bucket, score, ...suggestion }) => suggestion);
+      .map((suggestion) => ({
+        id: suggestion.id,
+        kind: suggestion.kind,
+        label: suggestion.label,
+        href: suggestion.href,
+        searchValue: suggestion.searchValue,
+      }));
 
     return NextResponse.json({ suggestions });
   } catch (error) {

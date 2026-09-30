@@ -5,22 +5,27 @@ import { SearchControls } from "@/components/search/search-controls";
 import { SiteHeader } from "@/components/site-header";
 import { TopDealCard } from "@/components/topdeals/top-deal-card";
 import { getTopDeals } from "@/lib/vinylofy-data";
+import { redirectInactiveMarket, resolveMarket } from "@/lib/markets";
+import { marketHref } from "@/lib/market-url";
 
-export const revalidate = 300;
+export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Top 45 Deals",
   description: "De grootste prijsverschillen op vinyl, gevonden door Vinylofy.",
 };
 
-export default async function TopDealsPage() {
-  const deals = (await getTopDeals(45))
+export default async function TopDealsPage({ searchParams }: { searchParams: Promise<{ market?: string }> }) {
+  const requestedMarket = (await searchParams).market;
+  const market = await resolveMarket(requestedMarket);
+  redirectInactiveMarket(requestedMarket, market, "/topdeals");
+  const deals = (await getTopDeals(45, market))
     .filter((deal) => deal.priceDifference > 0 && deal.lowestOffer && deal.highestOffer)
     .slice(0, 45);
 
   return (
     <>
-      <SiteHeader searchSlot={<SearchControls initialQuery="" />} />
+      <SiteHeader marketCode={market.country_code} searchSlot={<SearchControls initialQuery="" marketCode={market.country_code} />} />
       <main className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         <section className="rounded-[2rem] border border-neutral-200 bg-white p-6 shadow-sm sm:p-8">
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-neutral-500">
@@ -45,7 +50,7 @@ export default async function TopDealsPage() {
         {deals.length > 0 ? (
           <section className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {deals.map((deal, index) => (
-              <TopDealCard key={deal.id} deal={deal} rank={index + 1} />
+              <TopDealCard key={deal.id} deal={deal} rank={index + 1} marketCode={market.country_code} />
             ))}
           </section>
         ) : (
@@ -57,7 +62,7 @@ export default async function TopDealsPage() {
               Zodra meerdere aanbieders dezelfde plaat actueel met een prijs tonen, verschijnt hier de Top 45.
             </p>
             <Link
-              href="/search"
+              href={marketHref("/search", market.country_code)}
               className="mt-6 inline-flex rounded-full bg-neutral-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-neutral-800"
             >
               Zoek vinyl
@@ -65,7 +70,7 @@ export default async function TopDealsPage() {
           </section>
         )}
       </main>
-      <SiteFooter />
+      <SiteFooter marketCode={market.country_code} />
     </>
   );
 }
