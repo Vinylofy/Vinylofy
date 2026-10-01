@@ -210,16 +210,20 @@ jobs:
           Write-Host "[WORKFLOW] sync $python $($sync -join ' ')"
           & $python @sync 2>&1 | Tee-Object -FilePath 'output/usf-fiftiesstore/sync.log'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $stage = @('-u', '-m', 'scripts.scrapers.usf.jobs.stage_fiftiesstore', '--limit', $stageLimit)
-          if ($write -eq 'true') { $stage += '--write' }
-          Write-Host "[WORKFLOW] stage $python $($stage -join ' ')"
-          & $python @stage 2>&1 | Tee-Object -FilePath 'output/usf-fiftiesstore/stage.log'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $promote = @('-u', '-m', 'scripts.scrapers.usf.jobs.promote_fiftiesstore', '--limit', $promoteLimit)
-          if ($write -eq 'true') { $promote += '--write' }
-          Write-Host "[WORKFLOW] promote $python $($promote -join ' ')"
-          & $python @promote 2>&1 | Tee-Object -FilePath 'output/usf-fiftiesstore/promote.log'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ([int]$stageLimit -gt 0) {
+            $stage = @('-u', '-m', 'scripts.scrapers.usf.jobs.stage_fiftiesstore', '--limit', $stageLimit)
+            if ($write -eq 'true') { $stage += '--write' }
+            Write-Host "[WORKFLOW] stage $python $($stage -join ' ')"
+            & $python @stage 2>&1 | Tee-Object -FilePath 'output/usf-fiftiesstore/stage.log'
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else { Write-Host '[WORKFLOW] stage skipped because stage_limit=0' }
+          if ([int]$promoteLimit -gt 0) {
+            $promote = @('-u', '-m', 'scripts.scrapers.usf.jobs.promote_fiftiesstore', '--limit', $promoteLimit)
+            if ($write -eq 'true') { $promote += '--write' }
+            Write-Host "[WORKFLOW] promote $python $($promote -join ' ')"
+            & $python @promote 2>&1 | Tee-Object -FilePath 'output/usf-fiftiesstore/promote.log'
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else { Write-Host '[WORKFLOW] promote skipped because promote_limit=0' }
       - name: Upload pipeline logs
         if: always()
         uses: actions/upload-artifact@v4
