@@ -82,7 +82,7 @@ jobs:
             @{ Import = 'dotenv'; Spec = 'python-dotenv' }
           )
           foreach ($package in $packages) {
-            & $python -c "import $($package.Import)" *> $null
+            & $python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('$($package.Import)') else 1)"
             if ($LASTEXITCODE -ne 0) {
               Write-Host "Installing missing package: $($package.Spec)"
               & $python -m pip install $package.Spec
@@ -149,7 +149,7 @@ jobs:
             @{ Import = 'dotenv'; Spec = 'python-dotenv' }
           )
           foreach ($package in $packages) {
-            & $python -c "import $($package.Import)" *> $null
+            & $python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('$($package.Import)') else 1)"
             if ($LASTEXITCODE -ne 0) {
               Write-Host "Installing missing package: $($package.Spec)"
               & $python -m pip install $package.Spec
