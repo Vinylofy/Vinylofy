@@ -140,6 +140,16 @@ The state artifact is restored before every run. The Windows workflow searches i
 
 The persistent-runner rule applies here as well: keep the Python environment under `%LOCALAPPDATA%\Vinylofy\getbackmusic-venv`, check imports before installing, and remove only the run-specific uv cache. The CSV state remains run data and is transferred through the existing GitHub Actions artifact mechanism.
 
+## iMusic migration
+
+iMusic has two scheduled USF writers: the normal pipeline and the exposure-priority pipeline. Both were moved to Windows workflows, `usf-imusic-windows.yml` and `usf-imusic-exposures-windows.yml`. Their Ubuntu schedules were disabled while both Ubuntu workflows retain `workflow_dispatch` as manual fallbacks.
+
+All four routes use the shared `usf-imusic-production` concurrency group with `cancel-in-progress: false`. This includes the two retained Ubuntu fallbacks and prevents normal and exposure iMusic database writers from overlapping. The existing schedules and parameters were preserved: exposure daily at `05 2 * * *`, exposure weekly at `45 2 * * 0`, and the normal pipeline at `25 3 * * *`.
+
+The Windows workflows keep the existing pipeline code and command order. The normal route retains genre discovery, price sync, EAN seeding, stale requeue, detail, staging, promotion and quarantine behavior. The exposure route retains exposure discovery, detail, staging, promotion and quarantine. Manual inputs default to `write=false` for bounded tests; scheduled runs use the existing production limits and `write=true`.
+
+Both workflows verify `vinylofy-windows-01`, use Windows PowerShell with process-scoped execution policy bypass, and share the persistent `%LOCALAPPDATA%\Vinylofy\imusic-venv`. Imports are checked first and only missing `requests`, `bs4`, `psycopg`, or `dotenv` packages are installed. The persistent environment is retained and only each run's uv cache is cleaned.
+
 ## Platenzaak migration
 
 Platenzaak uses the existing USF listing-first pipeline. The scheduled Ubuntu route in `usf-platenzaak.yml` was moved to `usf-platenzaak-windows.yml`; the Ubuntu workflow keeps `workflow_dispatch` as the manual fallback. Both workflows use the existing concurrency group `vinylofy-platenzaak` with `cancel-in-progress: false`, which also protects against overlap with the retained legacy manual workflows.

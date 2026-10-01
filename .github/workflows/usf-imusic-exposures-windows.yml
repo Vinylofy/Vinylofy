@@ -1,0 +1,219 @@
+name: USF - iMusic Exposure Priority (Windows local)
+
+on:
+  schedule:
+    - cron: "5 2 * * *"
+    - cron: "45 2 * * 0"
+  workflow_dispatch:
+    inputs:
+      exposure_set:
+        description: "daily, weekly, rsd, all of custom"
+        required: true
+        default: "daily"
+        type: choice
+        options: [daily, weekly, rsd, all, custom]
+      custom_exposures:
+        description: "Alleen voor custom: id:slug:frequency:name,..."
+        required: false
+        default: ""
+        type: string
+      start_page_per_exposure:
+        description: "Startpagina per exposure"
+        required: true
+        default: "1"
+        type: string
+      max_pages_per_exposure:
+        description: "Aantal pagina's per exposure vanaf startpagina"
+        required: true
+        default: "2"
+        type: string
+      exposure_delay_seconds:
+        description: "Wachttijd tussen exposure-pagina's"
+        required: true
+        default: "4.0"
+        type: string
+      detail_limit:
+        description: "Maximaal aantal exposure-links detail/EAN valideren"
+        required: true
+        default: "500"
+        type: string
+      detail_sleep:
+        description: "Wachttijd tussen detailpagina's"
+        required: true
+        default: "0.5"
+        type: string
+      stage_limit:
+        description: "Maximaal aantal raw snapshots naar staged_offers"
+        required: true
+        default: "500"
+        type: string
+      promote_limit:
+        description: "Maximaal aantal staged offers promoveren"
+        required: true
+        default: "500"
+        type: string
+      quarantine_limit:
+        description: "Maximaal aantal promote errors quarantinen"
+        required: true
+        default: "100"
+        type: string
+      write:
+        description: "Werkelijke databasewrites uitvoeren"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usf-imusic-production
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: Run iMusic exposure priority on Windows
+    runs-on: [self-hosted, Windows, X64, vinylofy-windows]
+    timeout-minutes: 180
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PIP_NO_CACHE_DIR: "1"
+    steps:
+      - name: Verify runner
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        env:
+          RUNNER_NAME: ${{ runner.name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -ne 'vinylofy-windows-01') { throw "Unexpected runner: $env:RUNNER_NAME" }
+          Write-Host "Runner: $env:RUNNER_NAME"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: imusic-exposures
+          persist-credentials: false
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.15"
+          working-directory: ${{ github.workspace }}/imusic-exposures
+          enable-cache: false
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/imusic-exposures-uv-cache
+
+      - name: Check and install persistent dependencies
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: imusic-exposures
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required.' }
+          $root = Join-Path $env:LOCALAPPDATA 'Vinylofy'
+          $env:UV_PYTHON_INSTALL_DIR = Join-Path $root 'imusic-python'
+          $venv = Join-Path $root 'imusic-venv'
+          if (-not (Test-Path -LiteralPath (Join-Path $venv 'Scripts/python.exe'))) {
+            uv venv --no-project --seed --managed-python --python 3.11 $venv
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          $python = Join-Path $venv 'Scripts/python.exe'
+          $packages = @(
+            @{ Name = 'requests'; Import = 'requests' },
+            @{ Name = 'beautifulsoup4'; Import = 'bs4' },
+            @{ Name = 'psycopg[binary]'; Import = 'psycopg' },
+            @{ Name = 'python-dotenv'; Import = 'dotenv' }
+          )
+          $missing = @()
+          foreach ($package in $packages) {
+            $previousErrorActionPreference = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+            & $python -c "import $($package.Import)" 2>$null
+            $importExitCode = $LASTEXITCODE; $ErrorActionPreference = $previousErrorActionPreference
+            if ($importExitCode -ne 0) { $missing += $package.Name }
+          }
+          if ($missing.Count -gt 0) {
+            & $python -m pip install @missing
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          $modules = @(
+            'scripts/scrapers/usf/core/link_registry.py',
+            'scripts/scrapers/usf/jobs/discover_imusic_exposures.py',
+            'scripts/scrapers/usf/jobs/detail_imusic.py',
+            'scripts/scrapers/usf/jobs/stage_imusic.py',
+            'scripts/scrapers/usf/jobs/promote_imusic.py',
+            'scripts/scrapers/usf/jobs/quarantine_imusic.py'
+          )
+          & $python -m py_compile @modules
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($module in @('discover_imusic_exposures', 'detail_imusic', 'stage_imusic', 'promote_imusic', 'quarantine_imusic')) {
+            & $python -m "scripts.scrapers.usf.jobs.$module" --help *> $null
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Validate configuration
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:DATABASE_URL) { throw 'GitHub secret DATABASE_URL ontbreekt.' }
+          Write-Host '[CONFIG] DATABASE_URL is ingesteld.'
+
+      - name: Run iMusic exposure priority pipeline
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: imusic-exposures
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          EXPOSURE_SET_INPUT: ${{ inputs.exposure_set }}
+          CUSTOM_EXPOSURES_INPUT: ${{ inputs.custom_exposures }}
+          START_PAGE_INPUT: ${{ inputs.start_page_per_exposure }}
+          MAX_PAGES_INPUT: ${{ inputs.max_pages_per_exposure }}
+          DELAY_INPUT: ${{ inputs.exposure_delay_seconds }}
+          DETAIL_LIMIT_INPUT: ${{ inputs.detail_limit }}
+          DETAIL_SLEEP_INPUT: ${{ inputs.detail_sleep }}
+          STAGE_LIMIT_INPUT: ${{ inputs.stage_limit }}
+          PROMOTE_LIMIT_INPUT: ${{ inputs.promote_limit }}
+          QUARANTINE_LIMIT_INPUT: ${{ inputs.quarantine_limit }}
+          WRITE_INPUT: ${{ inputs.write }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path 'output/usf-imusic-exposures' | Out-Null
+          if ($env:EVENT_NAME -eq 'schedule') {
+            if ($env:EVENT_SCHEDULE -eq '45 2 * * 0') { $exposureSet = 'weekly' } else { $exposureSet = 'daily' }
+            $customExposures = ''; $startPage = '1'; $maxPages = '2'; $delay = '4.0'; $detailLimit = '500'; $detailSleep = '0.5'; $stageLimit = '500'; $promoteLimit = '500'; $quarantineLimit = '100'; $write = 'true'
+          } else {
+            $exposureSet = $env:EXPOSURE_SET_INPUT; $customExposures = $env:CUSTOM_EXPOSURES_INPUT; $startPage = $env:START_PAGE_INPUT; $maxPages = $env:MAX_PAGES_INPUT; $delay = $env:DELAY_INPUT; $detailLimit = $env:DETAIL_LIMIT_INPUT; $detailSleep = $env:DETAIL_SLEEP_INPUT; $stageLimit = $env:STAGE_LIMIT_INPUT; $promoteLimit = $env:PROMOTE_LIMIT_INPUT; $quarantineLimit = $env:QUARANTINE_LIMIT_INPUT; $write = $env:WRITE_INPUT
+          }
+          $python = Join-Path $env:LOCALAPPDATA 'Vinylofy/imusic-venv/Scripts/python.exe'
+          function Invoke-LoggedPython([string]$logName, [string[]]$commandArgs) {
+            $logPath = Join-Path 'output/usf-imusic-exposures' $logName
+            Write-Host "$python $($commandArgs -join ' ')"
+            & $python @commandArgs 2>&1 | Tee-Object -FilePath $logPath
+            $exitCode = $LASTEXITCODE
+            if ($exitCode -ne 0) { exit $exitCode }
+          }
+          function Add-WriteFlag([string[]]$commandArgs) {
+            if ($write -eq 'true') { return $commandArgs + @('--write') }
+            return $commandArgs
+          }
+          $discoveryArgs = @('-u','-m','scripts.scrapers.usf.jobs.discover_imusic_exposures','--exposure-set',$exposureSet,'--start-page-per-exposure',$startPage,'--max-pages-per-exposure',$maxPages,'--delay',$delay,'--requeue-detail')
+          if ($exposureSet -eq 'custom') { $discoveryArgs += @('--exposures',$customExposures) }
+          Invoke-LoggedPython 'discovery.log' (Add-WriteFlag $discoveryArgs)
+          Invoke-LoggedPython 'detail.log' (Add-WriteFlag @('-u','-m','scripts.scrapers.usf.jobs.detail_imusic','--limit',$detailLimit,'--sleep',$detailSleep))
+          Invoke-LoggedPython 'stage.log' (Add-WriteFlag @('-u','-m','scripts.scrapers.usf.jobs.stage_imusic','--limit',$stageLimit))
+          Invoke-LoggedPython 'promote.log' (Add-WriteFlag @('-u','-m','scripts.scrapers.usf.jobs.promote_imusic','--limit',$promoteLimit))
+          Invoke-LoggedPython 'quarantine.log' (Add-WriteFlag @('-u','-m','scripts.scrapers.usf.jobs.quarantine_imusic','--limit',$quarantineLimit))
+
+      - name: Upload iMusic exposure logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: usf-imusic-exposures-windows-${{ github.run_id }}
+          path: imusic-exposures/output/usf-imusic-exposures/**
+          if-no-files-found: warn
+
+      - name: Clean run-specific uv cache
+        if: always()
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cache = Join-Path $env:RUNNER_TEMP 'imusic-exposures-uv-cache'
+          if (Test-Path -LiteralPath $cache) { Remove-Item -LiteralPath $cache -Recurse -Force }

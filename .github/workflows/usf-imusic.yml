@@ -1,9 +1,6 @@
 name: USF - iMusic
 
 on:
-  schedule:
-    - cron: "25 3 * * *"
-
   workflow_dispatch:
     inputs:
       price_only_update:

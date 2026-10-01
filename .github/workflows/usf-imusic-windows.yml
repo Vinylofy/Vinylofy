@@ -1,0 +1,267 @@
+name: USF - iMusic (Windows local)
+
+on:
+  schedule:
+    - cron: "25 3 * * *"
+  workflow_dispatch:
+    inputs:
+      price_only_update:
+        description: "Alleen iMusic listingprijzen ophalen; geen detail/stage/promote"
+        required: true
+        default: false
+        type: boolean
+      price_only_sync:
+        description: "Bestaande gevalideerde iMusic prices verversen vanuit listingprijzen"
+        required: true
+        default: true
+        type: boolean
+      price_sync_limit:
+        description: "Maximaal aantal listingprijs-records naar bestaande public.prices syncen"
+        required: true
+        default: "5000"
+        type: string
+      genre_discovery:
+        description: "Ook iMusic genre-discovery draaien voor normale pipeline"
+        required: true
+        default: true
+        type: boolean
+      genre_ids:
+        description: "Comma-separated iMusic genreIds"
+        required: true
+        default: "30:Country,44:Electronic,51:Folk,60:Gospel-Christian,66:Metal,73:Industrial,74:Instrumental,76:Jazz,94:Musical,98:New-Age,104:Pop,112:Reggae,115:Rock,128:Soundtrack,132:Spoken-Word,151:World-International,157:Easy-Listening,784:Klassiek,808:Kerstmis,2111:Schlager,2460:Hip-Hop-Rap,3018:K-pop,16415:Singer-songwriter,16619:Soul-RnB,16637:Indie,17888:Punk,33988:Downtempo,34057:Nu-Metal,34657:Eurodance,16:Blues"
+        type: string
+      genre_max_pages_per_genre:
+        description: "Aantal listingpagina's per genre"
+        required: true
+        default: "1"
+        type: string
+      genre_delay_seconds:
+        description: "Wachttijd tussen iMusic listingpagina's"
+        required: true
+        default: "4.0"
+        type: string
+      seed_limit:
+        description: "Aantal bestaande Vinylofy EANs om naar iMusic-links te seeden"
+        required: true
+        default: "500"
+        type: string
+      requeue_stale_hours:
+        description: "Minimale ouderdom voor iMusic detailrefresh"
+        required: true
+        default: "24"
+        type: string
+      requeue_limit:
+        description: "Maximaal aantal stale links requeueën"
+        required: true
+        default: "500"
+        type: string
+      requeue_target_queue:
+        description: "Queue maximaal aanvullen tot dit aantal"
+        required: true
+        default: "500"
+        type: string
+      detail_limit:
+        description: "Maximaal aantal iMusic EAN detail-lookups"
+        required: true
+        default: "500"
+        type: string
+      stage_limit:
+        description: "Maximaal aantal raw snapshots naar staged_offers"
+        required: true
+        default: "500"
+        type: string
+      promote_limit:
+        description: "Maximaal aantal staged offers promoveren"
+        required: true
+        default: "500"
+        type: string
+      quarantine_limit:
+        description: "Maximaal aantal promote errors quarantinen"
+        required: true
+        default: "100"
+        type: string
+      write:
+        description: "Werkelijke databasewrites uitvoeren"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usf-imusic-production
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: Run iMusic USF pipeline on Windows
+    runs-on: [self-hosted, Windows, X64, vinylofy-windows]
+    timeout-minutes: 180
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PIP_NO_CACHE_DIR: "1"
+    steps:
+      - name: Verify runner
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        env:
+          RUNNER_NAME: ${{ runner.name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -ne 'vinylofy-windows-01') { throw "Unexpected runner: $env:RUNNER_NAME" }
+          Write-Host "Runner: $env:RUNNER_NAME"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: imusic
+          persist-credentials: false
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.15"
+          working-directory: ${{ github.workspace }}/imusic
+          enable-cache: false
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/imusic-uv-cache
+
+      - name: Check and install persistent dependencies
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: imusic
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required.' }
+          $root = Join-Path $env:LOCALAPPDATA 'Vinylofy'
+          $env:UV_PYTHON_INSTALL_DIR = Join-Path $root 'imusic-python'
+          $venv = Join-Path $root 'imusic-venv'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          if (-not (Test-Path -LiteralPath (Join-Path $venv 'Scripts/python.exe'))) {
+            Write-Host "Creating persistent iMusic environment: $venv"
+            uv venv --no-project --seed --managed-python --python 3.11 $venv
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else { Write-Host "Reusing persistent iMusic environment: $venv" }
+          $python = Join-Path $venv 'Scripts/python.exe'
+          & $python --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $packages = @(
+            @{ Name = 'requests'; Import = 'requests' },
+            @{ Name = 'beautifulsoup4'; Import = 'bs4' },
+            @{ Name = 'psycopg[binary]'; Import = 'psycopg' },
+            @{ Name = 'python-dotenv'; Import = 'dotenv' }
+          )
+          $missing = @()
+          foreach ($package in $packages) {
+            $previousErrorActionPreference = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            & $python -c "import $($package.Import)" 2>$null
+            $importExitCode = $LASTEXITCODE
+            $ErrorActionPreference = $previousErrorActionPreference
+            if ($importExitCode -ne 0) { $missing += $package.Name }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Host "Installing missing packages: $($missing -join ', ')"
+            & $python -m pip install @missing
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else { Write-Host 'All iMusic runtime packages are already available.' }
+          $modules = @(
+            'scripts/scrapers/usf/core/db.py',
+            'scripts/scrapers/usf/core/link_registry.py',
+            'scripts/scrapers/usf/core/staging.py',
+            'scripts/scrapers/usf/core/promotion.py',
+            'scripts/scrapers/usf/core/promotion_writer.py',
+            'scripts/scrapers/usf/core/quarantine.py',
+            'scripts/scrapers/usf/jobs/seed_imusic_ean_links.py',
+            'scripts/scrapers/usf/jobs/discover_imusic_genres.py',
+            'scripts/scrapers/usf/jobs/sync_imusic_listing_prices.py',
+            'scripts/scrapers/usf/jobs/requeue_stale_links.py',
+            'scripts/scrapers/usf/jobs/detail_imusic.py',
+            'scripts/scrapers/usf/jobs/stage_imusic.py',
+            'scripts/scrapers/usf/jobs/promote_imusic.py',
+            'scripts/scrapers/usf/jobs/quarantine_imusic.py',
+            'scripts/scrapers/usf/jobs/run_imusic_pipeline.py'
+          )
+          & $python -m py_compile @modules
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($module in @('seed_imusic_ean_links', 'discover_imusic_genres', 'sync_imusic_listing_prices', 'requeue_stale_links', 'detail_imusic', 'stage_imusic', 'promote_imusic', 'quarantine_imusic', 'run_imusic_pipeline')) {
+            & $python -m "scripts.scrapers.usf.jobs.$module" --help *> $null
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Validate configuration
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:DATABASE_URL) { throw 'GitHub secret DATABASE_URL ontbreekt.' }
+          Write-Host '[CONFIG] DATABASE_URL is ingesteld.'
+
+      - name: Run iMusic USF pipeline
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: imusic
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          PRICE_ONLY_UPDATE_INPUT: ${{ inputs.price_only_update }}
+          PRICE_ONLY_SYNC_INPUT: ${{ inputs.price_only_sync }}
+          PRICE_SYNC_LIMIT_INPUT: ${{ inputs.price_sync_limit }}
+          GENRE_DISCOVERY_INPUT: ${{ inputs.genre_discovery }}
+          GENRE_IDS_INPUT: ${{ inputs.genre_ids }}
+          GENRE_MAX_PAGES_INPUT: ${{ inputs.genre_max_pages_per_genre }}
+          GENRE_DELAY_INPUT: ${{ inputs.genre_delay_seconds }}
+          SEED_LIMIT_INPUT: ${{ inputs.seed_limit }}
+          REQUEUE_STALE_HOURS_INPUT: ${{ inputs.requeue_stale_hours }}
+          REQUEUE_LIMIT_INPUT: ${{ inputs.requeue_limit }}
+          REQUEUE_TARGET_QUEUE_INPUT: ${{ inputs.requeue_target_queue }}
+          DETAIL_LIMIT_INPUT: ${{ inputs.detail_limit }}
+          STAGE_LIMIT_INPUT: ${{ inputs.stage_limit }}
+          PROMOTE_LIMIT_INPUT: ${{ inputs.promote_limit }}
+          QUARANTINE_LIMIT_INPUT: ${{ inputs.quarantine_limit }}
+          WRITE_INPUT: ${{ inputs.write }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path 'output/usf-imusic' | Out-Null
+          if ($env:EVENT_NAME -eq 'schedule') {
+            $priceOnlyUpdate = 'false'; $priceOnlySync = 'true'; $priceSyncLimit = '5000'; $genreDiscovery = 'true'
+            $genreIds = '30:Country,44:Electronic,51:Folk,60:Gospel-Christian,66:Metal,73:Industrial,74:Instrumental,76:Jazz,94:Musical,98:New-Age,104:Pop,112:Reggae,115:Rock,128:Soundtrack,132:Spoken-Word,151:World-International,157:Easy-Listening,784:Klassiek,808:Kerstmis,2111:Schlager,2460:Hip-Hop-Rap,3018:K-pop,16415:Singer-songwriter,16619:Soul-RnB,16637:Indie,17888:Punk,33988:Downtempo,34057:Nu-Metal,34657:Eurodance,16:Blues'
+            $genreMaxPages = '1'; $genreDelay = '4.0'; $seedLimit = '1000'; $requeueStaleHours = '24'; $requeueLimit = '500'; $requeueTargetQueue = '500'; $detailLimit = '500'; $stageLimit = '500'; $promoteLimit = '500'; $quarantineLimit = '100'; $write = 'true'
+          } else {
+            $priceOnlyUpdate = $env:PRICE_ONLY_UPDATE_INPUT; $priceOnlySync = $env:PRICE_ONLY_SYNC_INPUT; $priceSyncLimit = $env:PRICE_SYNC_LIMIT_INPUT; $genreDiscovery = $env:GENRE_DISCOVERY_INPUT; $genreIds = $env:GENRE_IDS_INPUT; $genreMaxPages = $env:GENRE_MAX_PAGES_INPUT; $genreDelay = $env:GENRE_DELAY_INPUT; $seedLimit = $env:SEED_LIMIT_INPUT; $requeueStaleHours = $env:REQUEUE_STALE_HOURS_INPUT; $requeueLimit = $env:REQUEUE_LIMIT_INPUT; $requeueTargetQueue = $env:REQUEUE_TARGET_QUEUE_INPUT; $detailLimit = $env:DETAIL_LIMIT_INPUT; $stageLimit = $env:STAGE_LIMIT_INPUT; $promoteLimit = $env:PROMOTE_LIMIT_INPUT; $quarantineLimit = $env:QUARANTINE_LIMIT_INPUT; $write = $env:WRITE_INPUT
+          }
+          $python = Join-Path $env:LOCALAPPDATA 'Vinylofy/imusic-venv/Scripts/python.exe'
+          function Invoke-LoggedPython([string]$logName, [string[]]$commandArgs) {
+            $logPath = Join-Path 'output/usf-imusic' $logName
+            Write-Host "$python $($commandArgs -join ' ')"
+            & $python @commandArgs 2>&1 | Tee-Object -FilePath $logPath
+            $exitCode = $LASTEXITCODE
+            if ($exitCode -ne 0) { exit $exitCode }
+          }
+          function Add-WriteFlag([string[]]$commandArgs) {
+            if ($write -eq 'true') { return $commandArgs + @('--write') }
+            return $commandArgs
+          }
+          if ($priceOnlyUpdate -eq 'true') {
+            Invoke-LoggedPython 'genre-discovery.log' (Add-WriteFlag @('-u','-m','scripts.scrapers.usf.jobs.discover_imusic_genres','--genre-ids',$genreIds,'--max-pages-per-genre',$genreMaxPages,'--delay',$genreDelay))
+            if ($priceOnlySync -eq 'true') { Invoke-LoggedPython 'price-sync.log' (Add-WriteFlag @('-u','-m','scripts.scrapers.usf.jobs.sync_imusic_listing_prices','--limit',$priceSyncLimit)) }
+            Write-Host '[WORKFLOW] Price-only mode done.'
+            exit 0
+          }
+          if ($genreDiscovery -eq 'true') { Invoke-LoggedPython 'genre-discovery.log' (Add-WriteFlag @('-u','-m','scripts.scrapers.usf.jobs.discover_imusic_genres','--genre-ids',$genreIds,'--max-pages-per-genre',$genreMaxPages,'--delay',$genreDelay)) }
+          if ($priceOnlySync -eq 'true') { Invoke-LoggedPython 'price-sync.log' (Add-WriteFlag @('-u','-m','scripts.scrapers.usf.jobs.sync_imusic_listing_prices','--limit',$priceSyncLimit)) }
+          $pipelineArgs = Add-WriteFlag @('-u','-m','scripts.scrapers.usf.jobs.run_imusic_pipeline','--seed-limit',$seedLimit,'--requeue-stale-hours',$requeueStaleHours,'--requeue-limit',$requeueLimit,'--requeue-target-queue',$requeueTargetQueue,'--detail-limit',$detailLimit,'--stage-limit',$stageLimit,'--promote-limit',$promoteLimit,'--quarantine-limit',$quarantineLimit)
+          Invoke-LoggedPython 'pipeline.log' $pipelineArgs
+
+      - name: Upload iMusic logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: usf-imusic-windows-${{ github.run_id }}
+          path: imusic/output/usf-imusic/**
+          if-no-files-found: warn
+
+      - name: Clean run-specific uv cache
+        if: always()
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cache = Join-Path $env:RUNNER_TEMP 'imusic-uv-cache'
+          if (Test-Path -LiteralPath $cache) { Remove-Item -LiteralPath $cache -Recurse -Force }

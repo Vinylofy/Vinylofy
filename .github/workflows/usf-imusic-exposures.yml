@@ -1,12 +1,6 @@
 name: USF - iMusic Exposure Priority
 
 on:
-  schedule:
-    # Dagelijkse exposure-lijsten vóór de normale iMusic pipeline.
-    - cron: "5 2 * * *"
-    # Wekelijkse exposure-lijsten op zondag.
-    - cron: "45 2 * * 0"
-
   workflow_dispatch:
     inputs:
       exposure_set:
