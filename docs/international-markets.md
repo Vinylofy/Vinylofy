@@ -1,5 +1,22 @@
 # Internationale markten: controle op 29 september 2026
 
+**Actuele vrijgave (1 oktober 2026):** NL en BE hebben in Supabase marktstatus
+`active`; GB en US blijven voorbereid. België is bewust vrijgegeven via
+[`20261001200000_release_belgium_market.sql`](../supabase/migrations/20261001200000_release_belgium_market.sql).
+De vrijgavecontrole telde direct vóór en na de migratie 16 afzonderlijke
+geschikte shops. Er staan 19 bevestigde Belgische verzendbestemmingen en 10
+`unknown` geregistreerd. Er zijn geen Belgische verzendtarieven in
+`shop_shipping_rules`; de site claimt daarom geen Belgische totaalprijs.
+
+De officiële verzendinformatie is op 1 oktober opnieuw nagelopen. De pagina's
+van onder meer At The Movies, Bob's Vinyl, CD-Hal, DGM Outlet, Everything Jazz,
+FiftiesStore, iMusic, JPC, Music On Vinyl, Records on Vinyl, Sounds Venlo en
+Sounds Haarlem noemen België expliciet. De directe pagina van Coloured Vinyl
+gaf een botcontrole en die van Variaworld was niet rechtstreeks op te halen;
+hun officiële pagina-inhoud was wel via de zoekindex leesbaar. De oorspronkelijke
+bron-URL's en `verified_at` van 29 september blijven in de database staan;
+er zijn geen nieuwe bevestigingen of tarieven verondersteld.
+
 De bestaande `shops.country` is het **vestigingsland**. `shop_shipping_destinations` bevat per shop en bestemmingsland de afzonderlijke verzendstatus, officiële bron-URL en controledatum. Alle bevestigde bronnen staan als afzonderlijke records in [de migratie](../supabase/migrations/20260929120000_prepare_international_markets.sql). Een lege of `unknown` status geeft geen recht op een publiek aanbod.
 
 `C` = verzending bevestigd via de officiële shopsite; `?` = onbekend. Er is geen bestemming als `not_supported` vastgelegd, omdat daarvoor bij deze controle geen betrouwbaar expliciet negatief bewijs is gevonden. De tabel is een momentopname van actieve shops; de database is leidend voor de actuele status.
@@ -36,7 +53,7 @@ De bestaande `shops.country` is het **vestigingsland**. `shop_shipping_destinati
 | variaworld.nl | C | C | ? | ? |
 | viprecords.nl | ? | ? | ? | ? |
 
-**Telling bij controle:** NL 24 bevestigd / 5 onbekend; BE 19 / 10; GB 9 / 20; US 8 / 21. De aparte geschiktheidsfunctie telde shops met ten minste één recent, publiceerbaar aanbod: NL 20, BE 16, GB 0, US 0. Alleen NL heeft marktstatus `active`. Aanbiedingen in een andere valuta dan de marktvaluta tellen niet mee; er vindt geen valutaconversie plaats. Aantallen kunnen door de 48-uursgrens veranderen.
+**Telling bij controle op 29 september:** NL 24 bevestigd / 5 onbekend; BE 19 / 10; GB 9 / 20; US 8 / 21. De aparte geschiktheidsfunctie telde shops met ten minste één recent, publiceerbaar aanbod: NL 20, BE 16, GB 0, US 0. Op die datum had alleen NL marktstatus `active`. Aanbiedingen in een andere valuta dan de marktvaluta tellen niet mee; er vindt geen valutaconversie plaats. Aantallen kunnen door de 48-uursgrens veranderen.
 
 ## Bewuste vrijgave van een volgende markt
 
