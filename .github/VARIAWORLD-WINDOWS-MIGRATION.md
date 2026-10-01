@@ -139,3 +139,11 @@ Get Back Music uses a stateful scraper/importer workflow rather than a single US
 The state artifact is restored before every run. The Windows workflow searches its own latest successful artifact first and then the existing Ubuntu workflow artifact, so listing/detail progress survives the runner migration. The old Ubuntu workflow remains a manual fallback with its automatic schedules disabled.
 
 The persistent-runner rule applies here as well: keep the Python environment under `%LOCALAPPDATA%\Vinylofy\getbackmusic-venv`, check imports before installing, and remove only the run-specific uv cache. The CSV state remains run data and is transferred through the existing GitHub Actions artifact mechanism.
+
+## Bob's Vinyl migration
+
+Bob's Vinyl uses the existing USF listing-first pipeline. The scheduled Ubuntu route in `usf-bobsvinyl.yml` was moved to `usf-bobsvinyl-windows.yml`; the Ubuntu workflow keeps `workflow_dispatch` as the manual fallback. Both workflows use `usf-bobsvinyl-${{ github.ref }}` with `cancel-in-progress: false`, so local and fallback runs cannot execute concurrently.
+
+The Windows workflow keeps the existing schedule (`10 3 * * *`) and scheduled parameters: full listing discovery, 500 detail records and real writes. Manual runs retain the existing bounded inputs and default to `write=false` for a safe pilot. The scraper and database pipeline code were not changed.
+
+The runner uses the known Windows labels and verifies `vinylofy-windows-01`. Python 3.11 is managed by uv under the runner service account's local application data. The persistent `bobsvinyl-venv` is reused between runs; each required import (`requests`, `bs4`, `psycopg`, and `dotenv`) is checked first and only missing packages are installed. The persistent environment and managed Python are not removed; only the run-specific uv cache is cleaned.
