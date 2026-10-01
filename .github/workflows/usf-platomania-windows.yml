@@ -1,0 +1,205 @@
+name: USF - Platomania (Windows local)
+
+on:
+  schedule:
+    - cron: "35 2 * * *"
+  workflow_dispatch:
+    inputs:
+      seed_limit:
+        description: "Aantal seedcategorieen; 0 = alle seeds"
+        required: true
+        default: "1"
+        type: string
+      max_pages_per_seed:
+        description: "Aantal pagina's per seed; 0 = tot leeg/dubbel"
+        required: true
+        default: "1"
+        type: string
+      fast_price_sync:
+        description: "Snelle bulk price sync gebruiken"
+        required: true
+        default: true
+        type: boolean
+      write:
+        description: "Werkelijke databasewrites uitvoeren"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usf-platomania-production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate Platomania USF on Windows
+    runs-on: [self-hosted, Windows, X64, vinylofy-windows]
+    timeout-minutes: 30
+    steps:
+      - name: Verify runner
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        env:
+          RUNNER_NAME: ${{ runner.name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -ne 'vinylofy-windows-01') { throw "Unexpected runner: $env:RUNNER_NAME" }
+          Write-Host "Runner: $env:RUNNER_NAME"
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: platomania
+          persist-credentials: false
+      - name: Setup uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.15"
+          python-version: "3.11"
+          working-directory: ${{ github.workspace }}/platomania
+          enable-cache: false
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/platomania-uv-cache
+      - name: Prepare persistent environment and validate
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: platomania
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required for the persistent environment.' }
+          $env:UV_PYTHON_INSTALL_DIR = Join-Path $env:LOCALAPPDATA 'Vinylofy\platomania-python'
+          $venv = Join-Path $env:LOCALAPPDATA 'Vinylofy\platomania-venv'
+          $python = Join-Path $venv 'Scripts/python.exe'
+          if (-not (Test-Path -LiteralPath $python)) {
+            Write-Host "Creating persistent Platomania environment: $venv"
+            uv venv --no-project --seed --managed-python --python 3.11 $venv
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else { Write-Host "Reusing persistent Platomania environment: $venv" }
+          $packages = @(
+            @{ Import = 'requests'; Spec = 'requests' },
+            @{ Import = 'bs4'; Spec = 'beautifulsoup4' },
+            @{ Import = 'psycopg'; Spec = 'psycopg[binary]' },
+            @{ Import = 'dotenv'; Spec = 'python-dotenv' }
+          )
+          foreach ($package in $packages) {
+            & $python -c "import $($package.Import)" *> $null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Installing missing package: $($package.Spec)"
+              & $python -m pip install $package.Spec
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            } else { Write-Host "Package already available: $($package.Spec)" }
+          }
+          $modules = @('scripts/scrapers/legacy/platomania_legacy.py', 'scripts/scrapers/usf/jobs/discover_platomania.py', 'scripts/scrapers/usf/jobs/refresh_platomania_listing_prices.py', 'scripts/scrapers/usf/jobs/run_platomania_pipeline.py')
+          & $python -m py_compile @modules
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($module in @('discover_platomania', 'refresh_platomania_listing_prices', 'run_platomania_pipeline')) {
+            & $python -m "scripts.scrapers.usf.jobs.$module" --help *> $null
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+  run:
+    name: Run Platomania USF pipeline on Windows
+    needs: validate
+    runs-on: [self-hosted, Windows, X64, vinylofy-windows]
+    timeout-minutes: 360
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PIP_NO_CACHE_DIR: "1"
+    steps:
+      - name: Verify runner
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        env:
+          RUNNER_NAME: ${{ runner.name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -ne 'vinylofy-windows-01') { throw "Unexpected runner: $env:RUNNER_NAME" }
+          Write-Host "Runner: $env:RUNNER_NAME"
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: platomania
+          persist-credentials: false
+      - name: Setup uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.15"
+          python-version: "3.11"
+          working-directory: ${{ github.workspace }}/platomania
+          enable-cache: false
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/platomania-uv-cache
+      - name: Prepare persistent environment and missing dependencies
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: platomania
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required for the persistent environment.' }
+          $env:UV_PYTHON_INSTALL_DIR = Join-Path $env:LOCALAPPDATA 'Vinylofy\platomania-python'
+          $venv = Join-Path $env:LOCALAPPDATA 'Vinylofy\platomania-venv'
+          $python = Join-Path $venv 'Scripts/python.exe'
+          if (-not (Test-Path -LiteralPath $python)) {
+            Write-Host "Creating persistent Platomania environment: $venv"
+            uv venv --no-project --seed --managed-python --python 3.11 $venv
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else { Write-Host "Reusing persistent Platomania environment: $venv" }
+          $packages = @(
+            @{ Import = 'requests'; Spec = 'requests' },
+            @{ Import = 'bs4'; Spec = 'beautifulsoup4' },
+            @{ Import = 'psycopg'; Spec = 'psycopg[binary]' },
+            @{ Import = 'dotenv'; Spec = 'python-dotenv' }
+          )
+          foreach ($package in $packages) {
+            & $python -c "import $($package.Import)" *> $null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Installing missing package: $($package.Spec)"
+              & $python -m pip install $package.Spec
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            } else { Write-Host "Package already available: $($package.Spec)" }
+          }
+      - name: Validate configuration
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:DATABASE_URL) { throw 'GitHub secret DATABASE_URL ontbreekt' }
+          Write-Host '[CONFIG] DATABASE_URL is ingesteld'
+      - name: Run Platomania USF pipeline
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: platomania
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SEED_LIMIT_INPUT: ${{ inputs.seed_limit }}
+          MAX_PAGES_INPUT: ${{ inputs.max_pages_per_seed }}
+          FAST_PRICE_SYNC_INPUT: ${{ inputs.fast_price_sync }}
+          WRITE_INPUT: ${{ inputs.write }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path 'output/usf-platomania' | Out-Null
+          $python = Join-Path $env:LOCALAPPDATA 'Vinylofy/platomania-venv/Scripts/python.exe'
+          if ($env:EVENT_NAME -eq 'schedule') {
+            $seedLimit = '0'; $maxPages = '0'; $fastPriceSync = 'true'; $write = 'true'
+          } else {
+            $seedLimit = if ($env:SEED_LIMIT_INPUT) { $env:SEED_LIMIT_INPUT } else { '1' }
+            $maxPages = if ($env:MAX_PAGES_INPUT) { $env:MAX_PAGES_INPUT } else { '1' }
+            $fastPriceSync = if ($env:FAST_PRICE_SYNC_INPUT) { $env:FAST_PRICE_SYNC_INPUT } else { 'true' }
+            $write = if ($env:WRITE_INPUT) { $env:WRITE_INPUT } else { 'false' }
+          }
+          $args = @('-u', '-m', 'scripts.scrapers.usf.jobs.run_platomania_pipeline', '--seed-limit', $seedLimit, '--max-pages-per-seed', $maxPages, '--delay-seconds', '0.35')
+          if ($fastPriceSync -eq 'true') { $args += '--fast-price-sync' }
+          if ($write -eq 'true') { $args += '--write' }
+          Write-Host "[WORKFLOW] $python $($args -join ' ')"
+          & $python @args 2>&1 | Tee-Object -FilePath 'output/usf-platomania/pipeline.log'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload pipeline log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usf-platomania-windows-${{ github.run_id }}
+          path: platomania/output/usf-platomania/
+          if-no-files-found: ignore
+      - name: Clean temporary Platomania cache
+        if: always()
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:RUNNER_TEMP 'platomania-uv-cache'
+          if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }

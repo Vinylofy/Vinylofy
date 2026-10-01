@@ -103,3 +103,13 @@ Do not use the manual `write=true` full pipeline as a substitute for the schedul
 ## Scope caveat
 
 The dedicated `usf-variaworld.yml` workflow is the migrated path. At the time of the migration, the broader `vinylofy-automation.yml` workflow also offered a Variaworld selection on a GitHub-hosted runner; it was left unchanged to keep the pilot scoped. Check whether that alternate path is still present before treating the self-hosted workflow as the only way to run Variaworld.
+
+## Platomania migration: persistent runner software
+
+Platomania uses the same Windows runner pattern in `.github/workflows/usf-platomania-windows.yml`:
+
+- The virtual environment is kept in `%LOCALAPPDATA%\Vinylofy\platomania-venv` and the managed Python installation in `%LOCALAPPDATA%\Vinylofy\platomania-python`.
+- Before each job, the workflow checks whether the Python environment exists. It creates it only when the Python executable is missing.
+- Before each job, each required import is checked (`requests`, `bs4`, `psycopg`, and `dotenv`). Only missing packages are installed.
+- The persistent virtual environment and managed Python are not removed after a run. Only the run-specific uv cache is cleaned.
+- This check-before-install policy applies to future migrated shops as well: reuse software already present on the local runner, add only missing components, and leave the reusable installation in place after the pipeline finishes.
