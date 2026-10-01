@@ -1,0 +1,255 @@
+name: Shop - Get Back Music (Windows local)
+
+on:
+  schedule:
+    # Daily listing-first price refresh.
+    - cron: "17 2 * * *"
+    # Daily listing refresh plus at most 25 unresolved EAN/detail pages.
+    - cron: "47 4 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run type"
+        required: true
+        default: price
+        type: choice
+        options:
+          - price
+          - ean
+      listing_pages:
+        description: "Number of listing pages, or all"
+        required: true
+        default: "1"
+        type: string
+      ean_limit:
+        description: "Number of new EAN/detail pages in ean mode; 0 or all means all unresolved"
+        required: true
+        default: "25"
+        type: string
+      write:
+        description: "Execute database writes"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: vinylofy-getbackmusic
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate Get Back Music on Windows
+    runs-on: [self-hosted, Windows, X64, vinylofy-windows]
+    timeout-minutes: 30
+    steps:
+      - name: Verify runner
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        env:
+          RUNNER_NAME: ${{ runner.name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -ne 'vinylofy-windows-01') { throw "Unexpected runner: $env:RUNNER_NAME" }
+          Write-Host "Runner: $env:RUNNER_NAME"
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          path: getbackmusic
+          persist-credentials: false
+      - name: Setup uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.15"
+          python-version: "3.11"
+          working-directory: ${{ github.workspace }}/getbackmusic
+          enable-cache: false
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/getbackmusic-uv-cache
+      - name: Prepare persistent environment and validate
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: getbackmusic
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required for the persistent environment.' }
+          $env:UV_PYTHON_INSTALL_DIR = Join-Path $env:LOCALAPPDATA 'Vinylofy\getbackmusic-python'
+          $venv = Join-Path $env:LOCALAPPDATA 'Vinylofy\getbackmusic-venv'
+          $python = Join-Path $venv 'Scripts/python.exe'
+          if (-not (Test-Path -LiteralPath $python)) {
+            Write-Host "Creating persistent Get Back Music environment: $venv"
+            uv venv --no-project --seed --managed-python --python 3.11 --link-mode copy $venv
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else { Write-Host "Reusing persistent Get Back Music environment: $venv" }
+          $packages = @(
+            @{ Import = 'requests'; Spec = 'requests' },
+            @{ Import = 'bs4'; Spec = 'beautifulsoup4' },
+            @{ Import = 'psycopg'; Spec = 'psycopg[binary]' },
+            @{ Import = 'dotenv'; Spec = 'python-dotenv' }
+          )
+          foreach ($package in $packages) {
+            & $python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('$($package.Import)') else 1)"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Installing missing package: $($package.Spec)"
+              & $python -m pip install $package.Spec
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            } else { Write-Host "Package already available: $($package.Spec)" }
+          }
+          $modules = @(
+            'scripts/scrapers/getbackmusic.py',
+            'scripts/importers/import_getbackmusic.py',
+            'scripts/automation/restore_latest_state_artifact.py',
+            'scripts/automation/run_vinylofy_pipeline.py'
+          )
+          & $python -m py_compile @modules
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $python -m scripts.scrapers.getbackmusic --help *> $null
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $python scripts/automation/run_vinylofy_pipeline.py --help *> $null
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $python -m unittest tests.test_getbackmusic_scraper tests.test_getbackmusic_importer tests.test_restore_latest_state_artifact -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  run:
+    name: Run Get Back Music on Windows
+    needs: validate
+    runs-on: [self-hosted, Windows, X64, vinylofy-windows]
+    timeout-minutes: 180
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PYTHONUNBUFFERED: "1"
+      PIP_NO_CACHE_DIR: "1"
+    steps:
+      - name: Verify runner
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        env:
+          RUNNER_NAME: ${{ runner.name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -ne 'vinylofy-windows-01') { throw "Unexpected runner: $env:RUNNER_NAME" }
+          Write-Host "Runner: $env:RUNNER_NAME"
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          path: getbackmusic
+          persist-credentials: false
+      - name: Setup uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.15"
+          python-version: "3.11"
+          working-directory: ${{ github.workspace }}/getbackmusic
+          enable-cache: false
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/getbackmusic-uv-cache
+      - name: Prepare persistent environment and missing dependencies
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: getbackmusic
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required for the persistent environment.' }
+          $env:UV_PYTHON_INSTALL_DIR = Join-Path $env:LOCALAPPDATA 'Vinylofy\getbackmusic-python'
+          $venv = Join-Path $env:LOCALAPPDATA 'Vinylofy\getbackmusic-venv'
+          $python = Join-Path $venv 'Scripts/python.exe'
+          if (-not (Test-Path -LiteralPath $python)) {
+            Write-Host "Creating persistent Get Back Music environment: $venv"
+            uv venv --no-project --seed --managed-python --python 3.11 --link-mode copy $venv
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else { Write-Host "Reusing persistent Get Back Music environment: $venv" }
+          $packages = @(
+            @{ Import = 'requests'; Spec = 'requests' },
+            @{ Import = 'bs4'; Spec = 'beautifulsoup4' },
+            @{ Import = 'psycopg'; Spec = 'psycopg[binary]' },
+            @{ Import = 'dotenv'; Spec = 'python-dotenv' }
+          )
+          foreach ($package in $packages) {
+            & $python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('$($package.Import)') else 1)"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Installing missing package: $($package.Spec)"
+              & $python -m pip install $package.Spec
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            } else { Write-Host "Package already available: $($package.Spec)" }
+          }
+      - name: Restore latest Get Back Music state
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: getbackmusic
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path 'data/raw/getbackmusic' | Out-Null
+          $python = Join-Path $env:LOCALAPPDATA 'Vinylofy/getbackmusic-venv/Scripts/python.exe'
+          $restore = @(
+            '-u', 'scripts/automation/restore_latest_state_artifact.py',
+            '--repo', $env:GITHUB_REPOSITORY,
+            '--target-dir', 'data/raw/getbackmusic',
+            '--artifact-prefix', 'getbackmusic-state-',
+            '--workflow-name', 'Shop - Get Back Music (Windows local)',
+            '--workflow-name', 'Shop - Get Back Music',
+            '--fail-on-missing'
+          )
+          & $python @restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Validate configuration
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:DATABASE_URL) { Write-Host '[CONFIG] DATABASE_URL ontbreekt; dry-run-import blijft mogelijk' }
+          else { Write-Host '[CONFIG] DATABASE_URL is ingesteld' }
+      - name: Resolve and run pipeline
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: getbackmusic
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_LISTING_PAGES: ${{ inputs.listing_pages }}
+          INPUT_EAN_LIMIT: ${{ inputs.ean_limit }}
+          INPUT_WRITE: ${{ inputs.write }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path 'output' | Out-Null
+          $python = Join-Path $env:LOCALAPPDATA 'Vinylofy/getbackmusic-venv/Scripts/python.exe'
+          $env:Path = (Join-Path $env:LOCALAPPDATA 'Vinylofy/getbackmusic-venv/Scripts') + ';' + $env:Path
+          if ($env:EVENT_NAME -eq 'schedule' -and $env:SCHEDULE -eq '17 2 * * *') {
+            $mode = 'price'; $listingPages = 'all'; $eanLimit = '25'; $write = 'true'
+          } elseif ($env:EVENT_NAME -eq 'schedule' -and $env:SCHEDULE -eq '47 4 * * *') {
+            $mode = 'ean'; $listingPages = 'all'; $eanLimit = '25'; $write = 'true'
+          } else {
+            $mode = if ($env:INPUT_MODE) { $env:INPUT_MODE } else { 'price' }
+            $listingPages = if ($env:INPUT_LISTING_PAGES) { $env:INPUT_LISTING_PAGES } else { '1' }
+            $eanLimit = if ($env:INPUT_EAN_LIMIT) { $env:INPUT_EAN_LIMIT } else { '25' }
+            $write = if ($env:INPUT_WRITE) { $env:INPUT_WRITE } else { 'false' }
+          }
+          if ($listingPages -eq 'all') { $maxPages = '0' } else { $maxPages = $listingPages }
+          if ($mode -eq 'price') { $scraperMode = 'listing'; $detailLimit = '0' }
+          elseif ($mode -eq 'ean') { $scraperMode = 'both'; $detailLimit = $eanLimit }
+          else { throw "Invalid mode: $mode" }
+          if ($write -eq 'true' -and -not $env:DATABASE_URL) { throw 'DATABASE_URL ontbreekt voor write=true' }
+          $env:VINYLOFY_SCRAPER_CMD_GETBACKMUSIC = "`"$python`" -u scripts/scrapers/getbackmusic.py --mode $scraperMode --max-pages $maxPages --detail-limit $detailLimit --delay-seconds 2 --output-dir data/raw/getbackmusic"
+          $command = @('-u', 'scripts/automation/run_vinylofy_pipeline.py', '--shop', 'getbackmusic', '--skip-upload', '--summary-out', 'output/getbackmusic_pipeline_summary.json')
+          if ($write -ne 'true') { $command += '--dry-run-import' }
+          Write-Host "[CONFIG] mode=$mode listing_pages=$listingPages detail_limit=$detailLimit write=$write"
+          Write-Host "[WORKFLOW] $python $($command -join ' ')"
+          & $python @command 2>&1 | Tee-Object -FilePath 'output/getbackmusic_pipeline.log'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload Get Back Music state and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: getbackmusic-state-${{ github.run_id }}
+          path: |
+            getbackmusic/data/raw/getbackmusic/*.csv
+            getbackmusic/output/getbackmusic_*.json
+            getbackmusic/output/getbackmusic_*.csv
+            getbackmusic/output/getbackmusic_*.log
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Clean temporary Get Back Music cache
+        if: always()
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:RUNNER_TEMP 'getbackmusic-uv-cache'
+          if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }

@@ -128,3 +128,14 @@ The cloud workflow remains available through `workflow_dispatch` and no longer h
 The first local manual test should use a small `max_products` value and `write=false`. A bounded write can then enable `write=true` while keeping the product, stage and promote limits explicit. Scheduled execution preserves the existing full-catalog settings.
 
 Because the FiftiesStore refresh normally marks links absent from the fetched catalog as out of stock, bounded runs pass `--skip-delist-missing`. Full scheduled runs keep the existing delist behavior; a partial sample must never be treated as the complete catalog.
+
+## Get Back Music migration
+
+Get Back Music uses a stateful scraper/importer workflow rather than a single USF job. The Windows workflow keeps the existing pipeline and its two schedules:
+
+- daily listing-first price refresh;
+- daily listing refresh with a bounded unresolved EAN/detail batch.
+
+The state artifact is restored before every run. The Windows workflow searches its own latest successful artifact first and then the existing Ubuntu workflow artifact, so listing/detail progress survives the runner migration. The old Ubuntu workflow remains a manual fallback with its automatic schedules disabled.
+
+The persistent-runner rule applies here as well: keep the Python environment under `%LOCALAPPDATA%\Vinylofy\getbackmusic-venv`, check imports before installing, and remove only the run-specific uv cache. The CSV state remains run data and is transferred through the existing GitHub Actions artifact mechanism.

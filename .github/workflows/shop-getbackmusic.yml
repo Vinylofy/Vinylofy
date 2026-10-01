@@ -1,11 +1,9 @@
 name: Shop - Get Back Music
 
 on:
-  schedule:
-    # Daily listing-first price refresh.
-    - cron: "17 2 * * *"
-    # Daily listing refresh plus at most 25 unresolved EAN/detail pages.
-    - cron: "47 4 * * *"
+  # Automatic runs are handled by shop-getbackmusic-windows.yml. Keep this
+  # workflow as the GitHub-hosted manual fallback. Restore the schedule block
+  # here if the local Windows runner is unavailable long-term.
 
   workflow_dispatch:
     inputs:
