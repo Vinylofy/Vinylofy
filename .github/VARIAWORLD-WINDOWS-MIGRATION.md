@@ -140,6 +140,14 @@ The state artifact is restored before every run. The Windows workflow searches i
 
 The persistent-runner rule applies here as well: keep the Python environment under `%LOCALAPPDATA%\Vinylofy\getbackmusic-venv`, check imports before installing, and remove only the run-specific uv cache. The CSV state remains run data and is transferred through the existing GitHub Actions artifact mechanism.
 
+## Platenzaak migration
+
+Platenzaak uses the existing USF listing-first pipeline. The scheduled Ubuntu route in `usf-platenzaak.yml` was moved to `usf-platenzaak-windows.yml`; the Ubuntu workflow keeps `workflow_dispatch` as the manual fallback. Both workflows use the existing concurrency group `vinylofy-platenzaak` with `cancel-in-progress: false`, which also protects against overlap with the retained legacy manual workflows.
+
+The Windows workflow keeps the existing schedule (`55 2 * * *`) and scheduled parameters: full listing discovery, 500 detail records, and real writes. Manual runs retain the existing bounded inputs and default to `write=false`. The pipeline order remains listing refresh, latest-title prioritization, detail EAN enrichment, and a second listing refresh. Legacy stage/promote remain disabled by the existing pipeline contract.
+
+The runner verifies `vinylofy-windows-01` and uses Windows PowerShell with process-scoped execution policy bypass. Python 3.11 is managed by uv under local application data. The persistent `platenzaak-venv` is reused between runs; imports are checked first and only missing `requests`, `bs4`, `psycopg`, or `dotenv` packages are installed. The persistent environment is retained and only the run-specific uv cache is cleaned.
+
 ## Bob's Vinyl migration
 
 Bob's Vinyl uses the existing USF listing-first pipeline. The scheduled Ubuntu route in `usf-bobsvinyl.yml` was moved to `usf-bobsvinyl-windows.yml`; the Ubuntu workflow keeps `workflow_dispatch` as the manual fallback. Both workflows use `usf-bobsvinyl-${{ github.ref }}` with `cancel-in-progress: false`, so local and fallback runs cannot execute concurrently.

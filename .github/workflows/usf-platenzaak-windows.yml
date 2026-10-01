@@ -1,0 +1,179 @@
+name: USF - Platenzaak (Windows local)
+
+on:
+  schedule:
+    - cron: "55 2 * * *"
+  workflow_dispatch:
+    inputs:
+      discovery_max_pages:
+        description: "Aantal listingpagina's; 0 = volledige catalogus"
+        required: true
+        default: "2"
+        type: string
+      detail_limit:
+        description: "Maximaal aantal eligible detailpagina's"
+        required: true
+        default: "5"
+        type: string
+      stage_limit:
+        description: "Maximaal aantal raw records naar staged_offers"
+        required: true
+        default: "5"
+        type: string
+      promote_limit:
+        description: "Maximaal aantal staged offers promoveren"
+        required: true
+        default: "5"
+        type: string
+      write:
+        description: "Werkelijke registry-, raw-, staging- en publieke writes uitvoeren"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vinylofy-platenzaak
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: Run Platenzaak USF pipeline on Windows
+    runs-on: [self-hosted, Windows, X64, vinylofy-windows]
+    timeout-minutes: 180
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PIP_NO_CACHE_DIR: "1"
+    steps:
+      - name: Verify runner
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        env:
+          RUNNER_NAME: ${{ runner.name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -ne 'vinylofy-windows-01') { throw "Unexpected runner: $env:RUNNER_NAME" }
+          Write-Host "Runner: $env:RUNNER_NAME"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: platenzaak
+          persist-credentials: false
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.15"
+          working-directory: ${{ github.workspace }}/platenzaak
+          enable-cache: false
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/platenzaak-uv-cache
+
+      - name: Check and install persistent dependencies
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: platenzaak
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required.' }
+          $root = Join-Path $env:LOCALAPPDATA 'Vinylofy'
+          $env:UV_PYTHON_INSTALL_DIR = Join-Path $root 'platenzaak-python'
+          $venv = Join-Path $root 'platenzaak-venv'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          if (-not (Test-Path -LiteralPath (Join-Path $venv 'Scripts/python.exe'))) {
+            Write-Host "Creating persistent Platenzaak environment: $venv"
+            uv venv --no-project --seed --managed-python --python 3.11 $venv
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else { Write-Host "Reusing persistent Platenzaak environment: $venv" }
+          $python = Join-Path $venv 'Scripts/python.exe'
+          & $python --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $packages = @(
+            @{ Name = 'requests'; Import = 'requests' },
+            @{ Name = 'beautifulsoup4'; Import = 'bs4' },
+            @{ Name = 'psycopg[binary]'; Import = 'psycopg' },
+            @{ Name = 'python-dotenv'; Import = 'dotenv' }
+          )
+          $missing = @()
+          foreach ($package in $packages) {
+            $previousErrorActionPreference = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            & $python -c "import $($package.Import)" 2>$null
+            $importExitCode = $LASTEXITCODE
+            $ErrorActionPreference = $previousErrorActionPreference
+            if ($importExitCode -ne 0) { $missing += $package.Name }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Host "Installing missing packages: $($missing -join ', ')"
+            & $python -m pip install @missing
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else { Write-Host 'All Platenzaak runtime packages are already available.' }
+          $modules = @(
+            'scripts/scrapers/platenzaak.py',
+            'scripts/scrapers/usf/core/db.py',
+            'scripts/scrapers/usf/core/ean.py',
+            'scripts/scrapers/usf/core/large_catalog_policy.py',
+            'scripts/scrapers/usf/core/link_registry.py',
+            'scripts/scrapers/usf/core/staging.py',
+            'scripts/scrapers/usf/core/promotion.py',
+            'scripts/scrapers/usf/core/promotion_writer.py',
+            'scripts/scrapers/usf/jobs/discover_platenzaak.py',
+            'scripts/scrapers/usf/jobs/prioritize_latest_platenzaak.py',
+            'scripts/scrapers/usf/jobs/detail_platenzaak.py',
+            'scripts/scrapers/usf/jobs/refresh_platenzaak_listing_prices.py',
+            'scripts/scrapers/usf/jobs/stage_platenzaak.py',
+            'scripts/scrapers/usf/jobs/promote_platenzaak.py',
+            'scripts/scrapers/usf/jobs/run_platenzaak_pipeline.py'
+          )
+          & $python -m py_compile @modules
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($module in @(
+            'discover_platenzaak',
+            'detail_platenzaak',
+            'stage_platenzaak',
+            'promote_platenzaak',
+            'run_platenzaak_pipeline'
+          )) {
+            & $python -m "scripts.scrapers.usf.jobs.$module" --help *> $null
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Validate configuration
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:DATABASE_URL) { throw 'GitHub secret DATABASE_URL ontbreekt.' }
+          Write-Host '[CONFIG] DATABASE_URL is ingesteld.'
+
+      - name: Run Platenzaak USF pipeline
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: platenzaak
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          WRITE_INPUT: ${{ inputs.write }}
+          DISCOVERY_MAX_PAGES_INPUT: ${{ inputs.discovery_max_pages }}
+          DETAIL_LIMIT_INPUT: ${{ inputs.detail_limit }}
+          STAGE_LIMIT_INPUT: ${{ inputs.stage_limit }}
+          PROMOTE_LIMIT_INPUT: ${{ inputs.promote_limit }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:EVENT_NAME -eq 'schedule') {
+            $discoveryMaxPages = '0'; $detailLimit = '500'; $stageLimit = '500'; $promoteLimit = '500'; $write = 'true'
+          } else {
+            $discoveryMaxPages = $env:DISCOVERY_MAX_PAGES_INPUT; $detailLimit = $env:DETAIL_LIMIT_INPUT; $stageLimit = $env:STAGE_LIMIT_INPUT; $promoteLimit = $env:PROMOTE_LIMIT_INPUT; $write = $env:WRITE_INPUT
+          }
+          $python = Join-Path $env:LOCALAPPDATA 'Vinylofy/platenzaak-venv/Scripts/python.exe'
+          $args = @('-u', '-m', 'scripts.scrapers.usf.jobs.run_platenzaak_pipeline', '--discovery-max-pages', $discoveryMaxPages, '--detail-limit', $detailLimit, '--stage-limit', $stageLimit, '--promote-limit', $promoteLimit)
+          if ($write -eq 'true') { $args += '--write' }
+          Write-Host "$python $($args -join ' ')"
+          & $python @args
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Clean run-specific uv cache
+        if: always()
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cache = Join-Path $env:RUNNER_TEMP 'platenzaak-uv-cache'
+          if (Test-Path -LiteralPath $cache) { Remove-Item -LiteralPath $cache -Recurse -Force }

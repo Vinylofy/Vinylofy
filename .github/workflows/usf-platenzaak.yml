@@ -1,8 +1,6 @@
 name: USF - Platenzaak
 
 on:
-  schedule:
-    - cron: "55 2 * * *"
   pull_request:
     paths:
       - ".github/workflows/usf-platenzaak.yml"
