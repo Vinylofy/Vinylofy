@@ -2,7 +2,7 @@ name: USF - FiftiesStore (Windows local)
 
 on:
   schedule:
-    - cron: "35 3 * * *"
+    - cron: "35 13 * * *"
   workflow_dispatch:
     inputs:
       batch_size:

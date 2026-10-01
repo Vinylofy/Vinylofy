@@ -2,7 +2,7 @@ name: USF - Sounds Venlo (Windows local)
 
 on:
   schedule:
-    - cron: "35 2 * * *"
+    - cron: "35 7 * * *"
   workflow_dispatch:
     inputs:
       skip_listing:

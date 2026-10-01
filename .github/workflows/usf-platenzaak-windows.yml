@@ -2,7 +2,7 @@ name: USF - Platenzaak (Windows local)
 
 on:
   schedule:
-    - cron: "55 2 * * *"
+    - cron: "55 9 * * *"
   workflow_dispatch:
     inputs:
       discovery_max_pages:

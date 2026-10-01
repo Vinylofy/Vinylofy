@@ -2,7 +2,7 @@ name: USF - Platomania (Windows local)
 
 on:
   schedule:
-    - cron: "35 2 * * *"
+    - cron: "35 8 * * *"
   workflow_dispatch:
     inputs:
       seed_limit:

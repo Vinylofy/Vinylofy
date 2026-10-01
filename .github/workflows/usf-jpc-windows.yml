@@ -5,7 +5,7 @@ on:
     # Twee keer per dag een listingpagina-shard; 4 shards = volledige page-cyclus binnen 48 uur.
     - cron: "17 4,16 * * *"
     # Tijdelijke detailburst: 4x per dag 500 missende EAN-detailpagina's.
-    - cron: "47 1,7,13,19 * * *"
+    - cron: "47 2,8,14,20 * * *"
   workflow_dispatch:
     inputs:
       routes:

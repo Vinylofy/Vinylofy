@@ -2,7 +2,7 @@ name: USF - iMusic (Windows local)
 
 on:
   schedule:
-    - cron: "25 3 * * *"
+    - cron: "25 12 * * *"
   workflow_dispatch:
     inputs:
       price_only_update:

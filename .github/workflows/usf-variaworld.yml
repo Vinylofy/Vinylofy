@@ -2,8 +2,8 @@ name: USF - Variaworld
 
 on:
   schedule:
-    - cron: "20 2 * * *"
-    - cron: "50 2 * * 2,5"
+    - cron: "20 5 * * *"
+    - cron: "20 6 * * 2,5"
   workflow_dispatch:
     inputs:
       listing_max_pages:

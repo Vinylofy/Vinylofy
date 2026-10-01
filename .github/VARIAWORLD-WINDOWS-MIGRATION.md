@@ -140,6 +140,27 @@ The state artifact is restored before every run. The Windows workflow searches i
 
 The persistent-runner rule applies here as well: keep the Python environment under `%LOCALAPPDATA%\Vinylofy\getbackmusic-venv`, check imports before installing, and remove only the run-specific uv cache. The CSV state remains run data and is transferred through the existing GitHub Actions artifact mechanism.
 
+## Windows runner schedule audit
+
+The self-hosted runner executes one job at a time, but each shop has its own concurrency group. The previous schedules therefore allowed several long database pipelines to become runnable within the same 30-minute window. A green workflow did not prove that another shop was not waiting in the runner queue.
+
+The schedules were spread across the day while keeping each workflow's frequency and pipeline parameters unchanged:
+
+- iMusic exposure: daily `05 1 * * *`; weekly `05 0 * * 0`.
+- Get Back Music: `47 3 * * *` and `17 22 * * *`.
+- Variaworld: `20 5 * * *` and `20 6 * * 2,5`.
+- Sounds Venlo: `35 7 * * *`.
+- Platomania: `35 8 * * *`.
+- Platenzaak: `55 9 * * *`.
+- Bob's Vinyl: `35 10 * * *`.
+- Records on Vinyl: `17 11 * * *`.
+- iMusic normal pipeline: `25 12 * * *`.
+- FiftiesStore: `35 13 * * *`.
+- JPC listing remains twice daily at `17 4,16 * * *`; its detail bursts are `47 2,8,14,20 * * *`.
+- CD Hal Ruinen remains daily at `30 0 * * *` in the `Europe/Amsterdam` timezone.
+
+The larger workflows now have roughly an hour between scheduled starts. The shared concurrency groups remain unchanged, so a manual fallback still serializes with its local workflow. This is schedule-level protection; it does not replace inspecting a queued or unusually long run.
+
 ## iMusic migration
 
 iMusic has two scheduled USF writers: the normal pipeline and the exposure-priority pipeline. Both were moved to Windows workflows, `usf-imusic-windows.yml` and `usf-imusic-exposures-windows.yml`. Their Ubuntu schedules were disabled while both Ubuntu workflows retain `workflow_dispatch` as manual fallbacks.

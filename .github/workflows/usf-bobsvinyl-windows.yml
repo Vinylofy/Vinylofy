@@ -2,7 +2,7 @@ name: USF - Bobsvinyl (Windows local)
 
 on:
   schedule:
-    - cron: "10 3 * * *"
+    - cron: "35 10 * * *"
   workflow_dispatch:
     inputs:
       discovery_max_pages:
