@@ -4,7 +4,7 @@ on:
   schedule:
     # Daily listing-first price refresh.
     - cron: "17 2 * * *"
-    # Daily listing refresh plus at most 25 unresolved EAN/detail pages.
+    # Daily listing refresh plus at most 50 unresolved EAN/detail pages.
     - cron: "47 4 * * *"
   workflow_dispatch:
     inputs:
@@ -215,7 +215,7 @@ jobs:
           if ($env:EVENT_NAME -eq 'schedule' -and $env:SCHEDULE -eq '17 2 * * *') {
             $mode = 'price'; $listingPages = 'all'; $eanLimit = '25'; $write = 'true'
           } elseif ($env:EVENT_NAME -eq 'schedule' -and $env:SCHEDULE -eq '47 4 * * *') {
-            $mode = 'ean'; $listingPages = 'all'; $eanLimit = '25'; $write = 'true'
+            $mode = 'ean'; $listingPages = 'all'; $eanLimit = '50'; $write = 'true'
           } else {
             $mode = if ($env:INPUT_MODE) { $env:INPUT_MODE } else { 'price' }
             $listingPages = if ($env:INPUT_LISTING_PAGES) { $env:INPUT_LISTING_PAGES } else { '1' }

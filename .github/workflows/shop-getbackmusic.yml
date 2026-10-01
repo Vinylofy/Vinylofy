@@ -157,7 +157,7 @@ jobs:
           elif [ "$EVENT_NAME" = "schedule" ] && [ "$SCHEDULE" = "47 4 * * *" ]; then
             MODE="ean"
             LISTING_PAGES="all"
-            EAN_LIMIT="25"
+            EAN_LIMIT="50"
             WRITE="true"
           else
             MODE="$INPUT_MODE"
