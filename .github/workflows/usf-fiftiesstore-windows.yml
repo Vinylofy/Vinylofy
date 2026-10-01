@@ -201,6 +201,7 @@ jobs:
             $write = if ($env:WRITE_INPUT) { $env:WRITE_INPUT } else { 'false' }
           }
           $refresh = @('-u', '-m', 'scripts.scrapers.usf.jobs.refresh_fiftiesstore_listing_prices', '--batch-size', $batchSize, '--max-products', $maxProducts, '--sleep', '0.25', '--skip-raw')
+          if ([int]$maxProducts -gt 0) { $refresh += '--skip-delist-missing' }
           if ($write -eq 'true') { $refresh += '--write' }
           Write-Host "[WORKFLOW] refresh $python $($refresh -join ' ')"
           & $python @refresh 2>&1 | Tee-Object -FilePath 'output/usf-fiftiesstore/refresh.log'

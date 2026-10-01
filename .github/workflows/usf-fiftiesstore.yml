@@ -88,6 +88,7 @@ jobs:
       - name: Refresh
         run: |
           cmd=(python -u -m scripts.scrapers.usf.jobs.refresh_fiftiesstore_listing_prices --batch-size "${{ steps.settings.outputs.batch_size }}" --max-products "${{ steps.settings.outputs.max_products }}" --skip-raw)
+          if [ "${{ steps.settings.outputs.max_products }}" -gt 0 ]; then cmd+=(--skip-delist-missing); fi
           if [ "${{ steps.settings.outputs.write }}" = "true" ]; then cmd+=(--write); fi
           "${cmd[@]}"
 

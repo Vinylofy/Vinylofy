@@ -126,3 +126,5 @@ FiftiesStore keeps its existing four-step pipeline on the Windows runner:
 The cloud workflow remains available through `workflow_dispatch` and no longer has an automatic schedule. The Windows workflow uses the same `usf-fiftiesstore-production` concurrency group with `cancel-in-progress: false`, so local and fallback runs cannot overlap.
 
 The first local manual test should use a small `max_products` value and `write=false`. A bounded write can then enable `write=true` while keeping the product, stage and promote limits explicit. Scheduled execution preserves the existing full-catalog settings.
+
+Because the FiftiesStore refresh normally marks links absent from the fetched catalog as out of stock, bounded runs pass `--skip-delist-missing`. Full scheduled runs keep the existing delist behavior; a partial sample must never be treated as the complete catalog.

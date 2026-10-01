@@ -195,6 +195,11 @@ def main():
     ap.add_argument("--sleep", type=float, default=0.25)
     ap.add_argument("--write", action="store_true")
     ap.add_argument("--skip-raw", action="store_true", help="Skip raw_shop_scrapes inserts; useful for Actions performance")
+    ap.add_argument(
+        "--skip-delist-missing",
+        action="store_true",
+        help="Do not mark links absent from a bounded listing sample out of stock.",
+    )
     args = ap.parse_args()
 
     load_env()
@@ -318,12 +323,15 @@ def main():
 
         print("[FIFTIES-API] raw", {"inserted": inserted, "run_id": run_id}, flush=True)
 
-    delist_stats = mark_missing_links_out_of_stock(
-        shop_id=SHOP_ID,
-        seen_source_urls=[r["source_url"] for r in raw_rows],
-        run_started_at=datetime.now(timezone.utc),
-        write=True,
-    )
+    if args.skip_delist_missing:
+        delist_stats = {"candidates": 0, "updated": 0, "skipped": True}
+    else:
+        delist_stats = mark_missing_links_out_of_stock(
+            shop_id=SHOP_ID,
+            seen_source_urls=[r["source_url"] for r in raw_rows],
+            run_started_at=datetime.now(timezone.utc),
+            write=True,
+        )
     print("[FIFTIES-API] delist_missing", delist_stats, flush=True)
 
     finish_scrape_run(run_id, "completed")
