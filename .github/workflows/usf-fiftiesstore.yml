@@ -1,14 +1,20 @@
 name: USF - FiftiesStore
 
 on:
-  schedule:
-    - cron: "35 3 * * *"
+  # Automatic runs are handled by usf-fiftiesstore-windows.yml. Keep this
+  # workflow as the GitHub-hosted manual fallback. Restore the schedule block
+  # here if the local Windows runner is unavailable long-term.
   workflow_dispatch:
     inputs:
       batch_size:
         description: "Clerk API batch size"
         required: true
         default: "500"
+        type: string
+      max_products:
+        description: "Maximaal aantal producten voor een handmatige bounded run; 0 = alle"
+        required: true
+        default: "0"
         type: string
       stage_limit:
         description: "Max staged offers"
@@ -28,6 +34,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: usf-fiftiesstore-production
+  cancel-in-progress: false
 
 jobs:
   fiftiesstore:
@@ -63,11 +73,13 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "schedule" ]; then
             echo "batch_size=500" >> "$GITHUB_OUTPUT"
+            echo "max_products=0" >> "$GITHUB_OUTPUT"
             echo "stage_limit=6000" >> "$GITHUB_OUTPUT"
             echo "promote_limit=6000" >> "$GITHUB_OUTPUT"
             echo "write=true" >> "$GITHUB_OUTPUT"
           else
             echo "batch_size=${{ inputs.batch_size }}" >> "$GITHUB_OUTPUT"
+            echo "max_products=${{ inputs.max_products }}" >> "$GITHUB_OUTPUT"
             echo "stage_limit=${{ inputs.stage_limit }}" >> "$GITHUB_OUTPUT"
             echo "promote_limit=${{ inputs.promote_limit }}" >> "$GITHUB_OUTPUT"
             echo "write=${{ inputs.write }}" >> "$GITHUB_OUTPUT"
@@ -75,7 +87,7 @@ jobs:
 
       - name: Refresh
         run: |
-          cmd=(python -u -m scripts.scrapers.usf.jobs.refresh_fiftiesstore_listing_prices --batch-size "${{ steps.settings.outputs.batch_size }}" --skip-raw)
+          cmd=(python -u -m scripts.scrapers.usf.jobs.refresh_fiftiesstore_listing_prices --batch-size "${{ steps.settings.outputs.batch_size }}" --max-products "${{ steps.settings.outputs.max_products }}" --skip-raw)
           if [ "${{ steps.settings.outputs.write }}" = "true" ]; then cmd+=(--write); fi
           "${cmd[@]}"
 

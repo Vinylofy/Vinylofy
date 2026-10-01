@@ -113,3 +113,16 @@ Platomania uses the same Windows runner pattern in `.github/workflows/usf-platom
 - Before each job, each required import is checked (`requests`, `bs4`, `psycopg`, and `dotenv`). Only missing packages are installed.
 - The persistent virtual environment and managed Python are not removed after a run. Only the run-specific uv cache is cleaned.
 - This check-before-install policy applies to future migrated shops as well: reuse software already present on the local runner, add only missing components, and leave the reusable installation in place after the pipeline finishes.
+
+## FiftiesStore migration
+
+FiftiesStore keeps its existing four-step pipeline on the Windows runner:
+
+- refresh the Clerk listing API;
+- sync listing prices to existing live prices;
+- stage raw offers;
+- promote staged offers.
+
+The cloud workflow remains available through `workflow_dispatch` and no longer has an automatic schedule. The Windows workflow uses the same `usf-fiftiesstore-production` concurrency group with `cancel-in-progress: false`, so local and fallback runs cannot overlap.
+
+The first local manual test should use a small `max_products` value and `write=false`. A bounded write can then enable `write=true` while keeping the product, stage and promote limits explicit. Scheduled execution preserves the existing full-catalog settings.
