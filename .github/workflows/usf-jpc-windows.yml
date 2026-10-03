@@ -199,7 +199,7 @@ jobs:
             $shardCount = 4
             $shardIndex = [Math]::Floor($epoch / 43200) % $shardCount
             $args = $base + @('--routes', 'default', '--include-route-index', '--max-pages-per-route', '0', '--listing-page-shard-index', "$shardIndex", '--listing-page-shard-count', "$shardCount", '--pagination-fallback', 'ff', '--discovery-sleep', '2.0', '--discovery-write', '--sync-listing-prices', '--price-sync-limit', '200000', '--price-sync-write', '--skip-requeue', '--skip-detail', '--skip-stage', '--skip-promote', '--skip-quarantine')
-          } elseif ($env:EVENT_NAME -eq 'schedule' -and $env:EVENT_SCHEDULE -eq '47 1,7,13,19 * * *') {
+          } elseif ($env:EVENT_NAME -eq 'schedule' -and $env:EVENT_SCHEDULE -eq '47 2,8,14,20 * * *') {
             $today = [DateTime]::UtcNow.ToString('yyyy-MM-dd')
             if ($today -lt $env:DETAIL_BURST_START_DATE -or $today -ge $env:DETAIL_BURST_END_DATE_EXCLUSIVE) { Write-Host "[WORKFLOW] JPC detailburst buiten datumvenster: today=$today"; exit 0 }
             $args = $base + @('--skip-discovery', '--skip-requeue', '--detail-limit', '500', '--detail-sleep', '4.0', '--detail-write', '--stage-limit', '500', '--stage-write', '--promote-limit', '500', '--promote-write', '--quarantine-limit', '500', '--quarantine-write')

@@ -107,7 +107,7 @@ def run_tests() -> None:
     assert "Nieuwe JPC offers worden niet" in price_sync
     assert "listing_availability' = 'in_stock'" in price_sync
     assert 'cron: "17 4,16 * * *"' in local_workflow
-    assert 'cron: "47 1,7,13,19 * * *"' in local_workflow
+    assert 'cron: "47 2,8,14,20 * * *"' in local_workflow
     assert 'DETAIL_BURST_START_DATE: "2026-08-31"' in local_workflow
     assert 'DETAIL_BURST_END_DATE_EXCLUSIVE: "2026-09-28"' in local_workflow
     assert "--detail-limit', '500'" in local_workflow
