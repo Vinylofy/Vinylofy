@@ -126,21 +126,21 @@ jobs:
           "VIPRECORDS_WRITE=$write" >> $env:GITHUB_ENV
           Write-Host "max_pages=$maxPages detail_limit=$detailLimit write=$write"
 
-      - name: Restore VIP Records detail checkpoint
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ runner.temp }}/viprecords-run
-          key: viprecords-details-${{ github.run_id }}
-          restore-keys: |
-            viprecords-details-
-
       - name: Run VIP Records scraper and importer
         shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
         working-directory: viprecords
         run: |
           $ErrorActionPreference = 'Stop'
           $outputDir = Join-Path $env:RUNNER_TEMP 'viprecords-run'
+          $checkpointDir = Join-Path $env:LOCALAPPDATA 'Vinylofy/viprecords-checkpoint'
           New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $checkpointDir | Out-Null
+          foreach ($fileName in @('viprecords_listings.csv', 'viprecords_master.csv', 'viprecords_detail_rotation_state.json')) {
+            $checkpointFile = Join-Path $checkpointDir $fileName
+            if (Test-Path -LiteralPath $checkpointFile) {
+              Copy-Item -LiteralPath $checkpointFile -Destination (Join-Path $outputDir $fileName) -Force
+            }
+          }
           $python = Join-Path $env:LOCALAPPDATA 'Vinylofy/viprecords-venv/Scripts/python.exe'
           $scraperArgs = @('-u', '-m', 'scripts.scrapers.viprecords', '--mode', 'both', '--max-pages', $env:VIPRECORDS_MAX_PAGES, '--detail-limit', $env:VIPRECORDS_DETAIL_LIMIT, '--delay-seconds', $env:VIPRECORDS_DELAY_SECONDS, '--state-file', (Join-Path $outputDir 'viprecords_detail_rotation_state.json'), '--output-dir', $outputDir)
           Write-Host "$python $($scraperArgs -join ' ')"
@@ -156,12 +156,13 @@ jobs:
           & $python @importerArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Save VIP Records detail checkpoint
-        if: success()
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ runner.temp }}/viprecords-run
-          key: viprecords-details-${{ github.run_id }}
+          foreach ($fileName in @('viprecords_listings.csv', 'viprecords_master.csv', 'viprecords_detail_rotation_state.json')) {
+            $runFile = Join-Path $outputDir $fileName
+            if (Test-Path -LiteralPath $runFile) {
+              Copy-Item -LiteralPath $runFile -Destination (Join-Path $checkpointDir $fileName) -Force
+            }
+          }
+          Write-Host "VIP Records checkpoint saved to $checkpointDir"
 
       - name: Upload VIP Records run artifacts
         if: always()
