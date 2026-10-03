@@ -273,7 +273,7 @@ jobs:
               --skip-promote
               --skip-quarantine
             )
-          elif [ "$EVENT_NAME" = "schedule" ] && [ "$EVENT_SCHEDULE" = "47 1,7,13,19 * * *" ]; then
+          elif [ "$EVENT_NAME" = "schedule" ] && [ "$EVENT_SCHEDULE" = "47 2,8,14,20 * * *" ]; then
             TODAY=$(date -u +%F)
             if [[ "$TODAY" < "$DETAIL_BURST_START_DATE" || "$TODAY" > "$DETAIL_BURST_END_DATE_EXCLUSIVE" || "$TODAY" = "$DETAIL_BURST_END_DATE_EXCLUSIVE" ]]; then
               echo "[WORKFLOW] JPC detailburst buiten datumvenster: today=$TODAY start=$DETAIL_BURST_START_DATE end_exclusive=$DETAIL_BURST_END_DATE_EXCLUSIVE"

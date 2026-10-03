@@ -118,6 +118,7 @@ def run_tests() -> None:
     assert "43200" in local_workflow
     assert "runs-on: [self-hosted, Windows, X64, vinylofy-windows]" in local_workflow
     assert "group: usf-jpc-production" in cloud_workflow
+    assert '47 2,8,14,20 * * *' in cloud_workflow
     assert "group: usf-jpc-production" in local_workflow
     assert "workflow_dispatch:" in cloud_workflow
     assert "schedule:" not in cloud_workflow
