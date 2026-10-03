@@ -18,6 +18,7 @@ export function GlobalSearchBar({
       placeholder="Zoek op artiest of albumtitel"
       variant="global"
       compact={compact}
+      analyticsSource="homepage"
     />
   );
 }

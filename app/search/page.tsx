@@ -15,6 +15,7 @@ import {
 } from "@/lib/search-sort";
 import { redirectInactiveMarket, resolveMarket } from "@/lib/markets";
 import { marketHref } from "@/lib/market-url";
+import { SearchPageAnalytics } from "@/components/analytics/analytics-trackers";
 
 type SearchPageProps = {
   searchParams: Promise<{
@@ -296,18 +297,33 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
                   </div>
                 ) : (
                   <>
-                    {firstResults.map((item) => (
-                      <ProductResultCard key={item.id} item={item} marketCode={market.country_code} />
+                    {firstResults.map((item, index) => (
+                      <ProductResultCard
+                        key={item.id}
+                        item={item}
+                        marketCode={market.country_code}
+                        query={query}
+                        resultPosition={index + 1}
+                        resultCount={visibleResults.length}
+                      />
                     ))}
                     {grooveData && grooveData.candidates.length > 0 ? (
                       <GrooveSearchBlock
                         activeArtistMbid={grooveData.artist.mbid}
+                        startArtistName={grooveData.artist.name}
                         candidates={grooveData.candidates}
                         marketCode={market.country_code}
                       />
                     ) : null}
-                    {remainingResults.map((item) => (
-                      <ProductResultCard key={item.id} item={item} marketCode={market.country_code} />
+                    {remainingResults.map((item, index) => (
+                      <ProductResultCard
+                        key={item.id}
+                        item={item}
+                        marketCode={market.country_code}
+                        query={query}
+                        resultPosition={firstResults.length + index + 1}
+                        resultCount={visibleResults.length}
+                      />
                     ))}
                   </>
                 )}
@@ -316,6 +332,8 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
           )}
         </section>
       </main>
+
+      <SearchPageAnalytics query={query} resultCount={visibleResults.length} />
 
       {visibleResults.length > 0 ? (
         <CoverQueueBeacon

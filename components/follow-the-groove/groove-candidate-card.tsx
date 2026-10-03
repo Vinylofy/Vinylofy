@@ -1,17 +1,30 @@
+"use client";
+
 import Link from "next/link";
 import { CoverImage } from "@/components/cover-image";
 import { buildGrooveHref, formatEntityType } from "@/lib/follow-the-groove/presentation";
 import type { FtgCandidateView } from "@/lib/follow-the-groove/types";
 import { marketHref } from "@/lib/market-url";
+import { rememberSearchSource, trackFtgRelationClick } from "@/lib/analytics";
 
 export function GrooveCandidateCard({
   candidate,
   trailMbids,
   marketCode = "NL",
+  startArtistId,
+  startArtistName,
+  fromArtistId,
+  fromArtistName,
+  depth,
 }: {
   candidate: FtgCandidateView;
   trailMbids: string[];
   marketCode?: string;
+  startArtistId: string;
+  startArtistName: string;
+  fromArtistId: string;
+  fromArtistName: string;
+  depth: number;
 }) {
   return (
     <article className="flex h-full flex-col rounded-3xl border border-neutral-200 bg-white p-4 shadow-sm md:p-5">
@@ -36,6 +49,7 @@ export function GrooveCandidateCard({
             <Link
               href={candidate.searchHref}
               prefetch={false}
+              onClick={() => rememberSearchSource("ftg")}
               className="text-xs font-medium text-orange-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300"
             >
               {candidate.productCount === 1 ? "1 titel op Vinylofy →" : `${candidate.productCount} titels op Vinylofy →`}
@@ -49,6 +63,16 @@ export function GrooveCandidateCard({
         <Link
           href={marketHref(buildGrooveHref(trailMbids, candidate.mbid), marketCode)}
           prefetch={false}
+          onClick={() => trackFtgRelationClick({
+            startArtistId,
+            startArtistName,
+            fromArtistId,
+            fromArtistName,
+            toArtistId: candidate.id,
+            toArtistName: candidate.name,
+            relationType: candidate.reasonCode,
+            depth,
+          })}
           className="inline-flex min-h-11 items-center justify-center rounded-full border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-800 transition hover:border-orange-300 hover:bg-orange-50 hover:text-orange-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 focus-visible:ring-offset-2"
         >
           Volg de groove →

@@ -41,6 +41,7 @@ export default async function FollowTheGrooveStartPage({ searchParams }: { searc
               selectionOnly
               inputId="follow-the-groove-artist"
               noResultsLabel="Geen artiest gevonden"
+              analyticsSource="ftg"
             />
             <p className="mt-3 text-xs text-neutral-500">Bijv. Foo Fighters, Miles Davis, Radiohead, Aretha Franklin…</p>
           </div>

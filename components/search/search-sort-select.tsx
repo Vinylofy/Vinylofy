@@ -3,6 +3,7 @@
 import type { ChangeEvent } from "react";
 import { useRouter } from "next/navigation";
 import { marketHref } from "@/lib/market-url";
+import { trackSortChange } from "@/lib/analytics";
 
 import {
   SEARCH_SORT_OPTIONS,
@@ -25,6 +26,13 @@ export function SearchSortSelect({
   const router = useRouter();
 
   function handleChange(nextSort: SearchSort) {
+    if (nextSort !== value) {
+      trackSortChange({
+        pageType: "search",
+        sortFrom: value,
+        sortTo: nextSort,
+      });
+    }
     const params = new URLSearchParams();
 
     if (query) {

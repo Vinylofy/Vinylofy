@@ -15,6 +15,7 @@ export function SearchControls({ initialQuery, marketCode = "NL" }: SearchContro
       placeholder="Zoek op artiest of albumtitel"
       variant="search"
       openOnFocus={false}
+      analyticsSource="header"
     />
   );
 }

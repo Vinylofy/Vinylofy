@@ -1,3 +1,5 @@
+"use client";
+
 import Link from "next/link";
 
 import { CoverImage } from "@/components/cover-image";
@@ -8,10 +10,20 @@ import {
 import { getShopCountryCode } from "@/lib/shop-country";
 import { formatEuro, type SearchResultItem } from "@/lib/vinylofy-data";
 import { marketHref } from "@/lib/market-url";
+import {
+  rememberReleaseSource,
+  consumeSearchSource,
+  trackSearchResultClick,
+  type AnalyticsSource,
+} from "@/lib/analytics";
 
 type ProductResultCardProps = {
   item: SearchResultItem;
   marketCode?: string;
+  query?: string;
+  resultPosition?: number;
+  resultCount?: number;
+  source?: AnalyticsSource;
 };
 
 function formatCtaLabel(count: number): string {
@@ -22,8 +34,15 @@ function OfferCountLabel({ count }: { count: number }) {
   return count === 1 ? <p>1 aanbieder gevonden</p> : <p>{count} aanbieders gevonden</p>;
 }
 
-export function ProductResultCard({ item, marketCode = "NL" }: ProductResultCardProps) {
-  const visibleOffers = getVisibleBasePriceOfferSummary(item.shops, 1);
+export function ProductResultCard({
+  item,
+  marketCode = "NL",
+  query = "",
+  resultPosition,
+  resultCount = 0,
+  source = "search",
+}: ProductResultCardProps) {
+  const visibleOffers = getVisibleBasePriceOfferSummary(item.shops, 3);
   const visibleShopCount = item.shops.length;
   const effectiveOfferCount = Math.max(item.foundIn ?? 0, visibleShopCount);
   const ctaLabel = formatCtaLabel(effectiveOfferCount);
@@ -82,6 +101,22 @@ export function ProductResultCard({ item, marketCode = "NL" }: ProductResultCard
 
               <Link
                 href={marketHref(`/product/${item.id}`, marketCode)}
+                onClick={() => {
+                  if (resultPosition !== undefined) {
+                    const clickSource = source === "search" ? consumeSearchSource() ?? source : source;
+                    trackSearchResultClick({
+                      query,
+                      resultPosition,
+                      resultCount,
+                      releaseId: item.id,
+                      artistName: item.artist,
+                      releaseTitle: item.title,
+                      ean: item.ean,
+                      source: clickSource,
+                    });
+                  }
+                  rememberReleaseSource(source);
+                }}
                 className="inline-flex items-center justify-center rounded-full bg-orange-500 px-4 py-2 text-sm font-medium transition hover:bg-orange-600 md:ml-4 !text-white hover:!text-white"
               >
                 {ctaLabel}

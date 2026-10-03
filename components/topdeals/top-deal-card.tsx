@@ -1,8 +1,11 @@
+"use client";
+
 import Link from "next/link";
 
 import { CoverImage } from "@/components/cover-image";
 import { formatEuro, type TopDealItem } from "@/lib/vinylofy-data";
 import { marketHref } from "@/lib/market-url";
+import { rememberReleaseSource } from "@/lib/analytics";
 
 type TopDealCardProps = {
   deal: TopDealItem;
@@ -21,6 +24,7 @@ export function TopDealCard({ deal, rank, marketCode = "NL" }: TopDealCardProps)
   return (
     <Link
       href={marketHref(`/product/${deal.id}`, marketCode)}
+      onClick={() => rememberReleaseSource("top45")}
       className="group flex h-full flex-col overflow-hidden rounded-3xl border border-neutral-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:border-neutral-300 hover:shadow-md"
     >
       <div className="flex gap-4 p-4">

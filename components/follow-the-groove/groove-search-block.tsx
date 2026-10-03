@@ -3,15 +3,18 @@ import { CoverImage } from "@/components/cover-image";
 import { buildGrooveHref, formatEntityType } from "@/lib/follow-the-groove/presentation";
 import type { FtgCandidateView } from "@/lib/follow-the-groove/types";
 import { marketHref } from "@/lib/market-url";
+import { rememberSearchSource, trackFtgRelationClick } from "@/lib/analytics";
 
 export function GrooveSearchBlock({
   activeArtistMbid,
   candidates,
   marketCode = "NL",
+  startArtistName,
 }: {
   activeArtistMbid: string;
   candidates: FtgCandidateView[];
   marketCode?: string;
+  startArtistName: string;
 }) {
   if (candidates.length === 0) return null;
 
@@ -42,12 +45,22 @@ export function GrooveSearchBlock({
                 <Link
                   href={marketHref(buildGrooveHref([activeArtistMbid], candidate.mbid), marketCode)}
                   prefetch={false}
+                  onClick={() => trackFtgRelationClick({
+                    startArtistId: activeArtistMbid,
+                    startArtistName,
+                    fromArtistId: activeArtistMbid,
+                    fromArtistName: startArtistName,
+                    toArtistId: candidate.id,
+                    toArtistName: candidate.name,
+                    relationType: candidate.reasonCode,
+                    depth: 0,
+                  })}
                   className="text-xs font-medium text-neutral-800 underline-offset-4 hover:text-orange-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300"
                 >
                   Volg de groove →
                 </Link>
                 {candidate.productCount > 0 && candidate.searchHref ? (
-                  <Link href={candidate.searchHref} prefetch={false} className="text-xs font-medium text-orange-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300">
+                  <Link href={candidate.searchHref} prefetch={false} onClick={() => rememberSearchSource("ftg")} className="text-xs font-medium text-orange-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300">
                     {candidate.productCount === 1 ? "1 titel op Vinylofy →" : `${candidate.productCount} titels op Vinylofy →`}
                   </Link>
                 ) : null}

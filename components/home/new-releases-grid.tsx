@@ -1,8 +1,11 @@
+"use client";
+
 import Link from "next/link";
 
 import { CoverImage } from "@/components/cover-image";
 import { formatEuro, type HomeProduct } from "@/lib/vinylofy-data";
 import { marketHref } from "@/lib/market-url";
+import { rememberSearchSource } from "@/lib/analytics";
 
 type NewReleasesGridProps = {
   items: HomeProduct[];
@@ -27,6 +30,7 @@ export function NewReleasesGrid({ items }: NewReleasesGridProps) {
             <Link
               key={item.id}
               href={marketHref(`/search?q=${encodeURIComponent(`${item.artist} ${item.title}`)}`, item.marketCode)}
+              onClick={() => rememberSearchSource("homepage")}
               className="rounded-2xl border border-neutral-200 bg-white p-4 transition hover:border-orange-300"
             >
               <CoverImage

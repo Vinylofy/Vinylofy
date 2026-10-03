@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 
 import { CoverImage } from "@/components/cover-image";
 
@@ -14,6 +13,7 @@ import {
 } from "@/lib/vinylofy-data";
 import { redirectInactiveMarket, resolveMarket } from "@/lib/markets";
 import { marketHref } from "@/lib/market-url";
+import { ReleaseSourceLink } from "@/components/analytics/release-source-link";
 
 export const dynamic = "force-dynamic";
 
@@ -69,24 +69,23 @@ function ReleaseTitleLink({ release, marketCode }: { release: ReleaseCalendarIte
 
   if (release.productId) {
     return (
-      <Link
+      <ReleaseSourceLink
         href={marketHref(`/product/${release.productId}`, marketCode)}
         className="font-medium text-neutral-950 transition hover:text-orange-600"
       >
         {displayTitle}
-      </Link>
+      </ReleaseSourceLink>
     );
   }
 
   return (
-    <a
+    <ReleaseSourceLink
       href={release.sourceUrl}
-      target="_blank"
-      rel="noreferrer"
+      external
       className="font-medium text-neutral-950 transition hover:text-orange-600"
     >
       {displayTitle}
-    </a>
+    </ReleaseSourceLink>
   );
 }
 
@@ -147,16 +146,16 @@ function ReleaseCard({ release, marketCode }: { release: ReleaseCalendarItem; ma
 
   if (release.productId) {
     return (
-      <Link href={href} className="block h-full">
+      <ReleaseSourceLink href={href} className="block h-full">
         {card}
-      </Link>
+      </ReleaseSourceLink>
     );
   }
 
   return (
-    <a href={href} target="_blank" rel="noreferrer" className="block h-full">
+    <ReleaseSourceLink href={href} external className="block h-full">
       {card}
-    </a>
+    </ReleaseSourceLink>
   );
 }
 export default async function NieuweReleasesPage({ searchParams }: { searchParams: Promise<{ market?: string }> }) {

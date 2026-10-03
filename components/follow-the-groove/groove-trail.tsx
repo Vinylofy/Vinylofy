@@ -1,8 +1,11 @@
+"use client";
+
 import Link from "next/link";
 import { buildGrooveHref } from "@/lib/follow-the-groove/presentation";
 import { trailPrefix } from "@/lib/follow-the-groove/trail";
 import type { FtgTrailItem } from "@/lib/follow-the-groove/types";
 import { marketHref } from "@/lib/market-url";
+import { trackFtgArtistView } from "@/lib/analytics";
 
 function TrailItems({ trail, vertical = false, marketCode }: { trail: FtgTrailItem[]; vertical?: boolean; marketCode: string }) {
   return (
@@ -26,6 +29,16 @@ function TrailItems({ trail, vertical = false, marketCode }: { trail: FtgTrailIt
                 <Link
                   href={marketHref(buildGrooveHref(trailPrefix(trail, index).map((entry) => entry.mbid)), marketCode)}
                   prefetch={false}
+                  onClick={() => {
+                    const start = trail[0];
+                    trackFtgArtistView({
+                      startArtistId: start?.mbid ?? item.mbid,
+                      startArtistName: start?.name ?? item.name,
+                      artistId: item.mbid,
+                      artistName: item.name,
+                      depth: index,
+                    });
+                  }}
                   className={vertical ? "min-w-0 flex-1 rounded-xl px-3 py-2 text-neutral-600 transition hover:bg-neutral-50 hover:text-neutral-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300" : "rounded-sm transition hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300"}
                 >
                   {item.name}

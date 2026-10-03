@@ -4,6 +4,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent, KeyboardEvent } from "react";
 import { useRouter } from "next/navigation";
 import { marketHref } from "@/lib/market-url";
+import {
+  rememberSearchSource,
+  trackAutocompleteSelected,
+  trackFtgStart,
+  type AnalyticsSource,
+} from "@/lib/analytics";
 
 type SearchSuggestion = {
   id: string;
@@ -25,6 +31,7 @@ type SearchAutocompleteFormProps = {
   selectionOnly?: boolean;
   inputId?: string;
   noResultsLabel?: string;
+  analyticsSource?: AnalyticsSource;
 };
 
 function buildSearchHref(query: string) {
@@ -49,6 +56,7 @@ export function SearchAutocompleteForm({
   selectionOnly = false,
   inputId,
   noResultsLabel,
+  analyticsSource = "unknown",
 }: SearchAutocompleteFormProps) {
   const router = useRouter();
 
@@ -173,10 +181,29 @@ export function SearchAutocompleteForm({
   function goToSearch(nextQuery: string) {
     setCanSuggest(false);
     closeAutocomplete();
+    rememberSearchSource(analyticsSource);
     router.push(marketHref(buildSearchHref(nextQuery), marketCode));
   }
 
   function chooseSuggestion(suggestion: SearchSuggestion) {
+    const resultPosition = suggestions.findIndex((item) => item.id === suggestion.id) + 1;
+    trackAutocompleteSelected({
+      query,
+      selectedValue: suggestion.searchValue,
+      resultPosition: resultPosition > 0 ? resultPosition : undefined,
+      entityType: suggestion.kind,
+      source: analyticsSource,
+    });
+    if (suggestionMode === "follow-the-groove") {
+      const startArtistId = suggestion.id.replace(/^ftg-artist:/, "");
+      trackFtgStart({
+        startArtistId,
+        startArtistName: suggestion.searchValue,
+        source: "ftg",
+      });
+    } else {
+      rememberSearchSource(analyticsSource);
+    }
     setQuery(suggestion.searchValue);
     setCanSuggest(false);
     closeAutocomplete();

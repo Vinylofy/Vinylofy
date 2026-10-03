@@ -1,13 +1,33 @@
+"use client";
+
 import { getVisibleBasePriceOfferSummary } from "@/lib/offer-summary";
 import { formatOfferDomain, formatRelativeFreshness } from "@/lib/product-page-format";
 import { formatEuro, type SearchShopOffer } from "@/lib/vinylofy-data";
 import { ShopTypeBadge } from "@/components/shop-type-badge";
+import {
+  trackShopClick,
+  type AnalyticsSource,
+} from "@/lib/analytics";
+import { useReleaseAnalyticsSource } from "@/components/analytics/analytics-trackers";
 
 type ProductOffersCardProps = {
   offers: SearchShopOffer[];
+  releaseId: string;
+  ean?: string | null;
+  artistName: string;
+  releaseTitle: string;
+  source?: AnalyticsSource;
 };
 
-export function ProductOffersCard({ offers }: ProductOffersCardProps) {
+export function ProductOffersCard({
+  offers,
+  releaseId,
+  ean,
+  artistName,
+  releaseTitle,
+  source,
+}: ProductOffersCardProps) {
+  const contextSource = useReleaseAnalyticsSource();
   const sortedOffers = getVisibleBasePriceOfferSummary(offers, offers.length);
 
   return (
@@ -111,6 +131,22 @@ export function ProductOffersCard({ offers }: ProductOffersCardProps) {
                     href={offer.productUrl}
                     target="_blank"
                     rel="noreferrer"
+                    onClick={() => {
+                      trackShopClick({
+                        releaseId,
+                        ean,
+                        artistName,
+                        releaseTitle,
+                        shopId: offer.shopId,
+                        shopName: offer.name,
+                        price: offer.price,
+                        shippingCost: offer.estimatedShippingPrice,
+                        totalPrice: offer.estimatedTotalPrice,
+                        offerPosition: index + 1,
+                        isCheapest: index === 0,
+                        source: source ?? contextSource ?? "release_detail",
+                      });
+                    }}
                     className="inline-flex items-center justify-center rounded-full bg-[#e67e22] px-3.5 py-2 text-xs font-semibold !text-white transition hover:bg-[#cf6e18] hover:!text-white md:text-sm"
                   >
                     Ga naar shop

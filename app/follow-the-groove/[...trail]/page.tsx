@@ -10,6 +10,7 @@ import { getFollowTheGroovePage } from "@/lib/follow-the-groove/data";
 import { isValidTrail } from "@/lib/follow-the-groove/presentation";
 import { redirectInactiveMarket, resolveMarket } from "@/lib/markets";
 import { marketHref } from "@/lib/market-url";
+import { FtgArtistAnalytics } from "@/components/analytics/analytics-trackers";
 
 type FollowTheGroovePageProps = {
   params: Promise<{ trail?: string[] }>;
@@ -57,6 +58,13 @@ export default async function FollowTheGroovePage({ params, searchParams }: Foll
 
           <div className="min-w-0 space-y-6 md:space-y-8">
             <GrooveArtistHero artist={data.artist} />
+            <FtgArtistAnalytics
+              startArtistId={data.trail[0]?.mbid ?? data.artist.mbid}
+              startArtistName={data.trail[0]?.name ?? data.artist.name}
+              artistId={data.artist.mbid}
+              artistName={data.artist.name}
+              depth={Math.max(data.trail.length - 1, 0)}
+            />
 
           {data.candidates.length === 0 ? (
             <GrooveEmptyState />
@@ -78,6 +86,11 @@ export default async function FollowTheGroovePage({ params, searchParams }: Foll
                     candidate={candidate}
                     trailMbids={trail}
                     marketCode={market.country_code}
+                    startArtistId={data.trail[0]?.mbid ?? data.artist.mbid}
+                    startArtistName={data.trail[0]?.name ?? data.artist.name}
+                    fromArtistId={data.artist.mbid}
+                    fromArtistName={data.artist.name}
+                    depth={data.trail.length}
                   />
                 ))}
               </div>

@@ -3,6 +3,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Check, ChevronDown } from "lucide-react";
 import type { PublicMarket } from "@/lib/markets";
+import { trackCountryChange } from "@/lib/analytics";
 
 function MarketFlag({ code }: { code: string }) {
   const className = "h-4 w-6 shrink-0 rounded-[2px] ring-1 ring-black/10";
@@ -96,6 +97,7 @@ export function MarketSelector({ markets, selected }: {
   function changeMarket(code: string) {
     setOpen(false);
     if (code === selected) return;
+    trackCountryChange(selected, code);
     const url = new URL(window.location.href);
     url.searchParams.set("market", code);
     window.location.assign(`${url.pathname}${url.search}${url.hash}`);
