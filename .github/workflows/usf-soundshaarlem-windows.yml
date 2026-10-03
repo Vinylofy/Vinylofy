@@ -1,0 +1,174 @@
+name: USF - Sounds Haarlem (Windows local)
+
+on:
+  schedule:
+    - cron: "45 18 * * *"
+  workflow_dispatch:
+    inputs:
+      seed_limit:
+        description: "Aantal collectie-seeds; 0 = alle seeds"
+        required: true
+        default: "1"
+        type: string
+      max_pages_per_seed:
+        description: "Aantal pagina's per collectie; 0 = tot leeg/dubbel"
+        required: true
+        default: "1"
+        type: string
+      run_detail:
+        description: "Ook detail scrape draaien"
+        required: true
+        default: false
+        type: boolean
+      detail_limit:
+        description: "Maximaal aantal detailpagina's"
+        required: true
+        default: "25"
+        type: string
+      fast_price_sync:
+        description: "Snelle price-only bulk sync gebruiken"
+        required: true
+        default: true
+        type: boolean
+      write:
+        description: "Werkelijke databasewrites uitvoeren"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usf-soundshaarlem-production
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: Run Sounds Haarlem USF pipeline on Windows
+    runs-on: [self-hosted, Windows, X64, vinylofy-windows]
+    timeout-minutes: 360
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PIP_NO_CACHE_DIR: "1"
+    steps:
+      - name: Verify runner
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        env:
+          RUNNER_NAME: ${{ runner.name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -ne 'vinylofy-windows-01') { throw "Unexpected runner: $env:RUNNER_NAME" }
+          Write-Host "Runner: $env:RUNNER_NAME"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: soundshaarlem
+          persist-credentials: false
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.15"
+          working-directory: ${{ github.workspace }}/soundshaarlem
+          enable-cache: false
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/soundshaarlem-uv-cache
+
+      - name: Check and install persistent dependencies
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: soundshaarlem
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required.' }
+          $root = Join-Path $env:LOCALAPPDATA 'Vinylofy'
+          $env:UV_PYTHON_INSTALL_DIR = Join-Path $root 'soundshaarlem-python'
+          $venv = Join-Path $root 'soundshaarlem-venv'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          if (-not (Test-Path -LiteralPath (Join-Path $venv 'Scripts/python.exe'))) {
+            Write-Host "Creating persistent Sounds Haarlem environment: $venv"
+            uv venv --no-project --seed --managed-python --python 3.11 $venv
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else { Write-Host "Reusing persistent Sounds Haarlem environment: $venv" }
+          $python = Join-Path $venv 'Scripts/python.exe'
+          & $python --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $packages = @(
+            @{ Name = 'requests'; Import = 'requests' },
+            @{ Name = 'beautifulsoup4'; Import = 'bs4' },
+            @{ Name = 'psycopg[binary]'; Import = 'psycopg' },
+            @{ Name = 'python-dotenv'; Import = 'dotenv' }
+          )
+          $missing = @()
+          foreach ($package in $packages) {
+            $previousErrorActionPreference = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            & $python -c "import $($package.Import)" 2>$null
+            $importExitCode = $LASTEXITCODE
+            $ErrorActionPreference = $previousErrorActionPreference
+            if ($importExitCode -ne 0) { $missing += $package.Name }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Host "Installing missing packages: $($missing -join ', ')"
+            & $python -m pip install @missing
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else { Write-Host 'All Sounds Haarlem runtime packages are already available.' }
+          $modules = @('scripts/scrapers/usf/jobs/refresh_soundshaarlem_listing_prices.py', 'scripts/scrapers/usf/jobs/detail_soundshaarlem.py', 'scripts/scrapers/usf/jobs/run_soundshaarlem_pipeline.py')
+          & $python -m py_compile @modules
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $python -m scripts.scrapers.usf.jobs.run_soundshaarlem_pipeline --help *> $null
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Validate configuration
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:DATABASE_URL) { throw 'GitHub secret DATABASE_URL ontbreekt.' }
+          Write-Host '[CONFIG] DATABASE_URL is ingesteld.'
+
+      - name: Run Sounds Haarlem USF pipeline
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: soundshaarlem
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SEED_LIMIT_INPUT: ${{ inputs.seed_limit }}
+          MAX_PAGES_PER_SEED_INPUT: ${{ inputs.max_pages_per_seed }}
+          RUN_DETAIL_INPUT: ${{ inputs.run_detail }}
+          DETAIL_LIMIT_INPUT: ${{ inputs.detail_limit }}
+          FAST_PRICE_SYNC_INPUT: ${{ inputs.fast_price_sync }}
+          WRITE_INPUT: ${{ inputs.write }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:EVENT_NAME -eq 'schedule') {
+            $seedLimit = '0'; $maxPagesPerSeed = '0'; $detailLimit = '1000'; $fastPriceSync = 'true'; $write = 'true'
+            $runDetail = if ([DateTime]::UtcNow.DayOfWeek -in @([DayOfWeek]::Monday, [DayOfWeek]::Thursday)) { 'true' } else { 'false' }
+          } else {
+            $seedLimit = $env:SEED_LIMIT_INPUT; $maxPagesPerSeed = $env:MAX_PAGES_PER_SEED_INPUT; $runDetail = $env:RUN_DETAIL_INPUT; $detailLimit = $env:DETAIL_LIMIT_INPUT; $fastPriceSync = $env:FAST_PRICE_SYNC_INPUT; $write = $env:WRITE_INPUT
+          }
+          $python = Join-Path $env:LOCALAPPDATA 'Vinylofy/soundshaarlem-venv/Scripts/python.exe'
+          $args = @('-u', '-m', 'scripts.scrapers.usf.jobs.run_soundshaarlem_pipeline', '--seed-limit', $seedLimit, '--max-pages-per-seed', $maxPagesPerSeed, '--delay-seconds', '0.35', '--detail-limit', $detailLimit, '--detail-delay-seconds', '0.50', '--detail-rescrape-days', '14')
+          if ($fastPriceSync -eq 'true') { $args += '--fast-price-sync' }
+          if ($runDetail -eq 'true') { $args += '--run-detail' }
+          if ($write -eq 'true') { $args += '--write' }
+          Write-Host "settings: seed_limit=$seedLimit max_pages_per_seed=$maxPagesPerSeed run_detail=$runDetail detail_limit=$detailLimit fast_price_sync=$fastPriceSync write=$write"
+          Write-Host "$python $($args -join ' ')"
+          & $python @args 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'soundshaarlem-pipeline.log')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload pipeline log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usf-soundshaarlem-${{ github.run_id }}
+          path: ${{ runner.temp }}/soundshaarlem-pipeline.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Clean run-specific uv cache
+        if: always()
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cache = Join-Path $env:RUNNER_TEMP 'soundshaarlem-uv-cache'
+          if (Test-Path -LiteralPath $cache) { Remove-Item -LiteralPath $cache -Recurse -Force }

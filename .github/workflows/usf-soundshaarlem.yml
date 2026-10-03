@@ -1,9 +1,6 @@
 name: USF - Sounds Haarlem
 
 on:
-  schedule:
-    - cron: "45 2 * * *"
-
   workflow_dispatch:
     inputs:
       seed_limit:
