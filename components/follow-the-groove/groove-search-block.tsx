@@ -1,3 +1,5 @@
+"use client";
+
 import Link from "next/link";
 import { CoverImage } from "@/components/cover-image";
 import { buildGrooveHref, formatEntityType } from "@/lib/follow-the-groove/presentation";
