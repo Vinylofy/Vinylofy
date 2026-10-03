@@ -1,0 +1,170 @@
+name: USF - Everything Jazz Detail (Windows local)
+
+on:
+  schedule:
+    - cron: "27 4 * * 2,5"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Maximum aantal detailproducten"
+        required: true
+        default: "100"
+        type: string
+      write:
+        description: "Detail, stage, promote en quarantine daadwerkelijk schrijven"
+        required: true
+        default: false
+        type: boolean
+      debug:
+        description: "Uitgebreide detaildiagnostiek"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vinylofy-everythingjazz
+  cancel-in-progress: false
+
+jobs:
+  detail:
+    name: Run Everything Jazz detail pipeline on Windows
+    runs-on: [self-hosted, Windows, X64, vinylofy-windows]
+    timeout-minutes: 90
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PIP_NO_CACHE_DIR: "1"
+    steps:
+      - name: Verify runner
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        env:
+          RUNNER_NAME: ${{ runner.name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -ne 'vinylofy-windows-01') { throw "Unexpected runner: $env:RUNNER_NAME" }
+          Write-Host "Runner: $env:RUNNER_NAME"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: everythingjazz
+          persist-credentials: false
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.15"
+          working-directory: ${{ github.workspace }}/everythingjazz
+          enable-cache: false
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/everythingjazz-uv-cache
+
+      - name: Check and install persistent dependencies
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: everythingjazz
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required.' }
+          $root = Join-Path $env:LOCALAPPDATA 'Vinylofy'
+          $env:UV_PYTHON_INSTALL_DIR = Join-Path $root 'everythingjazz-python'
+          $venv = Join-Path $root 'everythingjazz-venv'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          if (-not (Test-Path -LiteralPath (Join-Path $venv 'Scripts/python.exe'))) {
+            Write-Host "Creating persistent Everything Jazz environment: $venv"
+            uv venv --no-project --seed --managed-python --python 3.11 $venv
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else { Write-Host "Reusing persistent Everything Jazz environment: $venv" }
+          $python = Join-Path $venv 'Scripts/python.exe'
+          & $python --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $packages = @(
+            @{ Name = 'requests'; Import = 'requests' },
+            @{ Name = 'beautifulsoup4'; Import = 'bs4' },
+            @{ Name = 'psycopg[binary]'; Import = 'psycopg' },
+            @{ Name = 'python-dotenv'; Import = 'dotenv' }
+          )
+          $missing = @()
+          foreach ($package in $packages) {
+            $previousErrorActionPreference = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            & $python -c "import $($package.Import)" 2>$null
+            $importExitCode = $LASTEXITCODE
+            $ErrorActionPreference = $previousErrorActionPreference
+            if ($importExitCode -ne 0) { $missing += $package.Name }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Host "Installing missing packages: $($missing -join ', ')"
+            & $python -m pip install @missing
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else { Write-Host 'All Everything Jazz runtime packages are already available.' }
+          $modules = @('scripts/scrapers/usf/jobs/everythingjazz_product_type.py', 'scripts/scrapers/usf/jobs/detail_everythingjazz.py', 'scripts/scrapers/usf/jobs/stage_everythingjazz.py', 'scripts/scrapers/usf/jobs/promote_everythingjazz.py', 'scripts/scrapers/usf/jobs/quarantine_everythingjazz.py')
+          & $python -m py_compile @modules
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($module in @('detail_everythingjazz', 'stage_everythingjazz', 'promote_everythingjazz', 'quarantine_everythingjazz')) {
+            & $python -m "scripts.scrapers.usf.jobs.$module" --help *> $null
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Validate configuration
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          LIMIT_INPUT: ${{ inputs.limit }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:DATABASE_URL) { throw 'GitHub secret DATABASE_URL ontbreekt.' }
+          if ($env:EVENT_NAME -eq 'schedule') { $limit = 250 } else { $limit = [int]$env:LIMIT_INPUT }
+          if ($limit -lt 1 -or $limit -gt 1000) { throw 'limit moet tussen 1 en 1000 liggen.' }
+          Write-Host "[CONFIG] limit=$limit DATABASE_URL is ingesteld."
+
+      - name: Run Everything Jazz detail, stage, promote and quarantine
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: everythingjazz
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          LIMIT_INPUT: ${{ inputs.limit }}
+          WRITE_INPUT: ${{ inputs.write }}
+          DEBUG_INPUT: ${{ inputs.debug }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:EVENT_NAME -eq 'schedule') { $limit = '250'; $write = 'true'; $debug = 'false' } else { $limit = $env:LIMIT_INPUT; $write = $env:WRITE_INPUT; $debug = $env:DEBUG_INPUT }
+          $python = Join-Path $env:LOCALAPPDATA 'Vinylofy/everythingjazz-venv/Scripts/python.exe'
+          $outputDir = Join-Path $env:RUNNER_TEMP 'everythingjazz-detail'
+          New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+          $log = Join-Path $outputDir 'detail-pipeline.log'
+          $detailArgs = @('-u', '-m', 'scripts.scrapers.usf.jobs.detail_everythingjazz', '--limit', $limit, '--retry-days', '30', '--refresh-days', '180', '--max-missing-ean-attempts', '3', '--sleep', '0.35', '--timeout', '45', '--output', (Join-Path $outputDir 'detail-summary.json'))
+          if ($write -eq 'true') { $detailArgs += '--write' }
+          if ($debug -eq 'true') { $detailArgs += '--debug' }
+          Write-Host "settings: limit=$limit write=$write debug=$debug"
+          Write-Host "$python $($detailArgs -join ' ')"
+          & $python @detailArgs 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($stage in @(@('stage_everythingjazz', 'stage'), @('promote_everythingjazz', 'promote'), @('quarantine_everythingjazz', 'quarantine'))) {
+            $module = $stage[0]; $label = $stage[1]
+            $stageArgs = @('-u', '-m', "scripts.scrapers.usf.jobs.$module", '--limit', $limit)
+            if ($module -eq 'quarantine_everythingjazz') { $stageArgs = @('-u', '-m', "scripts.scrapers.usf.jobs.$module", '--limit', '100') }
+            if ($write -eq 'true') { $stageArgs += '--write' }
+            Add-Content -LiteralPath $log -Value "`n== $label =="
+            Write-Host "$python $($stageArgs -join ' ')"
+            & $python @stageArgs 2>&1 | Tee-Object -FilePath $log -Append
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Upload detail pipeline log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: everythingjazz-detail-${{ github.run_id }}
+          path: ${{ runner.temp }}/everythingjazz-detail/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Clean run-specific uv cache
+        if: always()
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cache = Join-Path $env:RUNNER_TEMP 'everythingjazz-uv-cache'
+          if (Test-Path -LiteralPath $cache) { Remove-Item -LiteralPath $cache -Recurse -Force }

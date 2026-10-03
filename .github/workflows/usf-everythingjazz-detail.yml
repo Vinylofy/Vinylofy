@@ -19,11 +19,6 @@ on:
         default: false
         type: boolean
 
-  schedule:
-    # Dinsdag en vrijdag:
-    # 06:27 Nederlandse zomertijd / 05:27 wintertijd
-    - cron: "27 4 * * 2,5"
-
 permissions:
   contents: read
 

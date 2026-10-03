@@ -24,16 +24,6 @@ on:
         default: false
         type: boolean
 
-  schedule:
-    # 03:12 Nederlandse zomertijd / 02:12 wintertijd
-    - cron: "12 1 * * *"
-
-    # 11:12 Nederlandse zomertijd / 10:12 wintertijd
-    - cron: "12 9 * * *"
-
-    # 19:12 Nederlandse zomertijd / 18:12 wintertijd
-    - cron: "12 17 * * *"
-
 permissions:
   contents: read
 
