@@ -1,12 +1,10 @@
 name: Shop - VIP Records
 
 on:
-  schedule:
-    - cron: "20 3 * * *"
-      timezone: "Europe/Amsterdam"
   pull_request:
     paths:
       - ".github/workflows/shop-viprecords-pilot.yml"
+      - ".github/workflows/shop-viprecords-windows.yml"
       - "scripts/scrapers/viprecords.py"
       - "scripts/importers/import_viprecords.py"
       - "scripts/importers/registry.py"

@@ -1,0 +1,180 @@
+name: Shop - VIP Records (Windows local)
+
+on:
+  schedule:
+    - cron: "20 19 * * *"
+      timezone: "Europe/Amsterdam"
+  workflow_dispatch:
+    inputs:
+      max_pages:
+        description: "Listing pages; 0 = full catalog until server stop conditions"
+        required: true
+        default: "1"
+        type: choice
+        options: ["1", "2", "3", "0"]
+      detail_limit:
+        description: "Detail pages; all = every discovered product"
+        required: true
+        default: "3"
+        type: choice
+        options: ["0", "3", "10", "50", "all"]
+      write:
+        description: "Write accepted EAN-gated records to the database; default is dry-run"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vinylofy-viprecords
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: Run VIP Records listing and detail refresh on Windows
+    runs-on: [self-hosted, Windows, X64, vinylofy-windows]
+    timeout-minutes: 240
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      VIPRECORDS_DELAY_SECONDS: "0.5"
+      PIP_NO_CACHE_DIR: "1"
+
+    steps:
+      - name: Verify runner
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        env:
+          RUNNER_NAME: ${{ runner.name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -ne 'vinylofy-windows-01') { throw "Unexpected runner: $env:RUNNER_NAME" }
+          Write-Host "Runner: $env:RUNNER_NAME"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: viprecords
+          persist-credentials: false
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.15"
+          working-directory: ${{ github.workspace }}/viprecords
+          enable-cache: false
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/viprecords-uv-cache
+
+      - name: Check and install persistent dependencies
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: viprecords
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is required.' }
+          $root = Join-Path $env:LOCALAPPDATA 'Vinylofy'
+          $env:UV_PYTHON_INSTALL_DIR = Join-Path $root 'viprecords-python'
+          $venv = Join-Path $root 'viprecords-venv'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          if (-not (Test-Path -LiteralPath (Join-Path $venv 'Scripts/python.exe'))) {
+            Write-Host "Creating persistent VIP Records environment: $venv"
+            uv venv --no-project --seed --managed-python --python 3.11 $venv
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else { Write-Host "Reusing persistent VIP Records environment: $venv" }
+          $python = Join-Path $venv 'Scripts/python.exe'
+          & $python --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $packages = @(
+            @{ Name = 'requests'; Import = 'requests' },
+            @{ Name = 'beautifulsoup4'; Import = 'bs4' },
+            @{ Name = 'psycopg[binary]'; Import = 'psycopg' },
+            @{ Name = 'python-dotenv'; Import = 'dotenv' }
+          )
+          $missing = @()
+          foreach ($package in $packages) {
+            $previousErrorActionPreference = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            & $python -c "import $($package.Import)" 2>$null
+            $importExitCode = $LASTEXITCODE
+            $ErrorActionPreference = $previousErrorActionPreference
+            if ($importExitCode -ne 0) { $missing += $package.Name }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Host "Installing missing packages: $($missing -join ', ')"
+            & $python -m pip install @missing
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else { Write-Host 'All VIP Records runtime packages are already available.' }
+          & $python -m py_compile scripts/scrapers/viprecords.py scripts/importers/import_viprecords.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Configure scheduled or manual run
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MAX_PAGES_INPUT: ${{ inputs.max_pages }}
+          DETAIL_LIMIT_INPUT: ${{ inputs.detail_limit }}
+          WRITE_INPUT: ${{ inputs.write }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:EVENT_NAME -eq 'schedule') {
+            $maxPages = '0'; $detailLimit = '50'; $write = 'true'
+          } else {
+            $maxPages = $env:MAX_PAGES_INPUT; $detailLimit = $env:DETAIL_LIMIT_INPUT; $write = $env:WRITE_INPUT
+          }
+          "VIPRECORDS_MAX_PAGES=$maxPages" >> $env:GITHUB_ENV
+          "VIPRECORDS_DETAIL_LIMIT=$detailLimit" >> $env:GITHUB_ENV
+          "VIPRECORDS_WRITE=$write" >> $env:GITHUB_ENV
+          Write-Host "max_pages=$maxPages detail_limit=$detailLimit write=$write"
+
+      - name: Restore VIP Records detail checkpoint
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/viprecords-run
+          key: viprecords-details-${{ github.run_id }}
+          restore-keys: |
+            viprecords-details-
+
+      - name: Run VIP Records scraper and importer
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        working-directory: viprecords
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outputDir = Join-Path $env:RUNNER_TEMP 'viprecords-run'
+          New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+          $python = Join-Path $env:LOCALAPPDATA 'Vinylofy/viprecords-venv/Scripts/python.exe'
+          $scraperArgs = @('-u', '-m', 'scripts.scrapers.viprecords', '--mode', 'both', '--max-pages', $env:VIPRECORDS_MAX_PAGES, '--detail-limit', $env:VIPRECORDS_DETAIL_LIMIT, '--delay-seconds', $env:VIPRECORDS_DELAY_SECONDS, '--state-file', (Join-Path $outputDir 'viprecords_detail_rotation_state.json'), '--output-dir', $outputDir)
+          Write-Host "$python $($scraperArgs -join ' ')"
+          & $python @scraperArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($env:VIPRECORDS_WRITE -eq 'true') {
+            if ($env:VIPRECORDS_DETAIL_LIMIT -eq '0') { throw 'Write-runs require a non-zero detail_limit for EAN gating.' }
+            if (-not $env:DATABASE_URL) { throw 'DATABASE_URL secret ontbreekt voor een write-run.' }
+          }
+          $importerArgs = @('-u', '-m', 'scripts.importers.import_viprecords', (Join-Path $outputDir 'viprecords_master.csv'), '--rejects', (Join-Path $outputDir 'rejects.csv'), '--summary', (Join-Path $outputDir 'summary.json'))
+          if ($env:VIPRECORDS_WRITE -ne 'true') { $importerArgs += '--dry-run' }
+          Write-Host "$python $($importerArgs -join ' ')"
+          & $python @importerArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Save VIP Records detail checkpoint
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/viprecords-run
+          key: viprecords-details-${{ github.run_id }}
+
+      - name: Upload VIP Records run artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: viprecords-run-${{ github.run_id }}
+          path: ${{ runner.temp }}/viprecords-run
+          if-no-files-found: warn
+
+      - name: Clean run-specific uv cache
+        if: always()
+        shell: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cache = Join-Path $env:RUNNER_TEMP 'viprecords-uv-cache'
+          if (Test-Path -LiteralPath $cache) { Remove-Item -LiteralPath $cache -Recurse -Force }
